@@ -78,7 +78,7 @@ from ..risk.policy_upkeep import load_versions
 from ..time import as_utc, utc_now
 from . import run_files, trials
 from .dsr import Deflated, ReturnStats, family_deflated_sharpe, trial_variance
-from .spec import GAP_PLAYBOOKS, KNOWN_GAPS, membership_key
+from .spec import GAP_PLAYBOOKS, membership_key
 
 __all__ = [
     "COMPLETED",
@@ -164,7 +164,7 @@ def _returns(raw: object) -> ReturnStats | None:
 class RunMetrics:
     """The facts of a run's stored metrics that a gate or the evidence reads, typed. The field
     names are the JSON keys `report.compute_metrics` writes (`returns` is its return moments,
-    `known_gaps` the codes of `spec.KNOWN_GAPS`), besides `completed_at`, which
+    `known_gaps` the codes of `spec.known_gaps`), besides `completed_at`, which
     `evidence_doc` adds. The rest of the report (figures, conventions, DSR, PBO) is read by
     people, not by a gate, and stays JSON."""
 
@@ -224,13 +224,12 @@ def _named(codes: Iterable[str], playbooks: Iterable[Playbook]) -> frozenset[str
 
 def unbacktested(metrics: RunMetrics | None, playbooks: Sequence[Playbook]) -> frozenset[str]:
     """The names of the `playbooks` whose live and shadow trades are left out when they are
-    compared with a run (PR 40): those its known gaps name, as a run cannot have their trades;
-    with no run or no readable gap list, those every daily-bar run's gaps name (`KNOWN_GAPS`:
-    the pre-open ones, which drop out once a run no longer names them, PR 70)."""
-    daily_bar = _named(KNOWN_GAPS, playbooks)
+    compared with a run (PR 40): those its known gaps name, as the run cannot have their trades
+    as live has them; with no run or no readable gap list, those any gap may name
+    (`GAP_PLAYBOOKS`)."""
     if metrics is None or metrics.known_gaps is None:
-        return daily_bar
-    return daily_bar & _named(metrics.known_gaps, playbooks)
+        return _named(GAP_PLAYBOOKS, playbooks)
+    return _named(metrics.known_gaps, playbooks)
 
 
 # --- the run folders' evidence ----------------------------------------------------------------

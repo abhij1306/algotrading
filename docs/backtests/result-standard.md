@@ -90,12 +90,16 @@ Whether the change actually did anything. Required for every variant with a base
 - `no_op`: true when the trade list hash matches the base
 
 ### breakdowns
-- `by_year`: per calendar year: return %, max DD %, trades, expectancy R, benchmark return %
+- `by_year`: per calendar year: return %, max DD %, trades, expectancy R, benchmark return %,
+  and the entries decided on stored 5-minute bars and on the daily estimate (`entries_5m`,
+  `entries_daily`)
 - `by_regime`: per regime state at entry (index on/off, breadth bucket): trades, win %, expectancy R
 - `by_exit_reason`: per exit reason: trades, avg R, avg hold sessions
 - `by_industry`: per industry: trades, win %, expectancy R, net P&L
 - `by_cap_bucket`: `large` | `mid` | `small` | `micro` at entry: trades, win %, expectancy R
 - `by_liquidity_bucket`: 20-day average traded value quintile at entry: trades, win %, expectancy R
+- `by_playbook`: per playbook: signals, refusals by code, and its trades (trades, win %,
+  expectancy R)
 
 ---
 

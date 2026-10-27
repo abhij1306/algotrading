@@ -70,8 +70,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   scan builds its candidates (gapped at least the least enabled `gap_up` minimum of the active
   bots' pre-open playbooks, `gap_floor`, each playbook's own minimum applied at its trigger; the
   setup judged on the bars to the previous session, `ep_setup_passes`), so its trigger level can only be the opening range (refused on
-  save otherwise), the nightly scan skips it, and the known gap `episodic_pivot_not_backtested`
-  names it (trades are left out of comparisons per strategy version and playbook). The trigger inputs are built by one function each,
+  save otherwise) and the nightly scan skips it. The backtest picks its candidates the same way
+  each session (`loop._gappers`) and decides them on the stored 5-minute bars, or on the
+  calibrated daily estimate where none are stored (`intraday.EP_ESTIMATE`); a playbook a run's
+  known gaps name has its trades left out of comparisons, per strategy version and playbook. The trigger inputs are built by one function each,
   for live, the backtest and the scan: the stop history at each rule's own length
   (`stops.history_inputs`), the entry stop (`trigger.entry_stop`) and the entry-filter context
   (`trigger.daily_context`, `entry_filter_context`).

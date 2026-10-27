@@ -626,9 +626,10 @@ def basis_of(day: Day5m) -> str | None:
 
 def check_bars_5m(days: Iterable[Day5m], scanned: int, *, used: bool) -> dict[str, Any]:
     """The store-wide 5-minute scan (`scanned` days, `days` the ones off their daily bar): each
-    kind (`basis_of`) is a finding, its run member-days listed first. A finding fails when the
-    run reads 5-minute bars (`used`) and warns otherwise."""
-    severity = FAIL if used else WARN
+    kind (`basis_of`) is a finding, its run member-days listed first. A finding warns: a run
+    reading 5-minute bars (`used`) decides such a day on the daily estimate instead
+    (`backtest.intraday.on_basis`, the same rule), so no run reads bars off their day."""
+    severity = WARN
     found: dict[str, list[Day5m]] = defaultdict(list)
     for d in days:
         kind = basis_of(d)

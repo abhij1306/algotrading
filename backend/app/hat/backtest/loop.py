@@ -7,9 +7,12 @@ code live trading runs, in the same order:
    (`watchlist.scan_and_publish`, which calls `scan.scan_bot`);
 2. open positions: the nightly exit rules at d's open, then the live rules along the day's path
    (`shadow.evaluate_position`, which calls `exits.evaluate`);
-3. entries: each watchlist row whose level the day breaks becomes a trigger, the stop comes from
-   `trigger.entry_stop`, and `entries.open_entry` decides it with `evaluate_signal` (caps, max
-   chase, sizing) and fills it with the shadow engine's virtual fills;
+3. entries: the watchlist rows and the pre-open playbooks' gap candidates (`_gappers`, as live's
+   09:16 gap scan picks them), each decided by the live `TriggerMonitor` on the session's stored
+   5-minute bars (`intraday.replay`) or, without them, on the daily estimate below; the stop comes
+   from `trigger.entry_stop`, and `entries.open_entry` decides each trigger, in the order they
+   fired, with `evaluate_signal` (caps, max chase, sizing) and fills it with the shadow engine's
+   virtual fills;
 4. the 15:05-15:10 close rules at the day's official close, then the session-end expiry of the
    watchlist
    (`shadow.expire_watchlist`).
@@ -19,12 +22,13 @@ in-memory SQLite database holding the run's one bot, its pinned strategy version
 (point in time) and the virtual signals, orders, fills, positions and trade results the engine
 writes. It never touches the HAT database and nothing in it reaches a broker.
 
-What the backtest adds is only what live trading gets from the market: prices. Daily bars cannot
-show where in a day a level broke, so a day is read as the path open -> low -> high -> close (the
-adverse move first, `app.hat.backtest.fills`): an entry breaks its level on the way up, a stop is
-hit on the way down, a profit rule fires at the first tick price on the way up at which
-`exits.evaluate` acts, and the close rules see the official close. Fills go through the cost
-model (`app.hat.costs`): slippage against the trade, then statutory charges.
+What the backtest adds is only what live trading gets from the market: prices. Where the store
+has a session's 5-minute bars the entry is live's own decision on them; otherwise daily bars
+cannot show where in a day a level broke, so a day is read as the path open -> low -> high ->
+close (the adverse move first, `app.hat.backtest.fills`): an entry breaks its level on the way
+up, a stop is hit on the way down, a profit rule fires at the first tick price on the way up at
+which `exits.evaluate` acts, and the close rules see the official close. Fills go through the
+cost model (`app.hat.costs`): slippage against the trade, then statutory charges.
 
 Fill conventions (PR 62, HAT-BT-020..022, O5): pessimistic by default. An entry needs the high to
 clear the level by one tick and fills at that price (`penetration_1_tick`; `touch` is a variant a
@@ -109,14 +113,14 @@ The per-instrument cooldown (PR 58, HAT-RISK-036) is the risk policy's `cooldown
 does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records the value used.
 
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
-measured in shadow: among them, the trigger is the break of the level alone
-(`volume_pace` and the opening range need intraday bars, HAT-DEC-I4), the pre-open playbooks
-(`Playbook.preopen`, the episodic pivot) are not backtested (the scan publishes no row of
-theirs), close-based exits decide on and fill at the daily close (the auction price), which
-stands in for the price live acts on before the 15:15 cut-off (owner 2026-10-25), kill switches
-are not simulated (the exposure ladder is), a sleeve's health multiplier is 1 (its regime
-multiplier too, unless the run applies the policy's), and the run is one sleeve, so the
-account-level caps never bind across sleeves.
+measured in shadow, besides the estimates the run took (`ESTIMATE_GAPS`: on a session without
+5-minute bars the trigger is the daily high's break of the level, without the opening range or
+`volume_pace`, and a pre-open playbook's the calibrated `intraday.EP_ESTIMATE`;
+`catalyst_attached` is never judged): close-based exits decide on and fill at the daily close
+(the auction price), which stands in for the price live acts on before the 15:15 cut-off (owner
+2026-10-25), kill switches are not simulated (the exposure ladder is), a sleeve's health
+multiplier is 1 (its regime multiplier too, unless the run applies the policy's), and the run is
+one sleeve, so the account-level caps never bind across sleeves.
 
 Sizing (PR 68, HAT-BT-014): each night before a trade date d the loop allocates the run's one sleeve
 with the live allocator (`portfolio.allocator.allocate`) over the account's equity at the night's
@@ -141,17 +145,26 @@ YYYY-MM-DD`.
 
 from __future__ import annotations
 
+import math
 import uuid
 from bisect import bisect_right
-from dataclasses import dataclass, replace
-from datetime import date, datetime, time
+from collections.abc import Collection, Mapping, Sequence
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from typing import Any
 
+import polars as pl
 from sqlalchemy import select
 
+from ..configs.records import Bot
+from ..configs.unit import configs_of
+from ..data.bars import Bar as DataBar
 from ..data.identity import series_as_of
+from ..data.preopen import meets_gap
 from ..engine import entries, exits, lifecycle, positions, shadow, trigger, watchlist
 from ..engine.confidence import BACKTEST_CONFIDENCE
+from ..engine.live_entry import ep_setup_passes, gap_floor
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from ..engine.portfolio.health import Health
@@ -165,7 +178,7 @@ from ..models import (
     HatTradeResult,
     HatWatchlistEntry,
 )
-from ..money import dividend_credit
+from ..money import dividend_credit, exact
 from ..risk.decision import SignalContext
 from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
@@ -176,6 +189,7 @@ from .data import Bar, MarketData, MarketView, industry_on
 from .fillrules import (
     breakout_volume_ok,
     first_trigger,
+    inferred_band,
     lower_circuit_locked,
     pre_break_low,
     upper_circuit_locked,
@@ -188,6 +202,14 @@ from .fills import (
     raised_stop_dip,
     stop_fill,
     suspended_mark,
+)
+from .intraday import (
+    EP_ESTIMATE,
+    NO_CATALYST_MODE,
+    after_trigger,
+    on_basis,
+    replay,
+    session_bars,
 )
 from .ledger import exact_flows, fill_rows, ledger, set_series
 from .ledger import trade_rows as ledger_trade_rows
@@ -205,7 +227,21 @@ from .report import (
 )
 from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
-from .spec import REGIME_MULT_ONE, BacktestError, RunSpec, sleeve_weight
+from .spec import (
+    BASIS_5M,
+    BASIS_CLOSE,
+    BASIS_DAILY,
+    CATALYST_NOT_EVALUATED,
+    ENTRY_BARS_5M,
+    ENTRY_DAY_LOW_ESTIMATED,
+    EP_TRIGGER_ESTIMATED,
+    GAP_OVER_AT_OPEN,
+    LEVEL_BREAK_ESTIMATED,
+    REGIME_MULT_ONE,
+    BacktestError,
+    RunSpec,
+    sleeve_weight,
+)
 from .standard import fwd_r
 
 __all__ = ["run_backtest"]
@@ -219,6 +255,16 @@ SKIP_NO_VOLUME = "breakout_volume_missing"  # the volumes the breakout volume te
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
+# The trigger types a pre-open playbook's daily estimate stands in for (`EP_ESTIMATE`): the
+# opening-range break, and the catalyst no backtest can judge.
+_EP_ESTIMATED_TYPES = frozenset({trigger.PRICE_BREAKS_LEVEL, trigger.CATALYST})
+# The estimated trigger times (seconds after midnight IST) of the daily estimate under the `time`
+# slot order: a gap over at the first trigger bar's end (09:20, ahead of a 5-minute trigger
+# then), a break at 09:30, ordered by its distance, and a pre-open playbook's at 09:35, the
+# calibration's median.
+_GAP_SECONDS = 9 * 3600 + 20 * 60 - 1
+_BREAK_SECONDS = 9 * 3600 + 30 * 60
+_EP_SECONDS = 9 * 3600 + 35 * 60
 
 
 # The extra acts a day's way up allows: a step trail acts once per step the rise reaches.
@@ -229,12 +275,11 @@ _AT_NIGHT = time(16, 0)
 _AT_OPEN = time(9, 15)
 _AT_LOW = time(9, 20)
 _AT_ENTRY = time(9, 30)
-_AT_DIP = time(9, 45)  # the entry day's low after the entry
 _AT_HIGH = time(10, 0)
 # The close phase at live's times (`exits.close` 15:05-15:10, before the 15:15 cut-off), deciding
 # and filling on the daily close, which stands in for the price live acts on then (owner
 # 2026-10-25, `close_rules_decided_on_official_close`).
-_AT_FALL = time(15, 5)
+_AT_FALL = time(15, 6)  # after the last 5-minute trigger (15:05) and its entry's legs
 _AT_CLOSE = time(15, 10)
 # A close entry (`entry_timing: daily_close`): after the close phase, before the 15:15 cut-off.
 _AT_CLOSE_ENTRY = time(15, 11)
@@ -259,8 +304,7 @@ class _History:
 
 def _at(day: date, moment: time, offset: int = 0) -> datetime:
     """The aware UTC instant of `moment` IST on `day`, plus `offset` seconds."""
-    local = datetime.combine(day, moment, tzinfo=IST)
-    return as_utc(local.replace(second=offset % 60, minute=moment.minute + offset // 60))
+    return as_utc(datetime.combine(day, moment, tzinfo=IST) + timedelta(seconds=offset))
 
 
 @dataclass(frozen=True)
@@ -277,9 +321,60 @@ class _EntryPlan:
     level: Decimal
     filters: tuple[dict[str, object], ...] = ()
     at_close: bool = False
+    # the highest price after the entry (None: the day's high, the daily estimate's path)
+    high: Decimal | None = None
+    basis: str = BASIS_DAILY  # what decided it: the session's 5-minute bars or the daily bar
 
 
-def _levels(row: HatWatchlistEntry) -> dict[str, Decimal | None]:
+@dataclass(frozen=True)
+class _Row:
+    """What an entry reads of its candidate: a watchlist row, or a pre-open candidate of the
+    day's gap scan, which has no row (score 0, no levels)."""
+
+    playbook: str
+    instrument_id: uuid.UUID
+    trade_date: date
+    score: Decimal = _ZERO
+    pivot: Decimal | None = None
+    criteria_results: Mapping[str, Any] = field(default_factory=dict)
+
+    @staticmethod
+    def of(row: HatWatchlistEntry) -> _Row:
+        return _Row(
+            row.playbook,
+            row.instrument_id,
+            row.trade_date,
+            Decimal(row.score),
+            None if row.pivot is None else Decimal(row.pivot),
+            row.criteria_results or {},
+        )
+
+
+@dataclass(frozen=True)
+class _Decision:
+    """A candidate that triggered on `day`, its entry plan, its daily bar, its rank under the
+    `time` slot order (seconds after midnight of its trigger, then the distance to its level)
+    and the instant of the trigger on 5-minute bars (None: the daily estimate's)."""
+
+    row: _Row
+    plan: _EntryPlan
+    bar: Bar
+    rank: tuple[int, Decimal]
+    at: datetime | None = None
+
+
+def _estimated_rank(rank: tuple[int, Decimal]) -> tuple[int, Decimal]:
+    """A daily estimate's `slots.trigger_rank` as (seconds, distance), so it orders with the
+    triggers decided on 5-minute bars."""
+    kind, distance = rank
+    return (_GAP_SECONDS if kind == 0 else _BREAK_SECONDS), distance
+
+
+def _has(playbook: Playbook, code: str) -> bool:
+    return any(i.enabled and i.type == code for i in playbook.trigger)
+
+
+def _levels(row: _Row) -> dict[str, Decimal | None]:
     """The setup levels the scan stored with the row (`trigger.watchlist_levels`)."""
     return trigger.watchlist_levels((row.criteria_results or {}).get("levels", {}))
 
@@ -426,6 +521,10 @@ class _Run:
         # what the result files report (`folder`): each session's book, each signal's features
         self.sessions: list[SessionRow] = []
         self.signal_features = SignalFeatures(data, self.view)
+        # the estimate gaps the run took (`spec.ESTIMATE_GAPS`) and its entries by year and basis
+        self.estimated: set[str] = set()
+        self.entry_bars: dict[int, dict[str, int]] = {}
+        self.night_window: tuple[date, pl.DataFrame] | None = None  # the last scan's bars
 
     def run(self) -> BacktestResult:
         for day in self.period:
@@ -451,10 +550,11 @@ class _Run:
     def _publish(self, prev: date, day: date) -> None:
         series = series_as_of(self.data.series, prev)
         set_series(self.session, series)
+        self.night_window = (prev, self.view.window(prev))
         inputs = ScanInputs(
             as_of=prev,
             members=(),  # replaced by the bot's universe on `prev`
-            bars=self.view.window(prev),
+            bars=self.night_window[1],
             regime_closes=self.view.closes_through(prev),
             breadth=self.view.breadth_through(prev),
             features=self.view.features.get(prev),
@@ -490,8 +590,8 @@ class _Run:
             fills=self.spec.fills,
         )
 
-    def _down_leg(self, position: HatPosition, bar: Bar, day: date, moment: time = _AT_LOW) -> None:
-        """The way down from the open to the low (at `moment`): the stop fills at min(open, stop).
+    def _down_leg(self, position: HatPosition, bar: Bar, at: datetime) -> None:
+        """The way down from the open to the low (at `at`): the stop fills at min(open, stop).
         A position the stop closes never saw the rest of the fall, so its excursion stops at the
         fill."""
         held = self.held[position.id]
@@ -500,14 +600,17 @@ class _Run:
         fill = stop_fill(bar.open, bar.low, Decimal(position.current_stop))
         if fill is not None:
             held.low = min(held.low, fill)
-            self._evaluate(position, exits.ExitView(fill), "live", _at(day, moment))
+            self._evaluate(position, exits.ExitView(fill), "live", at)
         if position.closed_at is None:
             held.low = min(held.low, bar.low)
 
-    def _up_leg(self, position: HatPosition, low: Decimal, high: Decimal, day: date) -> None:
-        """The way up to the high: each profit rule fills at the first tick price at which
-        `exits.evaluate` acts, as many times as the stack keeps acting. A position closed on
-        the way up never saw the rest of the rise, so its excursion stops at the fill."""
+    def _up_leg(
+        self, position: HatPosition, low: Decimal, high: Decimal, day: date, at: datetime
+    ) -> None:
+        """The way up to the high, from `at`: each profit rule fills at the first tick price at
+        which `exits.evaluate` acts (a millisecond apart), as many times as the stack keeps
+        acting. A position closed on the way up never saw the rest of the rise, so its excursion
+        stops at the fill."""
         held = self.held[position.id]
         before = Decimal(position.current_stop)
         # A held instrument always has the closes before its entry; the finest NSE tick stands
@@ -521,7 +624,8 @@ class _Run:
             if price is None:
                 break
             held.high = max(held.high, price)
-            self._evaluate(position, exits.ExitView(price), "live", _at(day, _AT_HIGH, step))
+            step_at = at + timedelta(milliseconds=step)
+            self._evaluate(position, exits.ExitView(price), "live", step_at)
             low = price
         if position.closed_at is None:
             held.high = max(held.high, high)
@@ -552,8 +656,8 @@ class _Run:
             self._evaluate(position, nightly, "nightly", _at(day, _AT_OPEN))
             if position.closed_at is None:
                 self._evaluate(position, exits.ExitView(bar.open), "live", _at(day, _AT_OPEN, 1))
-            self._down_leg(position, bar, day)
-            self._up_leg(position, bar.open, bar.high, day)
+            self._down_leg(position, bar, _at(day, _AT_LOW))
+            self._up_leg(position, bar.open, bar.high, day, _at(day, _AT_HIGH))
 
     # --- entries -----------------------------------------------------------------------------
 
@@ -571,17 +675,39 @@ class _Run:
         self.skips[reason] = self.skips.get(reason, 0) + 1
 
     def _daily(
-        self, playbook: Playbook, instrument_id: str, day: date, prev: date
+        self,
+        playbook: Playbook,
+        instrument_id: str,
+        day: date,
+        prev: date,
+        bar: Bar | None = None,
     ) -> trigger.DailyInputs:
         """The nightly inputs of an entry on `day` as live reads them (`DailyData.daily`): the
-        previous close, the day's tick, ADV(20) and ADTR(20) as of `prev`, and the ATR and swing
-        lows of the playbook's own stop rule over the sessions through `prev`."""
+        previous close, the day's tick, the mean volume of the 50 sessions through `prev` (None
+        with fewer, or one missing), ADV(20) and ADTR(20) as of `prev`, and the ATR and swing
+        lows of the playbook's own stop rule over the sessions through `prev`. With the day's
+        `bar` (a trigger replayed on 5-minute bars) the price band is the one its high reached
+        (`fillrules.inferred_band`): the run has no band table."""
         atr, swing = history_inputs(playbook.stop, _History(self.view, instrument_id, prev))
+        recent = [
+            exact(v, floats=True)
+            for v in self.view.volumes_through(instrument_id, prev, trigger.AVG_VOLUME_DAYS)
+        ]
+        avg50 = (
+            sum((v for v in recent if v is not None), _ZERO) / trigger.AVG_VOLUME_DAYS
+            if len(recent) == trigger.AVG_VOLUME_DAYS and None not in recent
+            else None
+        )
+        prev_close = self.view.prev_close(instrument_id, day)
+        tick = self.view.tick(instrument_id, day)
         return trigger.DailyInputs(
-            prev_close=self.view.prev_close(instrument_id, day),
+            prev_close=prev_close,
+            avg50_volume=avg50,
             adv20=self.view.feature(prev, instrument_id, "adv20"),
             adtr20=self.view.feature(prev, instrument_id, "adtr20"),
-            tick=self.view.tick(instrument_id, day),
+            tick=tick,
+            band_known=bar is not None,
+            band_pct=None if bar is None else inferred_band(bar.high, prev_close, tick),
             atr=atr,
             swing_lows=tuple(swing),
         )
@@ -589,7 +715,7 @@ class _Run:
     def _stop(
         self,
         playbook: Playbook,
-        row: HatWatchlistEntry,
+        row: _Row,
         daily: trigger.DailyInputs,
         entry: Decimal,
         low: Decimal,
@@ -605,7 +731,7 @@ class _Run:
         equity = self.equity[-1][1] if self.equity else self.spec.initial_equity
         return equity, cash
 
-    def _context(self, row: HatWatchlistEntry, plan: _EntryPlan, prev: date) -> SignalContext:
+    def _context(self, row: _Row, plan: _EntryPlan, prev: date) -> SignalContext:
         """The entry's context as live builds it (`daily.entries`): sized from the night's
         allocation, the book being the run's one sleeve; without one, the allocation inputs are
         missing and the entry is rejected for it."""
@@ -641,88 +767,325 @@ class _Run:
             calendar=self.calendar,
         )
 
-    def _slots(self, day: date, *, at_close: bool) -> list[HatWatchlistEntry]:
+    def _rows(self, day: date, *, at_close: bool) -> list[_Row]:
         """The day's watchlist rows of the intraday-break playbooks, or with `at_close` of the
-        daily-close ones, in the order their triggers take the open slots (HAT-BT-026); close
-        entries all trigger at the close, so they keep the score order under `time`."""
-        rows = [
-            row
+        daily-close ones, in the watchlist's score order."""
+        return [
+            _Row.of(row)
             for row in self._watchlist(day)
             if self.config.playbook(row.playbook).at_close == at_close
         ]
 
-        def rank(row: HatWatchlistEntry) -> tuple[int, Decimal]:
-            if at_close:
-                return 0, _ZERO
-            bar = self.view.bar(str(row.instrument_id), day)
-            return trigger_rank(
-                None if bar is None else bar.open,
-                self._level(row),
-                self.spec.conventions.entry_fill_rule,
-            )
-
-        return order_slots(rows, self.spec.conventions.slot_order, day, rank)
-
     def _entries(self, day: date, prev: date, *, at_close: bool = False) -> None:
-        """The day's entries: the intraday breaks on the way up, or with `at_close` the close
-        entries of the `daily_close` playbooks, after the close phase."""
-        for n, row in enumerate(self._slots(day, at_close=at_close)):
-            instrument_id = str(row.instrument_id)
-            if instrument_id in self.view.pending_on(day):
-                self._skip(SKIP_FACTOR_PENDING)
-                continue
-            if (instrument_id, day) in self.data.demerger_exits:
-                self._skip(SKIP_DEMERGER_PENDING)  # sold at this close (Q5)
-                continue
-            bar = self.view.bar(instrument_id, day)
-            if bar is None:
-                continue  # no session today: the level cannot break
-            level = self._level(row)
-            if level is None:
-                self._skip(SKIP_NO_LEVEL)
-                continue
-            playbook = self.config.playbook(row.playbook)
-            if at_close:
-                price = self._close_fill(playbook, instrument_id, bar, day, level)
-            else:
-                price = self._fill(row, bar, day, level)
-            if isinstance(price, str):
-                self._skip(price)
-                continue
-            if price is None:
-                continue  # the level did not break: the row expires at the session end
-            # A close entry comes after the whole day's path: its low is the day's low.
-            lows = (
-                (bar.low, None)
-                if at_close
-                else self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
+        """The day's entries in the order their triggers take the open slots (HAT-BT-026): the
+        intraday breaks and the pre-open playbooks' candidates, each decided on the session's
+        5-minute bars when it has them (`_on_bars`) and on the daily estimate otherwise; or with
+        `at_close` the close entries of the `daily_close` playbooks, after the close phase (they
+        all trigger at the close, so they keep the score order under `time`)."""
+        if at_close:
+            for n, row in enumerate(self._rows(day, at_close=True)):
+                found = self._decide_daily(row, day, prev, at_close=True)
+                if found is not None:
+                    self._enter(
+                        found.row, found.bar, found.plan, prev, _at(day, _AT_CLOSE_ENTRY, n)
+                    )
+            return
+        rows = [r for r in self._rows(day, at_close=False) if self._open_for(r, day)]
+        gappers = self._gappers(day, prev)
+        bars = self._session_bars(day, {str(r.instrument_id) for r in (*rows, *gappers)})
+        decisions = self._on_bars(day, prev, (*rows, *gappers), bars)
+        for row in rows:
+            if str(row.instrument_id) not in bars:
+                decisions.extend(self._decided(self._decide_daily(row, day, prev)))
+        for row in gappers:
+            if str(row.instrument_id) not in bars:
+                decisions.extend(self._decided(self._decide_ep(row, day, prev)))
+        # the watchlist's score order, which the `score` and `random` slot orders keep
+        decisions.sort(key=lambda d: (-d.row.score, d.row.playbook, str(d.row.instrument_id)))
+        rule = self.spec.conventions.slot_order
+        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank)):
+            at = (
+                _at(day, _AT_ENTRY, n) if found.at is None else found.at + timedelta(microseconds=n)
             )
-            if isinstance(lows, str):
-                self._skip(lows)
-                continue
-            before, dip = lows
-            daily = self._daily(playbook, instrument_id, day, prev)
-            planned = self._stop(playbook, row, daily, price, before)
-            stop = planned.stop
-            if stop is None:
+            self._enter(found.row, found.bar, found.plan, prev, at)
+
+    @staticmethod
+    def _decided(found: _Decision | None) -> list[_Decision]:
+        return [] if found is None else [found]
+
+    def _open_for(self, row: _Row, day: date) -> bool:
+        """Whether a candidate may be entered on `day` at all: not factor-pending (CA5), not on
+        its demerger exit session (Q5) and with a session that day."""
+        instrument_id = str(row.instrument_id)
+        if instrument_id in self.view.pending_on(day):
+            self._skip(SKIP_FACTOR_PENDING)
+            return False
+        if (instrument_id, day) in self.data.demerger_exits:
+            self._skip(SKIP_DEMERGER_PENDING)  # sold at this close (Q5)
+            return False
+        return self.view.bar(instrument_id, day) is not None
+
+    def _decide_daily(
+        self, row: _Row, day: date, prev: date, *, at_close: bool = False
+    ) -> _Decision | None:
+        """A watchlist row decided on its daily bar (the estimate of the live trigger, or a
+        close entry); None when it did not trigger or was skipped (the skip counted)."""
+        if at_close and not self._open_for(row, day):
+            return None
+        instrument_id = str(row.instrument_id)
+        bar = self.view.bar(instrument_id, day)
+        if bar is None:
+            return None  # no session today: the level cannot break
+        level = self._level(row)
+        if level is None:
+            self._skip(SKIP_NO_LEVEL)
+            return None
+        playbook = self.config.playbook(row.playbook)
+        if at_close:
+            price = self._close_fill(playbook, instrument_id, bar, day, level)
+        else:
+            price = self._fill(row, bar, day, level)
+        if isinstance(price, str):
+            self._skip(price)
+            return None
+        if price is None:
+            return None  # the level did not break: the row expires at the session end
+        # A close entry comes after the whole day's path: its low is the day's low.
+        lows = (
+            (bar.low, None)
+            if at_close
+            else self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
+        )
+        if isinstance(lows, str):
+            self._skip(lows)
+            return None
+        before, dip = lows
+        daily = self._daily(playbook, instrument_id, day, prev)
+        planned = self._stop(playbook, row, daily, price, before)
+        stop = planned.stop
+        if stop is None:
+            self._skip(planned.skip or SKIP_BAD_INPUT)
+            return None
+        at = _at(day, _AT_CLOSE_ENTRY if at_close else _AT_ENTRY)
+        locked = self._locked(instrument_id, price, bar.high, day)
+        failed, filters = self._entry_filters(
+            playbook, row, daily, (price, stop, level, locked), at
+        )
+        if not at_close:
+            self.estimated.update((LEVEL_BREAK_ESTIMATED, ENTRY_DAY_LOW_ESTIMATED))
+            if price == bar.open:
+                self.estimated.add(GAP_OVER_AT_OPEN)
+        basis = BASIS_CLOSE if at_close else BASIS_DAILY
+        plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close, None, basis)
+        rank = trigger_rank(bar.open, level, self.spec.conventions.entry_fill_rule)
+        return _Decision(row, plan, bar, _estimated_rank(rank))
+
+    def _session_bars(
+        self, day: date, instruments: Collection[str]
+    ) -> dict[str, tuple[DataBar, ...]]:
+        """The stored 5-minute bars of `day` of `instruments`, on the price basis, of each
+        session that fits its daily bar (`intraday.on_basis`); none in a `daily` run or without
+        a `bars_5m` store."""
+        store = self.data.intraday
+        if store is None or self.spec.conventions.entry_bars != ENTRY_BARS_5M:
+            return {}
+        scales = {
+            i: scale
+            for i in instruments
+            if (scale := self.view.price_scale(i, day)) is not None and scale > 0
+        }
+        return {
+            i: bars
+            for i, bars in session_bars(store, day, scales).items()
+            if (bar := self.view.bar(i, day)) is not None and on_basis(day, bars, bar.close)
+        }
+
+    def _candidate(self, row: _Row, day: date, prev: date) -> trigger.Candidate:
+        """The live trigger's candidate of `row` on `day`, from the same nightly inputs live
+        reads (`_daily`), its setup levels and, for a pre-open playbook, the day's open."""
+        instrument_id = str(row.instrument_id)
+        playbook = self.config.playbook(row.playbook)
+        bar = self.view.bar(instrument_id, day)
+        daily = self._daily(playbook, instrument_id, day, prev, bar)
+        return trigger.Candidate(
+            bot_id=self.bot_id,
+            strategy_key=self.config.bot,
+            mode=NO_CATALYST_MODE,
+            playbook=playbook,
+            instrument_id=row.instrument_id,
+            symbol=instrument_id,
+            trade_date=day,
+            daily=daily,
+            levels=_levels(row),
+            final_contraction_low=_levels(row).get(trigger.CONTRACTION_LOW),
+            open_price=bar.open if bar is not None and playbook.preopen else None,
+            configured_max_chase_pct=self.chase[playbook.name],
+            daily_results=trigger.daily_trigger_results(
+                playbook, self._setup_bars(instrument_id, prev), day
+            ),
+        )
+
+    def _on_bars(
+        self,
+        day: date,
+        prev: date,
+        rows: Sequence[_Row],
+        bars: Mapping[str, Sequence[DataBar]],
+    ) -> list[_Decision]:
+        """The candidates whose session has 5-minute bars, decided by the live trigger replayed
+        on them (`intraday.replay`): the level with the opening range, the close confirmation,
+        `volume_pace`, the LIMIT entry, the low-of-day stop from the bars up to the trigger and
+        the entry filters are live's. A trigger whose stop cannot be planned is skipped, as on
+        the daily estimate."""
+        candidates = [self._candidate(r, day, prev) for r in rows if str(r.instrument_id) in bars]
+        by_key = {(r.playbook, str(r.instrument_id)): r for r in rows}
+        out: list[_Decision] = []
+        for fired in replay(day, candidates, bars):
+            candidate, planned = fired.candidate, fired.plan
+            row = by_key[(candidate.playbook.name, candidate.symbol)]
+            if planned.entry is None or planned.level is None or planned.stop is None:
                 self._skip(planned.skip or SKIP_BAD_INPUT)
                 continue
-            at = _at(day, _AT_CLOSE_ENTRY if at_close else _AT_ENTRY, n)
-            locked = self._locked(instrument_id, price, bar.high, day)
-            failed, filters = self._entry_filters(
-                playbook, row, daily, (price, stop, level, locked), at
+            bar = self.view.bar(candidate.symbol, day)
+            if bar is None:  # pragma: no cover - `_open_for` and the scan read the same bars
+                continue
+            dip, high = after_trigger(bars[candidate.symbol], fired.at, bar.low)
+            criteria = tuple(
+                {"stage": stage, **outcome.to_json()}
+                for stage, outcomes in (
+                    ("trigger", fired.evaluation.outcomes),
+                    ("entry_filter", planned.filters),
+                )
+                for outcome in outcomes
             )
-            plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close)
-            self._enter(row, bar, plan, prev, at)
+            plan = _EntryPlan(
+                planned.entry,
+                planned.stop,
+                dip,
+                planned.locked_upper_circuit,
+                planned.skip,
+                planned.level,
+                criteria,
+                high=high if high is not None else planned.entry,
+                basis=BASIS_5M,
+            )
+            if candidate.playbook.preopen and _has(candidate.playbook, trigger.CATALYST):
+                self.estimated.add(CATALYST_NOT_EVALUATED)
+            local = fired.at.astimezone(IST)
+            seconds = local.hour * 3600 + local.minute * 60 + local.second
+            out.append(_Decision(row, plan, bar, (seconds, _ZERO), as_utc(fired.at)))
+        return out
 
-    def _level(self, row: HatWatchlistEntry) -> Decimal | None:
+    def _gappers(self, day: date, prev: date) -> list[_Row]:
+        """The day's candidates of the pre-open playbooks, as live's 09:16 gap scan picks them
+        (HAT-BOT-052): in the bot's universe on `day`, open at least the scan's floor over the
+        previous close (`live_entry.gap_floor` of the run's config; a stock's band caps its
+        gap, so the band rule needs no band table here), and the playbook's setup passing on
+        the bars to the previous session (`live_entry.ep_setup_passes`). The regime gate is
+        not applied here: `evaluate_signal` refuses each of their signals while it is off, as
+        live's gate board does."""
+        preopen = [p for p in self.config.playbooks if p.preopen]
+        floor = gap_floor([self.config])
+        if not preopen or floor is None:
+            return []
+        bot = configs_of(self.session).get(Bot, self.bot_id)
+        members = () if bot is None else watchlist.bot_universe_members(self.session, bot, day)
+        found: list[_Row] = []
+        for member in sorted(members, key=str):
+            instrument_id = str(member)
+            bar = self.view.bar(instrument_id, day)
+            prev_close = self.view.prev_close(instrument_id, day)
+            if bar is None or prev_close is None or prev_close <= 0:
+                continue
+            if not meets_gap(bar.open, prev_close, floor):
+                continue
+            history = self._setup_bars(instrument_id, prev)
+            for playbook in preopen:
+                if ep_setup_passes(playbook, history, day, prev):
+                    row = _Row(playbook.name, member, day)
+                    if self._open_for(row, day):
+                        found.append(row)
+        return found
+
+    def _setup_bars(self, instrument_id: str, prev: date) -> pl.DataFrame:
+        """The instrument's bars of the night's scan window (`MarketView.window` of `prev`)."""
+        if self.night_window is None or self.night_window[0] != prev:
+            self.night_window = (prev, self.view.window(prev))
+        frame = self.night_window[1]
+        return frame.filter(pl.col("instrument_id").cast(pl.String) == instrument_id)
+
+    def _decide_ep(self, row: _Row, day: date, prev: date) -> _Decision | None:
+        """A pre-open candidate without 5-minute bars, on the daily estimate calibrated on the
+        5-minute years (`intraday.EP_ESTIMATE`): the playbook's `gap_up`, `early_volume` (the
+        day's whole volume standing in for the volume at the trigger) and daily-bar trigger
+        criteria pass, the bar fires the estimate, and the entry, its level and the low before
+        it are the estimate's; the stop, the entry filters and the circuit state as on any
+        daily estimate. None when it does not fire or is skipped."""
+        instrument_id = str(row.instrument_id)
+        playbook = self.config.playbook(row.playbook)
+        bar = self.view.bar(instrument_id, day)
+        daily = self._daily(playbook, instrument_id, day, prev)
+        if bar is None or daily.tick is None or daily.prev_close is None:
+            self._skip(SKIP_BAD_INPUT)
+            return None
+        if not self._ep_fires(playbook, row, bar, daily, day, prev):
+            return None
+        price = trigger.entry_limit(EP_ESTIMATE.entry(bar.open, bar.high), bar.open, daily.tick)
+        if price > bar.high:
+            return None  # the LIMIT is above anything the day traded
+        level = EP_ESTIMATE.level(price)
+        before = EP_ESTIMATE.low_before(bar.open, bar.low)
+        planned = trigger.entry_stop(playbook, daily, price, (before,), None)
+        if planned.stop is None:
+            self._skip(planned.skip or SKIP_BAD_INPUT)
+            return None
+        at = _at(day, _AT_ENTRY)
+        locked = self._locked(instrument_id, price, bar.high, day)
+        failed, filters = self._entry_filters(
+            playbook, row, daily, (price, planned.stop, level, locked), at
+        )
+        self.estimated.add(EP_TRIGGER_ESTIMATED)
+        if _has(playbook, trigger.CATALYST):
+            self.estimated.add(CATALYST_NOT_EVALUATED)
+        dip = bar.low if bar.low < before else None
+        plan = _EntryPlan(price, planned.stop, dip, locked, failed, level, filters)
+        return _Decision(row, plan, bar, (_EP_SECONDS, _ZERO))
+
+    def _ep_fires(
+        self,
+        playbook: Playbook,
+        row: _Row,
+        bar: Bar,
+        daily: trigger.DailyInputs,
+        day: date,
+        prev: date,
+    ) -> bool:
+        """The estimate's trigger: the bar fires `EP_ESTIMATE`, and every enabled `gap_up`,
+        `early_volume` and daily-bar trigger criterion passes on the daily values."""
+        if not EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close):
+            return False
+        volumes = self.view.volumes_through(str(row.instrument_id), day, 1)
+        volume = int(volumes[-1]) if volumes and math.isfinite(volumes[-1]) else None
+        ctx = replace(
+            trigger.daily_context(_at(day, _AT_ENTRY), daily, {}),
+            open_price=bar.open,
+            cum_volume=volume,
+        )
+        rest = [i for i in playbook.trigger if i.type not in _EP_ESTIMATED_TYPES]
+        results = trigger.daily_trigger_results(
+            playbook, self._setup_bars(str(row.instrument_id), prev), day
+        )
+        evaluation = trigger.evaluate_trigger(
+            playbook.model_copy(update={"trigger": rest}), ctx, NO_CATALYST_MODE, results
+        )
+        return all(o.result.passed for o in evaluation.outcomes if o.blocking)
+
+    def _level(self, row: _Row) -> Decimal | None:
         """The row's trigger level: its playbook's level expression over the row's setup levels
         on daily bars (`trigger.daily_level`, the opening range unavailable, HAT-BT-025)."""
         return trigger.daily_level(self.config.playbook(row.playbook), _levels(row))
 
-    def _fill(
-        self, row: HatWatchlistEntry, bar: Bar, day: date, level: Decimal
-    ) -> Decimal | str | None:
+    def _fill(self, row: _Row, bar: Bar, day: date, level: Decimal) -> Decimal | str | None:
         """The entry fill of the row's `level` under the run's entry fill rule, None when the
         level did not break, or the skip reason when there is no tick to penetrate by
         (HAT-BT-020)."""
@@ -773,7 +1136,7 @@ class _Run:
     def _entry_filters(
         self,
         playbook: Playbook,
-        row: HatWatchlistEntry,
+        row: _Row,
         daily: trigger.DailyInputs,
         entry: tuple[Decimal, Decimal, Decimal, bool | None],
         at: datetime,
@@ -806,13 +1169,13 @@ class _Run:
         days: tuple[date, date],
     ) -> tuple[Decimal, Decimal | None] | str:
         """(the entry day's low before the break, its low after the entry or None), or the skip
-        reason when a low-of-day stop cannot know the low before the break (HAT-BT-020, PR 60)."""
-        day, prev = days
-        intraday = self.data.intraday.get((instrument_id, day), ())
+        reason when a low-of-day stop cannot know the low before the break (HAT-BT-020, PR 60):
+        the daily estimate, the session having no 5-minute bars here."""
+        _, prev = days
         adr20 = self.view.feature(prev, instrument_id, "adr20")
         low_of_day = isinstance(playbook.stop, StopLowOfDay)
         gapped = price == bar.open
-        if low_of_day and not intraday:
+        if low_of_day:
             if gapped:
                 # A gap over enters at the open: its stop needs the opening range's low.
                 return SKIP_GAP_NO_INTRADAY
@@ -821,7 +1184,7 @@ class _Run:
         # The break is at the entry price (level + 1 tick under penetration); a gap over at the
         # open breaks on the first bar either way.
         broke = level if gapped else price
-        before, after = pre_break_low(bar.open, bar.low, broke, adr20, intraday)
+        before, after = pre_break_low(bar.open, bar.low, broke, adr20)
         if gapped and not low_of_day:
             # A gap over enters at the open and then sees the whole day's way down.
             return before, bar.low
@@ -829,7 +1192,7 @@ class _Run:
 
     def _enter(
         self,
-        row: HatWatchlistEntry,
+        row: _Row,
         bar: Bar,
         plan: _EntryPlan,
         prev: date,
@@ -904,6 +1267,8 @@ class _Run:
         )
         if outcome.position_id is None:
             return
+        year = self.entry_bars.setdefault(row.trade_date.year, {})
+        year[plan.basis] = year.get(plan.basis, 0) + 1
         position = self.session.get(HatPosition, outcome.position_id)
         if position is None:  # pragma: no cover - open_entry returned the id it wrote
             return
@@ -911,10 +1276,11 @@ class _Run:
         self.held[position.id] = _Held(instrument_id, day, price, price)
         if plan.at_close:
             return  # entered at the close: the day's path is behind it
+        high = bar.high if plan.high is None else plan.high
         if dip is not None and dip < price:
             # From the entry down to the low: a stop it reaches fills at min(entry, stop).
-            self._down_leg(position, Bar(price, bar.high, dip, bar.close), day, _AT_DIP)
-        self._up_leg(position, price, bar.high, day)
+            self._down_leg(position, Bar(price, high, dip, bar.close), at + timedelta(seconds=1))
+        self._up_leg(position, price, high, day, at + timedelta(seconds=2))
 
     # --- the close, delistings, the period end ------------------------------------------------
 
@@ -1190,6 +1556,8 @@ class _Run:
             skips=skips,
             ambiguous_days=len(self.ambiguous_days),
             lower_circuit_days=len(self.lower_circuit_days),
+            estimated=self.estimated,
+            entry_bars=self.entry_bars,
         )
         metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
         metrics["dividend_income"] = str(self.dividend_cash)

@@ -53,6 +53,8 @@ from .runs import (
 )
 from .slots import SLOT_ORDER_TIME, is_slot_order
 from .spec import (
+    ENTRY_BARS_5M,
+    ENTRY_BARS_RULES,
     INITIAL_EQUITY,
     REGIME_MULT_ONE,
     REGIME_MULT_RULES,
@@ -161,7 +163,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--cooldown-sessions N]
     [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
-    [--regime-mult 1|policy] [--start-capital RUPEES] [--for-promotion] [--set PATH=VALUE ...]
+    [--regime-mult 1|policy] [--start-capital RUPEES] [--entry-bars bars_5m|daily]
+    [--for-promotion] [--set PATH=VALUE ...]
     [--risk-pct P]
     [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
     [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
@@ -182,6 +185,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
     rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
     `--start-capital` is the account's equity on the first day (₹10,00,000 by default).
+    `--entry-bars daily` decides every entry on the daily estimate instead of the stored
+    5-minute bars (a comparison run; refused for promotion).
     Every run first audits its data (`data.audit`) and refuses to start on a failed audit
     (`backtest_data_audit_failed`); a completed run's folder holds its run audit (`audit.json`).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
@@ -223,6 +228,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--sleeve-weight", type=_sleeve_weight_arg, default=None)
     parser.add_argument("--regime-mult", choices=REGIME_MULT_RULES, default=REGIME_MULT_ONE)
     parser.add_argument("--start-capital", type=_capital_arg, default=INITIAL_EQUITY)
+    parser.add_argument("--entry-bars", choices=ENTRY_BARS_RULES, default=ENTRY_BARS_5M)
     parser.add_argument("--for-promotion", action="store_true")
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
@@ -270,6 +276,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                     sleeve_weight=args.sleeve_weight,
                     regime_mult=args.regime_mult,
                     start_capital=args.start_capital,
+                    entry_bars=args.entry_bars,
                     overrides=Overrides(
                         sets=tuple(args.sets),
                         risk_pct=args.risk_pct,

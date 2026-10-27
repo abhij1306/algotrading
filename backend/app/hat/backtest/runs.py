@@ -75,6 +75,7 @@ from .loop import run_backtest
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .run_audit import audit_run
 from .spec import (
+    ENTRY_BARS_5M,
     INITIAL_EQUITY,
     REGIME_MULT_POLICY,
     BacktestError,
@@ -340,7 +341,9 @@ def _load(
         end=period[1],
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
     )
-    used_5m = bool(data.intraday)
+    used_5m = data.intraday is not None and any(
+        s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
+    )
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,
@@ -514,6 +517,7 @@ def _config_doc(
             "regime_mult": c.regime_mult,
             "regime_table": {k: str(v) for k, v in spec.regime_table.items()},
             "start_capital": str(spec.initial_equity),
+            "entry_bars": c.entry_bars,
         },
         "labels": {
             "sweep_id": plan.labels.sweep_id,
@@ -682,6 +686,8 @@ def _execute(
 
     try:
         result = run_backtest(spec, data)
+        # what the run took for estimates, known only now (`spec.known_gaps`)
+        config_doc = {**config_doc, "known_gaps": result.metrics["known_gaps"]}
         resolved_hash = config_hash(resolved_of(spec))
         stats = RunMetrics.from_json(result.metrics).returns
         own = (resolved_hash, None if stats is None else stats.sr)
@@ -844,6 +850,7 @@ VARIANT_KEYS = frozenset(
         "suspension_sessions",
         "regime_mult",
         "start_capital",
+        "entry_bars",
     }
 )
 SWEEP_KEYS = frozenset({"sweep_id", "sweep_name", "variants"})
@@ -871,7 +878,8 @@ def parse_variants(
     `overrides.parse_policy_set`), `policy` (a policy file's path, relative to the working
     directory, read by `read_policy`), `risk_pct`, `max_positions`, `max_per_industry`,
     `flat_ladder` (a boolean), `sleeve_weight`, `slot_order`, `entry_fill`, `ambiguous`,
-    `suspension_sessions`, `regime_mult` and `start_capital` (each replacing the base's), and
+    `suspension_sessions`, `regime_mult`, `start_capital` and `entry_bars` (each replacing the
+    base's), and
     `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise. Each override path, and one change per variant, are checked
@@ -1005,6 +1013,7 @@ def _conventions(
         suspension_sessions=_count(item, "suspension_sessions", base.suspension_sessions) or 0,
         regime_mult=str(item.get("regime_mult", base.regime_mult)),
         start_capital=base.start_capital if capital is None else capital,
+        entry_bars=str(item.get("entry_bars", base.entry_bars)),
     )
 
 
@@ -1249,6 +1258,7 @@ def _replayed(
             sleeve_weight=None if weight is None else exact(weight),
             regime_mult=c["regime_mult"],
             start_capital=exact(c.get("start_capital", str(INITIAL_EQUITY))),
+            entry_bars=c.get("entry_bars", ENTRY_BARS_5M),
         )
         universe = config["universe"]
         target = _Target(

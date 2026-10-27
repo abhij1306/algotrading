@@ -16,6 +16,7 @@ from ..money import require_exact
 __all__ = [
     "breakout_volume_ok",
     "first_trigger",
+    "inferred_band",
     "lower_circuit_locked",
     "pre_break_low",
     "upper_circuit_locked",
@@ -31,26 +32,13 @@ def _acts(rules: Sequence[Any], state: exits.PositionState, price: Decimal) -> b
 
 
 def pre_break_low(
-    bar_open: Decimal,
-    bar_low: Decimal,
-    level: Decimal,
-    adr20: Decimal | None,
-    intraday: Sequence[tuple[Decimal, Decimal]] = (),
+    bar_open: Decimal, bar_low: Decimal, level: Decimal, adr20: Decimal | None
 ) -> tuple[Decimal, Decimal | None]:
     """(the day's low before an entry at `level` broke, its low after the break or None) on an
-    entry day (HAT-BT-020, PR 60). With the session's 5-minute bars: the lowest low of the bars
-    up to and including the first one whose high reaches the level, as live reads it, and the
-    lowest low of the bars after that one (or the day low, when the bars miss it). Without
-    them: max(day low, min(open, level x (1 - adr20 / 100))), and the day low as the low after
-    the break when it is below that; with no `adr20` the whole day's low comes before the
-    break."""
-    if intraday:
-        lows = [low for _, low in intraday]
-        at = next((i for i, (high, _) in enumerate(intraday) if high >= level), len(lows) - 1)
-        # The trigger bar's low counts before the break (the stop is planned from it); a day low
-        # the bars miss is taken as after it.
-        later = [*lows[at + 1 :], *([bar_low] if bar_low < min(lows) else [])]
-        return min(lows[: at + 1]), (min(later) if later else None)
+    entry day estimated from its daily bar (HAT-BT-020, PR 60; a session with 5-minute bars reads
+    them, `intraday.after_trigger`): max(day low, min(open, level x (1 - adr20 / 100))), and the
+    day low as the low after the break when it is below that; with no `adr20` the whole day's
+    low comes before the break."""
     if adr20 is None or adr20 < 0:
         return bar_low, None
     estimate = min(bar_open, level * (1 - adr20 / 100))
@@ -81,6 +69,26 @@ def upper_circuit_locked(
         if upper is not None and upper > prev_close and abs(price - upper) <= tick:
             return True
     return False
+
+
+def inferred_band(
+    high: Decimal, prev_close: Decimal | None, tick: Decimal | None
+) -> Decimal | None:
+    """The price band of a session replayed on 5-minute bars, which the run has no table of: the
+    narrowest NSE band whose upper price (`trigger.upper_circuit_price`) is above the previous
+    close and within one tick of the day's `high`, a high above the previous close (the session
+    reached its circuit), else None, read as no band (nothing in the session was at a circuit).
+    None without a previous close or a tick."""
+    if prev_close is None or prev_close <= 0 or tick is None or tick <= 0 or high <= prev_close:
+        return None
+    for band in NSE_BANDS:
+        daily = trigger.DailyInputs(
+            prev_close=prev_close, tick=tick, band_known=True, band_pct=band
+        )
+        upper = trigger.upper_circuit_price(daily)
+        if upper is not None and upper > prev_close and abs(high - upper) <= tick:
+            return band
+    return None
 
 
 def lower_circuit_locked(

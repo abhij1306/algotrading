@@ -32,7 +32,7 @@ from ..money import exact
 from .report import BacktestResult, LegRow, SignalRow, TradeRow
 from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
-from .spec import BacktestError
+from .spec import BASIS_5M, BacktestError
 from .standard import (
     FORMAT_VERSION,
     NOT_A_SIGNAL,
@@ -403,8 +403,10 @@ def _yearly(
 ) -> list[dict[str, Any]]:
     """Per calendar year: the return of the last close over the year before's (the first
     over the start capital), the year's deepest fall from a peak starting at that base, its
-    exits' count and expectancy, and the benchmark's return over the same closes."""
+    exits' count and expectancy, the benchmark's return over the same closes, and its entries
+    decided on the stored 5-minute bars and on the daily bar (`entry_bars_by_year`)."""
     out = []
+    bases = result.metrics.get("entry_bars_by_year") or {}
     equity = list(result.equity)
     if not equity:
         return out
@@ -416,6 +418,7 @@ def _yearly(
         year_dd = drawdowns(days, base)
         exits = [t for t in trades if t.row.exit_date.year == year]
         last_bench = bench.get(days[-1][0])
+        entered = bases.get(str(year)) or {}
         out.append(
             {
                 "year": year,
@@ -426,6 +429,8 @@ def _yearly(
                 "benchmark_return_pct": _f((last_bench / bench_base - 1) * 100)
                 if last_bench is not None and bench_base
                 else None,
+                "entries_5m": entered.get(BASIS_5M, 0),
+                "entries_daily": sum(n for basis, n in entered.items() if basis != BASIS_5M),
             }
         )
         base = days[-1][1]
@@ -735,6 +740,22 @@ def _stock_rows(signals: Sequence[SignalRow], trades: Sequence[_Trade]) -> list[
     return out
 
 
+def _by_playbook(
+    signals: Sequence[SignalRow], codes: Mapping[int, str], trades: Sequence[_Trade]
+) -> dict[str, Any]:
+    """Per playbook: its signals, its refusals by code and its trades' bucket."""
+    names = sorted({s.playbook for s in signals} | {t.row.playbook for t in trades})
+    out: dict[str, Any] = {}
+    for name in names:
+        refused = Counter(code for n, code in codes.items() if signals[n].playbook == name)
+        out[name] = {
+            "signals": sum(1 for s in signals if s.playbook == name),
+            "refusals": dict(sorted(refused.items())),
+            "trades": _bucket([t for t in trades if t.row.playbook == name]),
+        }
+    return out
+
+
 def build(
     run_id: str, result: BacktestResult, inputs: RunInputs
 ) -> tuple[dict[str, Any], dict[str, str]]:
@@ -786,6 +807,7 @@ def build(
             "by_industry": _group(trades, lambda t: t.features.get("industry")),
             "by_cap_bucket": _group(trades, lambda t: t.features.get("cap_bucket")),
             "by_liquidity_bucket": _group(trades, liquidity),
+            "by_playbook": _by_playbook(signals, codes, trades),
         },
     }
     csvs = {
@@ -820,5 +842,6 @@ def failed_run(inputs: RunInputs) -> dict[str, Any]:
             "by_industry": {},
             "by_cap_bucket": {},
             "by_liquidity_bucket": {},
+            "by_playbook": {},
         },
     }

@@ -4,7 +4,7 @@ recorded fill conventions and their refusals."""
 
 import dataclasses
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import hat_backtest_support as s
@@ -26,6 +26,7 @@ from app.hat.backtest.data import (
 )
 from app.hat.backtest.fillrules import (
     NSE_BANDS,
+    inferred_band,
     lower_circuit_locked,
     pre_break_low,
     upper_circuit_locked,
@@ -41,21 +42,29 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
+from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
+    CATALYST_NOT_EVALUATED,
+    ENTRY_BARS_DAILY,
+    ESTIMATE_GAPS,
+    KNOWN_GAPS,
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
     RESEARCH_SLEEVE_WEIGHT,
     BacktestError,
     RunConventions,
+    known_gaps,
     sleeve_weight,
 )
 from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
+from app.hat.data.bars import Bar as Bar5m
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
 from app.hat.engine.portfolio.universe import Interval, members_on
 from app.hat.engine.stops import floor_to_tick
+from app.hat.time import IST
 
 D = Decimal
 SESSIONS = 34  # 21 warm-up sessions, then 13 simulated ones
@@ -102,40 +111,18 @@ def test_entry_fill_proxy(open_: D, high: D, level: D, tick: D) -> None:
 
 # --- the entry day ---------------------------------------------------------
 
-LOWS = st.lists(st.tuples(PRICE, PRICE), min_size=1, max_size=8)
-
-
 ADR = st.none() | st.integers(0, 2000).map(lambda n: D(n) / 100)
 
 
-@given(LOWS, PRICE, PRICE, ADR, st.booleans())
-@example([(D(12), D(9)), (D(10), D(8))], D(10), D(9), None, False)
-@example([(D(12), D(9))], D(10), D(9), D(5), False)
-@example([(D(12), D(9))], D(10), D(9), None, True)
-def test_pre_break_low(
-    bars: list[tuple[D, D]], open_: D, level: D, adr20: D | None, missed: bool
-) -> None:
-    """With the session's 5-minute bars, the low before the break is the lowest low of the bars
-    read in order until one reaches the level (the last bar when none does), and the low after
-    it is the lowest low of the bars after that one, or the day low when the bars miss it (None
-    when neither). Without them it is max(day low, min(open, level x
+@given(PRICE, PRICE, PRICE, ADR)
+@example(D(10), D(8), D(9), None)
+@example(D(10), D(9), D(9), D(5))
+def test_pre_break_low(open_: D, low: D, level: D, adr20: D | None) -> None:
+    """On the daily estimate the low before the break is max(day low, min(open, level x
     (1 - adr20/100))), and the day low counts as after the break only when it is lower; with no
-    adr20 the whole day's low is before. Either way the lower of the two is the day low. Harm: a
-    low-of-day stop reads the day's low after the entry, which live never knows."""
-    intraday = [(max(a, b), min(a, b)) for a, b in bars]
-    seen: list[D] = []
-    for n, (high, low) in enumerate(intraday):
-        seen.append(low)
-        if high >= level or n == len(intraday) - 1:
-            break
-    floor = min(low for _, low in intraday)
-    bar_low = floor - D("0.01") if missed and floor > D("0.01") else floor
-    before, after = pre_break_low(open_, bar_low, level, adr20, intraday)
-    rest = [low for _, low in intraday[len(seen) :]] + ([bar_low] if bar_low < floor else [])
-    assert before == min(seen)
-    assert after == (min(rest) if rest else None)
-    assert min(before, before if after is None else after) == bar_low
-    day_low = min(open_, *(low for _, low in intraday))
+    adr20 the whole day's low is before. Harm: a low-of-day stop reads the day's low after the
+    entry, which live never knows."""
+    day_low = min(open_, low)
     before, after = pre_break_low(open_, day_low, level, adr20)
     if adr20 is None:
         assert (before, after) == (day_low, None)
@@ -185,6 +172,82 @@ def test_upper_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
     assert upper_circuit_locked(between, between, prev_close, tick) is expected
     assert upper_circuit_locked(upper, upper, None, tick) is None
     assert upper_circuit_locked(upper, upper, prev_close, None) is None
+
+
+@given(PRICE, st.sampled_from(NSE_BANDS), TICKS)
+@example(D(100), D(5), D("0.05"))
+def test_inferred_band(prev_close: D, band: D, tick: D) -> None:
+    """A session replayed on 5-minute bars has the band whose upper price its high reached
+    (within a tick, the narrowest such band), else none: so the live circuit rule reads it as
+    `upper_circuit_locked` reads a daily bar. Harm: an entry at the band is bought, or a free one
+    refused as locked."""
+    upper = _band_upper(prev_close, band, tick)
+    found = inferred_band(upper, prev_close, tick)
+    if upper > prev_close:
+        assert found is not None
+        assert found <= band
+        assert _at_band(upper, upper, prev_close, tick)
+    assert inferred_band(floor_to_tick(prev_close, tick), prev_close, tick) is None
+    assert inferred_band(upper, None, tick) is None
+    assert inferred_band(upper, prev_close, None) is None
+
+
+def test_ep_estimate() -> None:
+    """The pre-open daily estimate: fires on a high at least 1% over the open with the close in
+    the upper half of the range; enters 2.48% over the open (at most the high), breaking a level
+    0.58% under the entry, after a low 4.02% under the open (at least the day's low)."""
+    assert EP_ESTIMATE.fires(D(100), D(101), D(95), D(98))
+    assert not EP_ESTIMATE.fires(D(100), D("100.99"), D(95), D(99))  # high short of 1%
+    assert not EP_ESTIMATE.fires(D(100), D(110), D(90), D("99.99"))  # close in the lower half
+    assert EP_ESTIMATE.entry(D(100), D(110)) == D("102.48")
+    assert EP_ESTIMATE.entry(D(100), D(101)) == D(101)
+    assert EP_ESTIMATE.level(D("100.58")) == D(100)
+    assert EP_ESTIMATE.low_before(D(100), D(90)) == D("95.98")
+    assert EP_ESTIMATE.low_before(D(100), D(97)) == D(97)
+
+
+def _bar(minute: int, high: str, low: str) -> Bar5m:
+    start = datetime(2024, 3, 1, 9, 15, tzinfo=IST) + timedelta(minutes=minute)
+    return Bar5m("X", start, D(low), D(high), D(low), D(high), 100)
+
+
+def test_after_trigger() -> None:
+    """After a trigger on 5-minute bars the day's path is the bars from the trigger bar on: the
+    lowest low and highest high of the bars after it, and a day low no bar shows counts as after
+    the trigger (the adverse order); no later bar, no extremes."""
+    bars = (_bar(0, "101", "99"), _bar(5, "104", "100"), _bar(10, "106", "102"))
+    at = bars[1].final_at  # the second bar fired
+    assert after_trigger(bars, at, D(99)) == (D(102), D(106))
+    assert after_trigger(bars, at, D(98)) == (D(98), D(106))  # a low the bars missed
+    assert after_trigger(bars, bars[2].final_at, D(99)) == (None, None)
+
+
+def test_on_basis() -> None:
+    """A session's 5-minute bars are read only when they fit its daily bar, the data audit's
+    rule: on the IST 5-minute grid inside the session, the last close within 5% of the daily
+    close. Harm: an entry decided on bars of another price basis or another day."""
+    day = date(2024, 3, 1)
+    bars = (_bar(0, "101", "99"), _bar(5, "104", "100"))
+    assert on_basis(day, bars, D(104))
+    assert on_basis(day, bars, D("99.05"))  # 4.99% off
+    assert not on_basis(day, bars, D(110))  # the last close 5.5% off
+    assert not on_basis(day, (), D(104))
+    assert not on_basis(day, (*bars, _bar(7, "104", "100")), D(104))  # off the grid
+    assert not on_basis(day, (*bars, _bar(375, "104", "100")), D(104))  # 15:30, after the session
+    assert not on_basis(date(2024, 3, 2), bars, D(104))  # another day's bars
+
+
+def test_known_gaps_name_only_the_estimates_taken() -> None:
+    """A run's known gaps are the static ones and the estimates it took; one that did not finish
+    may have taken any; `daily` runs are refused for promotion."""
+    spec = s.spec(s.config(), DAYS)
+    assert known_gaps(spec, ()) == list(KNOWN_GAPS)
+    assert known_gaps(spec, {CATALYST_NOT_EVALUATED}) == [*KNOWN_GAPS, CATALYST_NOT_EVALUATED]
+    assert known_gaps(spec) == [*KNOWN_GAPS, *ESTIMATE_GAPS]
+    with pytest.raises(BacktestError, match="backtest_promotion_daily_only"):
+        dataclasses.replace(PROMOTED, entry_bars=ENTRY_BARS_DAILY).check_promotion(
+            DEFAULT_SLIPPAGE_BPS
+        )
 
 
 @given(PRICE, PRICE, PRICE)

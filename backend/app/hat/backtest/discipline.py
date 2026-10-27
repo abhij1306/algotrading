@@ -77,6 +77,7 @@ def knobs_of(
         "suspension_sessions": conventions.suspension_sessions,
         "regime_mult": conventions.regime_mult,
         "start_capital": conventions.start_capital,
+        "entry_bars": conventions.entry_bars,
         "slippage_bps": slippage_bps,
         "cost_model": cost_model,
         "cooldown_sessions": cooldown_sessions,

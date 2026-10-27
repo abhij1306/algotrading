@@ -16,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -44,10 +44,19 @@ from .overrides import Overrides
 from .slots import SLOT_ORDER_TIME, is_slot_order
 
 __all__ = [
+    "CATALYST_NOT_EVALUATED",
+    "ENTRY_BARS_5M",
+    "ENTRY_BARS_DAILY",
+    "ENTRY_BARS_RULES",
     "ENTRY_DAY_LOW",
+    "ENTRY_DAY_LOW_ESTIMATED",
+    "EP_TRIGGER_ESTIMATED",
+    "ESTIMATE_GAPS",
+    "GAP_OVER_AT_OPEN",
     "GAP_PLAYBOOKS",
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
+    "LEVEL_BREAK_ESTIMATED",
     "LOWER_CIRCUIT_RULE",
     "REGIME_MULT_ONE",
     "REGIME_MULT_POLICY",
@@ -67,13 +76,9 @@ INITIAL_EQUITY = Decimal(1_000_000)
 # The weight a research run sizes a sleeve at when the policy gives it none (`sleeve_weight`):
 # the seed policy's weight of a sleeve it trades.
 RESEARCH_SLEEVE_WEIGHT = Decimal("0.5")
-# What the daily-bar loop does not model, by fixed code (HAT-BT-070); measured in shadow.
+# What the loop does not model, by fixed code (HAT-BT-070); measured in shadow. Every run records
+# these; `ESTIMATE_GAPS` only when it approximated them.
 KNOWN_GAPS = (
-    # volume_pace and the opening range need intraday bars: a playbook with an enabled
-    # `volume_pace` trigger has trades live would refuse (`GAP_PLAYBOOKS`); under `entry_timing:
-    # daily_close` the breakout volume test (`volume_vs_avg`) is the backtestable stand-in
-    "trigger_is_level_break_only",
-    "episodic_pivot_not_backtested",  # every pre-open playbook (`GAP_PLAYBOOKS`)
     "close_exits_at_official_close",
     # the close rules decide and fill on the daily close: the auction price stands in for the
     # price live acts on before the 15:15 cut-off, a small, consistent bias (owner 2026-10-25)
@@ -83,10 +88,8 @@ KNOWN_GAPS = (
     # (`auction_risk`) and counted (`auction_risk_exits`) so they can be discounted
     "close_bias_large_on_expiry_and_rebalance_days",
     "kill_switches_not_simulated",
-    "gap_over_fills_at_open",  # live fills at the first tick after the open
     "upper_circuit_inferred_from_bar",  # O=H=C at an NSE band (lower: O=H=L=C, PR 64)
     "multipliers_fixed_at_one",  # health is 1; regime too unless `regime_mult` is `policy`
-    "entry_day_low_estimated",  # without bars_5m the pre-break low is the adr20 estimate
     # no regime table is fitted to each style: S1-S3 name the `momentum` profile
     # (`registry.Strategy.regime`), and the EMA pullback (S4) and RSI(2) mean-reversion (S5)
     # profiles have no stored row, so they size under the most conservative one (today momentum's)
@@ -99,6 +102,38 @@ KNOWN_GAPS = (
     # the price before the 15:15 cut-off) and live does not trade it (`GAP_PLAYBOOKS`)
     "daily_close_entry_not_live",
 )
+# A session's entries follow the live trigger on its stored 5-minute bars (`intraday`); without
+# them (no bars stored, or a `daily` run) they are estimated from the daily bar, and the run
+# records what it estimated, by fixed code:
+# an intraday break taken as the daily high's break of the setup level, without the opening
+# range, the close confirmation or `volume_pace` (a playbook with an enabled `volume_pace` is
+# one live would refuse more often: `GAP_PLAYBOOKS`)
+LEVEL_BREAK_ESTIMATED = "trigger_is_level_break_only"
+ENTRY_DAY_LOW_ESTIMATED = "entry_day_low_estimated"  # the pre-break low is the adr20 estimate
+GAP_OVER_AT_OPEN = "gap_over_fills_at_open"  # live fills at the first tick after the open
+# a pre-open playbook's trigger (opening-range break, early volume) estimated from the daily
+# bar with the constants calibrated on the 5-minute years (`intraday.EP_ESTIMATE`)
+EP_TRIGGER_ESTIMATED = "episodic_pivot_trigger_estimated"
+# `catalyst_attached` has no announcements to read before the store's (none stored, no results
+# dates): never blocking in a run, the gap and the early volume stand in for it
+CATALYST_NOT_EVALUATED = "catalyst_not_evaluated"
+ESTIMATE_GAPS = (
+    LEVEL_BREAK_ESTIMATED,
+    ENTRY_DAY_LOW_ESTIMATED,
+    GAP_OVER_AT_OPEN,
+    EP_TRIGGER_ESTIMATED,
+    CATALYST_NOT_EVALUATED,
+)
+# How a run decides a session's entries (`RunConventions.entry_bars`).
+ENTRY_BARS_5M = "bars_5m"  # the default: the live trigger on the stored 5-minute bars
+ENTRY_BARS_DAILY = "daily"  # the variant: the daily estimate everywhere, to compare the models
+ENTRY_BARS_RULES = (ENTRY_BARS_5M, ENTRY_BARS_DAILY)
+TRIGGER_5M = "bars_5m_live_trigger_else_daily_bar_level_break"
+# What decided an entry (`entry_bars_by_year`): the session's 5-minute bars, the daily estimate,
+# or the daily close of a `daily_close` playbook.
+BASIS_5M = "bars_5m"
+BASIS_DAILY = "daily"
+BASIS_CLOSE = "close"
 
 
 def _preopen(playbook: Playbook) -> bool:
@@ -117,16 +152,20 @@ def _daily_close(playbook: Playbook) -> bool:
 
 
 # The playbooks a known gap names, by what they use rather than by name: the lifecycle gate
-# refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061). The stored
-# code `episodic_pivot_not_backtested` names every pre-open playbook (`Playbook.preopen`), whatever
-# it is called; `trigger_is_level_break_only` every one with an enabled `volume_pace` trigger
-# (every run has recorded that code, so a run made before it named any playbook names them too),
-# and `daily_close_entry_not_live` every one whose level trigger enters at the daily close (a
-# timing no earlier version could hold). A gap not listed here names no playbook: it holds for all
-# of them alike, a measured approximation of the daily-bar loop, and blocks none.
+# refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061).
+# `episodic_pivot_trigger_estimated` names every pre-open playbook (`Playbook.preopen`), whatever
+# it is called, and `episodic_pivot_not_backtested` too (no run records it now; a stored run made
+# before the episodic pivot was backtested holds it); `trigger_is_level_break_only` every one with
+# an enabled `volume_pace` trigger (a run made before it named any playbook names them too), and
+# `daily_close_entry_not_live` every one whose level trigger enters at the daily close (a timing
+# no earlier version could hold). A gap not listed here names no playbook: it holds for all of
+# them alike, a measured approximation of the loop, and blocks none; `catalyst_not_evaluated`
+# among them, so a pre-open entry decided on 5-minute bars whose only gap is the catalyst is
+# evidence.
 GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
+    EP_TRIGGER_ESTIMATED: _preopen,
     "episodic_pivot_not_backtested": _preopen,
-    "trigger_is_level_break_only": _volume_pace,
+    LEVEL_BREAK_ESTIMATED: _volume_pace,
     "daily_close_entry_not_live": _daily_close,
 }
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
@@ -170,6 +209,7 @@ class RunConventions:
     sleeve_weight: Decimal | None = None
     regime_mult: str = REGIME_MULT_ONE  # `policy` applies the live regime engine
     start_capital: Decimal = INITIAL_EQUITY
+    entry_bars: str = ENTRY_BARS_5M  # `daily` decides every entry on the daily estimate
     # the run's config and policy overrides (`overrides`), already applied to its spec
     overrides: Overrides = field(default_factory=Overrides, hash=False)
 
@@ -199,6 +239,8 @@ class RunConventions:
             raise BacktestError("backtest_bad_start_capital")
         if not isinstance(self.overrides, Overrides):
             raise BacktestError("backtest_bad_override")
+        if self.entry_bars not in ENTRY_BARS_RULES:
+            raise BacktestError("backtest_bad_entry_bars")
 
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
@@ -219,6 +261,8 @@ class RunConventions:
             raise BacktestError("backtest_promotion_regime_variant")
         if not self.overrides.empty:  # the evidence is of the version's own config and policy
             raise BacktestError("backtest_promotion_with_overrides")
+        if self.entry_bars != ENTRY_BARS_5M:  # live triggers on 5-minute bars
+            raise BacktestError("backtest_promotion_daily_only")
 
     def record(
         self,
@@ -236,7 +280,7 @@ class RunConventions:
             "fill_path": FILL_PATH,
             "entry_fill_rule": self.entry_fill_rule,
             "gap_through_rule": GAP_THROUGH_RULE,
-            "trigger_proxy": TRIGGER_PROXY,
+            "trigger_proxy": TRIGGER_5M if self.entry_bars == ENTRY_BARS_5M else TRIGGER_PROXY,
             # normalised, so 20 and 20.0 bps record (and hash) alike
             "slippage_bps": format(abs(fills.slippage_bps).normalize(), "f"),  # -0 is 0
             # the version and the digest of each dated file in force in the run's window
@@ -326,9 +370,16 @@ def sleeve_weight(spec: RunSpec) -> Decimal:
     return weight
 
 
-def known_gaps(spec: RunSpec) -> list[str]:
-    """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, and the touch fill under `touch`."""
-    return [*KNOWN_GAPS, *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else [])]
+def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[str]:
+    """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
+    of them when not known yet: a run that did not finish may have any), and the touch fill
+    under `touch`."""
+    found = set(ESTIMATE_GAPS if estimated is None else estimated)
+    return [
+        *KNOWN_GAPS,
+        *(code for code in ESTIMATE_GAPS if code in found),
+        *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
+    ]
 
 
 def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:
