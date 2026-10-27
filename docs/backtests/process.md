@@ -211,6 +211,7 @@ line flag sets the same for one run or every variant.
 | Entry filters | `set: ['playbooks[default].entry_filters[max_chase].params.pct=2']`, `...[adtr_filter].params.max_multiple=1` (a very wide chase, e.g. 100, is off) | `--set` |
 | Initial stop and its cap | `set: ['playbooks[default].stop={"rule": "atr_multiple", "days": 14, "multiple": 2, "max_pct": 8}']`, `...stop.max_pct=10` | `--set` |
 | Exits (partial, breakeven, step trail, SMA/EMA close, swing low, ATR trail, time stop, early failure, max hold) | `set: ['exits[step_trail].step_r=1.5', 'exits[time_stop].enabled=false', 'exits[+]={"rule": "early_failure", "days": 5}']` | `--set` |
+| SMA exit grace window (no SMA exit in the first N sessions after the entry session; stops still act; unset = off) | `set: ['exits[close_below_sma].grace_sessions=10']` | `--set` |
 | Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100` | `--set` |
 | Regime sizing (1 or the live regime engine) | `regime_mult: policy` | `--regime-mult` |
 | Risk per trade | `risk_pct: 0.005` | `--risk-pct` |
@@ -220,10 +221,11 @@ line flag sets the same for one run or every variant.
 | Ladder off (one size from day one) | `flat_ladder: true` | `--flat-ladder` |
 | Ladder levels, open risk, cluster cap, entries and stopouts per day, cooldown, ADV cap, multiplier bounds | `policy_set: ['exposure_ladder.L2.max_positions=6', 'global_open_risk_pct=0.06', 'cooldown_sessions=5']` | `--set-policy`, `--cooldown-sessions` (wins over the policy's) |
 | A whole candidate policy | `policy: cand.yaml` | `--policy` |
-| Slot order of a capped day | `slot_order: score` | `--slot-order` |
+| Slot order of a capped day: `time` (default), `score`, `rs` (the signal night's `rs_weighted`, highest first; promotion allows `time` and `rs`), `random:K` | `slot_order: rs` | `--slot-order` |
 | Entry fill rule, ambiguous days, suspension markdown | `entry_fill: touch`, `ambiguous: pessimistic`, `suspension_sessions: 3` | `--entry-fill`, `--ambiguous`, `--suspension-sessions` |
 | Start capital | `start_capital: 2500000` | `--start-capital` |
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
+| `volume_pace` on the full day's volume on 5-minute sessions too (the daily estimate always uses it; a look-ahead, known gap `volume_pace_on_full_day_volume`) | `volume_pace: full_day` | `--volume-pace` |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
 | Universe, window | one sweep per value (a sweep reads one market) | `--universe`, `--from`, `--to` |
 

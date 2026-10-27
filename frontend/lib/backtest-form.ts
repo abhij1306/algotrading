@@ -21,7 +21,7 @@ export const EXIT_FIELDS: Readonly<Record<string, readonly string[]>> = {
   step_trail: ["step_r", "move_r"],
   partial_at_r: ["at_r", "sell_fraction"],
   partial_after_days: ["days", "sell_fraction"],
-  close_below_sma: ["sma", "sell_fraction", "start_r"],
+  close_below_sma: ["sma", "sell_fraction", "start_r", "grace_sessions"],
   close_above_sma: ["sma", "sell_fraction"],
   close_below_ema: ["ema", "sell_fraction", "start_r"],
   trailing_swing_low: ["lookback_days", "sell_fraction", "start_r"],
@@ -51,11 +51,14 @@ export const ADDABLE: Readonly<Record<string, Readonly<Record<string, number>>>>
   close_below_ema: { ema: 21 },
 };
 
-const WHOLE = new Set(["days", "sma", "ema", "lookback_days", "buffer_ticks"]);
-// The optional settings: a trail's start, and the stop-width cap of the rules without their own.
+const WHOLE = new Set(["days", "sma", "ema", "lookback_days", "buffer_ticks", "grace_sessions"]);
+// The optional settings: a trail's start, the SMA exit's grace window, and the stop-width cap of
+// the rules without their own.
 const NULLABLE_STOP_CAP = new Set(["low_of_day", "atr_multiple", "swing_low"]);
 const nullable = (rule: string, name: string) =>
-  name === "start_r" || (name === "max_pct" && NULLABLE_STOP_CAP.has(rule));
+  name === "start_r" ||
+  name === "grace_sessions" ||
+  (name === "max_pct" && NULLABLE_STOP_CAP.has(rule));
 
 export type Field = Readonly<{
   path: string; // the override path
@@ -141,7 +144,7 @@ export type Draft = {
   sleeveWeight: string;
   riskPct: string;
   maxPositions: string;
-  slotOrder: string; // "time", "score" or "random"
+  slotOrder: string; // "time", "score", "rs" or "random"
   seed: string; // K of random:K
   values: Record<string, string>;
   added: string[];

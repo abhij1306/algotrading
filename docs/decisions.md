@@ -97,8 +97,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   close above the level (`daily_close`), filled at the official close as the close-phase exits are.
   A breakout volume test (`volume_vs_avg`) exists only at the close, where the day's volume is
   known; an intraday break refuses it rather than read the full day's volume. Live does not trade
-  `daily_close` (the trigger fails closed) and `volume_pace` is not backtested: each is a known
-  gap that names the playbook and blocks its promotion (`GAP_PLAYBOOKS`).
+  `daily_close` (the trigger fails closed): a known gap that names the playbook and blocks its
+  promotion (`GAP_PLAYBOOKS`).
+- **`volume_pace` in the backtest (owner 2026-10-27, S1 book decision 7).** A 5-minute session
+  replays live's pace. The daily estimate judges an enabled `volume_pace` on the full day's volume
+  >= `vs_avg50` x the 50-session mean through the previous session (skips `volume_pace_low`,
+  `volume_pace_missing`); `--volume-pace full_day` applies that rule to the 5-minute sessions
+  too. Both read volume live does not know at the trigger: the known gap
+  `volume_pace_on_full_day_volume` names the playbook and blocks its promotion.
+- **RS slot order (owner 2026-10-27, S1 book).** `slot_order: rs` gives a capped day's surplus
+  triggers the open slots by the signal night's `rs_weighted`, highest first. A promotion run may
+  use it as well as `time`: no invariant ties evidence to the trigger-time order, and it is the
+  book's sizing rule. Live still takes triggers as they fire, so on a capped day such evidence can
+  differ from live until live ranks the same way.
 - **Sleeves and regime.** The unit is a sleeve (strategy version x universe version), base weights
   50/50 (S3, S4, S5 0). A rules-based regime (trend, India VIX, breadth; 4 states, 3-day confirm) scales weights
   within [0.25, 1.0] and blocks new entries only; it never promotes or retires a sleeve.

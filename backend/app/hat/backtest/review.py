@@ -353,7 +353,9 @@ def request_text(
         "3. Overfitting: the trial count (prior trials included) and budget, `dsr_prob` at"
         " `dsr_n_trials_effective`, `pbo`, the plateau rows, and whether the hold-out was read"
         " more than once.",
-        "4. Robustness: `by_year`, `by_regime`, concentration (`top5_trades_pnl_share_pct`,"
+        "4. Robustness: `by_year` (`return_pct` is mark-to-market; read the trades by entry"
+        " year, `trades_entered` and `expectancy_r_by_entry`, beside those by exit year and"
+        " `realized_pnl_by_exit`), `by_regime`, concentration (`top5_trades_pnl_share_pct`,"
         " `cagr_ex_top5_trades_pct`, `stocks.csv`), liquidity (`position_pct_adv`), costs.",
         "5. Realism: the fills against `config.json` conventions and known gaps"
         " (`known_gaps`), refusals that would change the result (`refusals.csv` forward R).",

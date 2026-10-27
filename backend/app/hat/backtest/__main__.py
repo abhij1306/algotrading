@@ -58,6 +58,8 @@ from .spec import (
     INITIAL_EQUITY,
     REGIME_MULT_ONE,
     REGIME_MULT_RULES,
+    VOLUME_PACE_LIVE,
+    VOLUME_PACE_RULES,
     BacktestError,
     RunConventions,
 )
@@ -65,7 +67,7 @@ from .spec import (
 
 def _slot_order_arg(text: str) -> str:  # pragma: no cover - the command line
     if not is_slot_order(text):
-        raise argparse.ArgumentTypeError("time, score or random:K (K a whole number)")
+        raise argparse.ArgumentTypeError("time, score, rs or random:K (K a whole number)")
     return text
 
 
@@ -161,10 +163,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.backtest (--bot <id> | --strategy-version <id> --universe <id|name>)
     --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME]
     [--cooldown-sessions N]
-    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|random:K]
+    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|rs|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--start-capital RUPEES] [--entry-bars bars_5m|daily]
-    [--for-promotion] [--set PATH=VALUE ...]
+    [--volume-pace live|full_day] [--for-promotion] [--set PATH=VALUE ...]
     [--risk-pct P]
     [--max-positions N] [--max-per-industry N] [--flat-ladder] [--policy FILE]
     [--set-policy PATH=VALUE ...] [--split in_sample|hold_out] [--validates RUN_ID]
@@ -175,18 +177,21 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
     Parquet store under `HAT_DATA_ROOT`, and publishes `backtests/runs/<run_id>/` (`folder`).
-    Prints the run id, status, trade count and DSR. The database is read in a read-only
-    transaction. The slippage defaults to 20 bps; `--for-promotion` marks a run under the
-    conventions live trades by, and is refused at a slippage of 0 (PR 62). A capped day's slots
-    go in the estimated trigger order (`--slot-order time`, PR 63). `--ambiguous pessimistic`
-    fills a raised stop the day's low reached; a bar-less position is marked down after
-    `--suspension-sessions` sessions (PR 64). Entries are sized from the sleeve's nightly
-    allocation at `--sleeve-weight` (the policy's base weight by default; a research run of a
-    sleeve the policy gives no weight sizes at `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime
-    rule `--regime-mult` (PR 68); a `--for-promotion` run needs `--regime-mult policy` (PR 69).
-    `--start-capital` is the account's equity on the first day (₹10,00,000 by default).
-    `--entry-bars daily` decides every entry on the daily estimate instead of the stored
-    5-minute bars (a comparison run; refused for promotion).
+    Prints the run id, status, trade count and DSR. The database is read in a read-only transaction.
+    The slippage defaults to 20 bps; `--for-promotion` marks a run under the conventions live trades
+    by, and is refused at a slippage of 0 (PR 62). A capped day's slots go in the estimated trigger
+    order (`--slot-order time`, PR 63; `rs`, the signal night's `rs_weighted` highest first, is the
+    other order a promotion run may use). `--ambiguous pessimistic` fills a raised stop the day's
+    low reached; a bar-less position is marked down after `--suspension-sessions` sessions (PR 64).
+    Entries are sized from the sleeve's nightly allocation at `--sleeve-weight` (the policy's base
+    weight by default; a research run of a sleeve the policy gives no weight sizes at
+    `spec.RESEARCH_SLEEVE_WEIGHT`) under the regime rule `--regime-mult` (PR 68); a
+    `--for-promotion` run needs `--regime-mult policy` (PR 69). `--start-capital` is the account's
+    equity on the first day (₹10,00,000 by default). `--entry-bars daily` decides every entry on the
+    daily estimate instead of the stored 5-minute bars (a comparison run; refused for promotion).
+    `--volume-pace full_day` judges an enabled `volume_pace` on the full day's volume on the
+    5-minute sessions too, as the daily estimate always does (a look-ahead, recorded as a known
+    gap).
     Every run first audits its data (`data.audit`) and refuses to start on a failed audit
     (`backtest_data_audit_failed`); a completed run's folder holds its run audit (`audit.json`).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
@@ -229,6 +234,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--regime-mult", choices=REGIME_MULT_RULES, default=REGIME_MULT_ONE)
     parser.add_argument("--start-capital", type=_capital_arg, default=INITIAL_EQUITY)
     parser.add_argument("--entry-bars", choices=ENTRY_BARS_RULES, default=ENTRY_BARS_5M)
+    parser.add_argument("--volume-pace", choices=VOLUME_PACE_RULES, default=VOLUME_PACE_LIVE)
     parser.add_argument("--for-promotion", action="store_true")
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
@@ -277,6 +283,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                     regime_mult=args.regime_mult,
                     start_capital=args.start_capital,
                     entry_bars=args.entry_bars,
+                    volume_pace=args.volume_pace,
                     overrides=Overrides(
                         sets=tuple(args.sets),
                         risk_pct=args.risk_pct,

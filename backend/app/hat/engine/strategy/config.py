@@ -349,8 +349,12 @@ class ExitVsSma(Model):
 
 
 class ExitCloseBelowSma(ExitVsSma):
+    """`grace_sessions` N: no exit in the first N sessions after the entry session (the stops
+    still act); unset, the rule acts from the entry. Left out of the canonical form when unset."""
+
     rule: Literal["close_below_sma"]
     start_r: float | None = TrailStart
+    grace_sessions: int | None = Field(default=None, ge=1, le=252, exclude_if=lambda v: v is None)
 
 
 class ExitCloseAboveSma(ExitVsSma):

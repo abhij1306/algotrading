@@ -6,13 +6,16 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import uuid
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.hat.backtest import evidence, folder, standard, trials
+from app.hat.backtest.report import TradeRow
 from app.hat.backtest.signal_features import vcp_extras
 from app.hat.backtest.spec import BacktestError
 from app.hat.risk.decision import Reason
@@ -326,3 +329,42 @@ def test_trade_keys_take_a_trade_once_with_its_last_sale(tmp_path: Path) -> None
         ("INFY", date(2020, 1, 2), date(2020, 2, 3)),
         ("TCS", date(2020, 1, 5), date(2020, 1, 20)),
     ]
+
+
+def _closed(entry: date, exit_: date, r: str, pnl: str) -> folder._Trade:
+    row = TradeRow(
+        entry, exit_, "default", "VAKRANGEE", 10, D(100), D(90), "close_below_sma", D(pnl), D(0),
+        D(r), D(0), D(0), 0, uuid.uuid4(), uuid.uuid4(),
+    )  # fmt: skip
+    return folder._Trade(1, row, None, "sma", {}, 0)
+
+
+def test_by_year_names_each_basis_and_splits_a_trade_over_the_year_end() -> None:
+    """Run 01a17ca4's case: a +41.5R trade entered 2017-01-12 and sold 2018-01-31 counts by its
+    entry in 2017 and by its exit (and its realized P&L) in 2018, while its open profit marks
+    2017's return; 2018's loser counts in 2018 on both bases."""
+    long_ = _closed(date(2017, 1, 12), date(2018, 1, 31), "41.5", "461000")
+    loser = _closed(date(2018, 3, 1), date(2018, 3, 9), "-1", "-5000")
+    equity = [(date(2017, 1, 12), D(1_000_000)), (date(2017, 12, 29), D(1_600_000)),
+              (date(2018, 12, 31), D(1_456_000))]  # fmt: skip
+    result = SimpleNamespace(metrics={}, equity=equity)
+    y2017, y2018 = folder._yearly(result, D(1_000_000), [long_, loser], [])  # type: ignore[arg-type]
+    assert y2017 == y2017 | {
+        "year": 2017,
+        "return_pct": 60.0,
+        "trades_entered": 1,
+        "expectancy_r_by_entry": 41.5,
+        "trades_exited": 0,
+        "expectancy_r_by_exit": None,
+        "realized_pnl_by_exit": 0.0,
+    }
+    assert y2018 == y2018 | {
+        "year": 2018,
+        "return_pct": -9.0,
+        "trades_entered": 1,
+        "expectancy_r_by_entry": -1.0,
+        "trades_exited": 2,
+        "expectancy_r_by_exit": 20.25,
+        "realized_pnl_by_exit": 456000.0,
+    }
+    assert not {"trades", "expectancy_r"} & set(y2017)

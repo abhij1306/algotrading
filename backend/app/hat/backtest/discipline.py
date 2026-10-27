@@ -30,7 +30,7 @@ from typing import Any
 from ..confighash import canonical_json, config_hash
 from . import folder
 from .overrides import OverrideError, policy_digest, set_path
-from .spec import BacktestError, RunConventions
+from .spec import VOLUME_PACE_LIVE, BacktestError, RunConventions
 
 __all__ = [
     "HOLD_OUT",
@@ -60,7 +60,9 @@ def knobs_of(
     cooldown_sessions: int | None,
 ) -> dict[str, str]:
     """A run's knobs by name (`set:<path>`, `policy_set:<path>`, `policy`, a convention's name),
-    each value as one text; a path set twice keeps its last value, as the run applies them."""
+    each value as one text; a path set twice keeps its last value, as the run applies them.
+    `volume_pace` is a knob only off its default, so a base recorded before it existed compares
+    alike."""
     o = conventions.overrides
     out: dict[str, str] = {f"set:{path}": _text(value) for path, value in o.sets}
     out |= {f"policy_set:{path}": _text(value) for path, value in o.policy_sets}
@@ -82,6 +84,8 @@ def knobs_of(
         "cost_model": cost_model,
         "cooldown_sessions": cooldown_sessions,
     }
+    if conventions.volume_pace != VOLUME_PACE_LIVE:
+        named["volume_pace"] = conventions.volume_pace
     return out | {name: _text(value) for name, value in named.items()}
 
 

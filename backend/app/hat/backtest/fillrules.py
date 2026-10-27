@@ -1,7 +1,7 @@
 """The pure fill rules of the day loop that read a daily bar (HAT-BT-020, HAT-BT-021,
 HAT-BT-025): the entry day's low before the break, the upper and lower circuit inferred from a
-bar, the first price on a day's way up at which the live exit rules act, and the close entry's
-breakout volume test."""
+bar, the first price on a day's way up at which the live exit rules act, the close entry's
+breakout volume test and `volume_pace` on the full day's volume."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from ..money import require_exact
 __all__ = [
     "breakout_volume_ok",
     "first_trigger",
+    "full_day_pace_skip",
     "inferred_band",
     "lower_circuit_locked",
     "pre_break_low",
@@ -24,6 +25,9 @@ __all__ = [
 
 # The NSE price bands an upper circuit is inferred at when the run has no band table (PR 61).
 NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
+# `volume_pace` on the full day's volume: too little (live's reason), or the volumes are missing
+SKIP_PACE_LOW = trigger.PACE_LOW
+SKIP_PACE_MISSING = "volume_pace_missing"
 
 
 def _acts(rules: Sequence[Any], state: exits.PositionState, price: Decimal) -> bool:
@@ -128,6 +132,17 @@ def breakout_volume_ok(volumes: Sequence[float], days: int, multiple: float) -> 
     if prior <= 0:
         return None
     return exact[-1] * days >= require_exact(multiple, "multiple", floats=True) * prior
+
+
+def full_day_pace_skip(volumes: Sequence[float], multiple: float) -> str | None:
+    """`volume_pace` judged on the full day's volume (a look-ahead: live knows only the volume
+    up to its trigger): None when the last of `volumes`, the day's, is at least `multiple` x the
+    mean of the `AVG_VOLUME_DAYS` sessions before it (live's 50-day average through the previous
+    session), else the skip reason, `volume_pace_missing` when those volumes are not all there."""
+    ok = breakout_volume_ok(volumes, trigger.AVG_VOLUME_DAYS, multiple)
+    if ok is None:
+        return SKIP_PACE_MISSING
+    return None if ok else SKIP_PACE_LOW
 
 
 def first_trigger(

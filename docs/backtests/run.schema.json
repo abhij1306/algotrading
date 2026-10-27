@@ -53,7 +53,7 @@
   },
   "properties": {
     "format_version": {
-      "const": "1.4"
+      "const": "1.5"
     },
     "identity": {
       "type": "object",
@@ -527,9 +527,12 @@
               "year",
               "return_pct",
               "max_dd_pct",
-              "trades",
-              "expectancy_r",
-              "benchmark_return_pct"
+              "benchmark_return_pct",
+              "trades_entered",
+              "expectancy_r_by_entry",
+              "trades_exited",
+              "expectancy_r_by_exit",
+              "realized_pnl_by_exit"
             ],
             "properties": {
               "year": {
@@ -541,14 +544,23 @@
               "max_dd_pct": {
                 "$ref": "#/$defs/num"
               },
-              "trades": {
-                "type": "integer"
-              },
-              "expectancy_r": {
-                "$ref": "#/$defs/num"
-              },
               "benchmark_return_pct": {
                 "$ref": "#/$defs/num"
+              },
+              "trades_entered": {
+                "type": "integer"
+              },
+              "expectancy_r_by_entry": {
+                "$ref": "#/$defs/num"
+              },
+              "trades_exited": {
+                "type": "integer"
+              },
+              "expectancy_r_by_exit": {
+                "$ref": "#/$defs/num"
+              },
+              "realized_pnl_by_exit": {
+                "type": "number"
               },
               "entries_5m": {
                 "type": "integer"

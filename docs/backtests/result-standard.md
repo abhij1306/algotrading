@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.4
+# Backtest Result Standard v1.5
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.4 changes amend them, a
-later one winning where they differ. `format_version` is `1.4` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.5 changes amend them, a
+later one winning where they differ. `format_version` is `1.5` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -90,9 +90,10 @@ Whether the change actually did anything. Required for every variant with a base
 - `no_op`: true when the trade list hash matches the base
 
 ### breakdowns
-- `by_year`: per calendar year: return %, max DD %, trades, expectancy R, benchmark return %,
-  and the entries decided on stored 5-minute bars and on the daily estimate (`entries_5m`,
-  `entries_daily`)
+- `by_year`: per calendar year: return % (mark-to-market), max DD %, benchmark return %, the
+  closed trades by entry year (`trades_entered`, `expectancy_r_by_entry`) and by exit year
+  (`trades_exited`, `expectancy_r_by_exit`, `realized_pnl_by_exit`), and the entries decided on
+  stored 5-minute bars and on the daily estimate (`entries_5m`, `entries_daily`)
 - `by_regime`: per regime state at entry (index on/off, breadth bucket): trades, win %, expectancy R
 - `by_exit_reason`: per exit reason: trades, avg R, avg hold sessions
 - `by_industry`: per industry: trades, win %, expectancy R, net P&L
@@ -376,3 +377,17 @@ never deletes the registry.
 
 **audit.json.** `equity_jumps` counts a position opened and closed in the same session (a
 same-day round trip, at its entry value) as held that session.
+
+---
+
+## v1.5 changes
+
+**by_year.** `trades` and `expectancy_r` (the trades exiting that year, beside a mark-to-market
+return, with no label) are replaced by fields named by their basis: `trades_entered` and
+`expectancy_r_by_entry` (the closed trades entered that year), `trades_exited`,
+`expectancy_r_by_exit` and `realized_pnl_by_exit` (those whose last sale was that year).
+`return_pct` stays mark-to-market, so a trade held over a year end marks both years' return,
+counts by entry in the first and by exit in the second.
+
+**conventions.** `slot_order` may be `rs`; `volume_pace: full_day` is recorded only when a run
+asks for it (a default run keeps its digest). Known gap `volume_pace_on_full_day_volume`.

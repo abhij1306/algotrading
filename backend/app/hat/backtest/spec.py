@@ -5,10 +5,11 @@ it, and it imports none of them.
 A run is one strategy version under one risk-policy version over a period, with a fill model
 (slippage and cost model, `costs`) and its conventions (`RunConventions`, PR 62, O5): the entry
 fill rule, the slot order, the ambiguous-day rule, the bar-less sessions before the suspension
-markdown, the sleeve weight and the regime rule. A run flagged for promotion (`for_promotion`,
-the only kind `publish_version` accepts and the sleeve's evidence reads) is refused under
-conventions live does not trade by. Every run records its conventions and hashes them into its
-`config_digest`, so two runs under different conventions never read as comparable.
+markdown, the sleeve weight, the regime rule, the entry bars and the volume pace rule. A run
+flagged for promotion (`for_promotion`, the only kind `publish_version` accepts and the sleeve's
+evidence reads) is refused under conventions live does not trade by. Every run records its
+conventions and hashes them into its `config_digest`, so two runs under different conventions
+never read as comparable.
 """
 
 from __future__ import annotations
@@ -41,7 +42,7 @@ from .fills import (
     TRIGGER_PROXY,
 )
 from .overrides import Overrides
-from .slots import SLOT_ORDER_TIME, is_slot_order
+from .slots import SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
 
 __all__ = [
     "CATALYST_NOT_EVALUATED",
@@ -63,6 +64,10 @@ __all__ = [
     "REGIME_MULT_RULES",
     "RESEARCH_SLEEVE_WEIGHT",
     "TOUCH_GAP",
+    "VOLUME_PACE_ESTIMATED",
+    "VOLUME_PACE_FULL_DAY",
+    "VOLUME_PACE_LIVE",
+    "VOLUME_PACE_RULES",
     "BacktestError",
     "RunConventions",
     "RunSpec",
@@ -106,9 +111,13 @@ KNOWN_GAPS = (
 # them (no bars stored, or a `daily` run) they are estimated from the daily bar, and the run
 # records what it estimated, by fixed code:
 # an intraday break taken as the daily high's break of the setup level, without the opening
-# range, the close confirmation or `volume_pace` (a playbook with an enabled `volume_pace` is
-# one live would refuse more often: `GAP_PLAYBOOKS`)
+# range or the close confirmation (a playbook with an enabled `volume_pace` is one whose trigger
+# live decides on more than the level: `GAP_PLAYBOOKS`)
 LEVEL_BREAK_ESTIMATED = "trigger_is_level_break_only"
+# an enabled `volume_pace` judged on the full day's volume against vs_avg50 x the mean of the 50
+# sessions through the previous one: a look-ahead, as the day's volume is unknown at the trigger
+# (the daily estimate always; a 5-minute session too under `volume_pace: full_day`)
+VOLUME_PACE_ESTIMATED = "volume_pace_on_full_day_volume"
 ENTRY_DAY_LOW_ESTIMATED = "entry_day_low_estimated"  # the pre-break low is the adr20 estimate
 GAP_OVER_AT_OPEN = "gap_over_fills_at_open"  # live fills at the first tick after the open
 # a pre-open playbook's trigger (opening-range break, early volume) estimated from the daily
@@ -119,6 +128,7 @@ EP_TRIGGER_ESTIMATED = "episodic_pivot_trigger_estimated"
 CATALYST_NOT_EVALUATED = "catalyst_not_evaluated"
 ESTIMATE_GAPS = (
     LEVEL_BREAK_ESTIMATED,
+    VOLUME_PACE_ESTIMATED,
     ENTRY_DAY_LOW_ESTIMATED,
     GAP_OVER_AT_OPEN,
     EP_TRIGGER_ESTIMATED,
@@ -134,6 +144,13 @@ TRIGGER_5M = "bars_5m_live_trigger_else_daily_bar_level_break"
 BASIS_5M = "bars_5m"
 BASIS_DAILY = "daily"
 BASIS_CLOSE = "close"
+# How a run judges an enabled `volume_pace` (`RunConventions.volume_pace`): `live`, the default,
+# replays live's pace on a session's 5-minute bars and reads the full day's volume only on the
+# daily estimate; `full_day` reads the full day's volume on every session (the S1 book spec's
+# owner decision 7), the 5-minute replay then deciding the trigger without the pace.
+VOLUME_PACE_LIVE = "live"
+VOLUME_PACE_FULL_DAY = "full_day"
+VOLUME_PACE_RULES = (VOLUME_PACE_LIVE, VOLUME_PACE_FULL_DAY)
 
 
 def _preopen(playbook: Playbook) -> bool:
@@ -155,8 +172,9 @@ def _daily_close(playbook: Playbook) -> bool:
 # refuses a version that enables one of them on this evidence (PR 69, HAT-PORT-061).
 # `episodic_pivot_trigger_estimated` names every pre-open playbook (`Playbook.preopen`), whatever
 # it is called, and `episodic_pivot_not_backtested` too (no run records it now; a stored run made
-# before the episodic pivot was backtested holds it); `trigger_is_level_break_only` every one with
-# an enabled `volume_pace` trigger (a run made before it named any playbook names them too), and
+# before the episodic pivot was backtested holds it); `trigger_is_level_break_only` and
+# `volume_pace_on_full_day_volume` every one with an enabled `volume_pace` trigger (a run made
+# before the first named any playbook names them too), and
 # `daily_close_entry_not_live` every one whose level trigger enters at the daily close (a timing
 # no earlier version could hold). A gap not listed here names no playbook: it holds for all of
 # them alike, a measured approximation of the loop, and blocks none; `catalyst_not_evaluated`
@@ -166,6 +184,7 @@ GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
     EP_TRIGGER_ESTIMATED: _preopen,
     "episodic_pivot_not_backtested": _preopen,
     LEVEL_BREAK_ESTIMATED: _volume_pace,
+    VOLUME_PACE_ESTIMATED: _volume_pace,
     "daily_close_entry_not_live": _daily_close,
 }
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
@@ -210,6 +229,7 @@ class RunConventions:
     regime_mult: str = REGIME_MULT_ONE  # `policy` applies the live regime engine
     start_capital: Decimal = INITIAL_EQUITY
     entry_bars: str = ENTRY_BARS_5M  # `daily` decides every entry on the daily estimate
+    volume_pace: str = VOLUME_PACE_LIVE  # `full_day` reads the day's volume on 5-minute days too
     # the run's config and policy overrides (`overrides`), already applied to its spec
     overrides: Overrides = field(default_factory=Overrides, hash=False)
 
@@ -241,17 +261,20 @@ class RunConventions:
             raise BacktestError("backtest_bad_override")
         if self.entry_bars not in ENTRY_BARS_RULES:
             raise BacktestError("backtest_bad_entry_bars")
+        if self.volume_pace not in VOLUME_PACE_RULES:
+            raise BacktestError("backtest_bad_volume_pace")
 
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
-        of 0), the optimistic `touch` rule, a slot order other than the estimated trigger time,
-        a suspension markdown later than `SUSPENSION_SESSIONS`, a weight other than the policy's
-        base weight (PR 68) or a regime rule other than `policy` (PR 69)."""
+        of 0), the optimistic `touch` rule, a slot order other than the estimated trigger time
+        or the RS rank (`rs`, the S1 book's sizing rule), a suspension markdown later than
+        `SUSPENSION_SESSIONS`, a weight other than the policy's base weight (PR 68) or a regime
+        rule other than `policy` (PR 69)."""
         if slippage_bps == 0:
             raise BacktestError("backtest_promotion_without_slippage")
         if self.entry_fill_rule != PENETRATION:
             raise BacktestError("backtest_promotion_on_touch")
-        if self.slot_order != SLOT_ORDER_TIME:
+        if self.slot_order not in (SLOT_ORDER_TIME, SLOT_ORDER_RS):
             raise BacktestError("backtest_promotion_off_time_order")
         if self.suspension_sessions > SUSPENSION_SESSIONS:
             raise BacktestError("backtest_promotion_late_suspension")
@@ -308,6 +331,7 @@ class RunConventions:
                 else {"start_capital": format(self.start_capital.normalize(), "f")}
             ),
             **({} if self.overrides.empty else {"overrides": self.overrides.record()}),
+            **({} if self.volume_pace == VOLUME_PACE_LIVE else {"volume_pace": self.volume_pace}),
         }
 
 
