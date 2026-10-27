@@ -498,12 +498,15 @@ def daily_level(playbook: Playbook, levels: Mapping[str, Decimal | None]) -> Dec
 
 
 def volume_pace_multiple(playbook: Playbook) -> float | None:
-    """The `vs_avg50` of the playbook's enabled `volume_pace` trigger, None without one (the
-    backtest's daily estimate judges it on the full day's volume)."""
-    for instance in playbook.trigger:
-        if instance.enabled and instance.type == VOLUME_PACE:
-            return VolumePaceParams.model_validate(instance.params).vs_avg50
-    return None
+    """The `vs_avg50` the playbook's enabled `volume_pace` triggers need, the strictest when it
+    holds several (each blocks live), None without one (the backtest's daily estimate judges it
+    on the full day's volume)."""
+    multiples = [
+        VolumePaceParams.model_validate(i.params).vs_avg50
+        for i in playbook.trigger
+        if i.enabled and i.type == VOLUME_PACE
+    ]
+    return max(multiples, default=None)
 
 
 def needs_setup_level(playbook: Playbook) -> bool:

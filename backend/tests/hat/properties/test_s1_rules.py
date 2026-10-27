@@ -358,6 +358,10 @@ def test_volume_pace_on_the_full_day_volume() -> None:
     assert trigger.volume_pace_multiple(seed_config(S1).playbooks[0]) == 1.5
     plain = _s1_with(("playbooks[default].trigger[volume_pace].enabled", False))
     assert trigger.volume_pace_multiple(plain.playbooks[0]) is None
+    stricter = _s1_with(
+        ("playbooks[default].trigger[+]", {"type": "volume_pace", "params": {"vs_avg50": 2}})
+    )
+    assert trigger.volume_pace_multiple(stricter.playbooks[0]) == 2  # each one blocks live
     before = [100.0] * 50
     assert full_day_pace_skip([*before, 150.0], 1.5) is None
     assert full_day_pace_skip([*before, 149.0], 1.5) == "volume_pace_low"

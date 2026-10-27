@@ -270,6 +270,9 @@ _ZERO = Decimal(0)
 # The trigger types a pre-open playbook's daily estimate stands in for (`EP_ESTIMATE`): the
 # opening-range break, and the catalyst no backtest can judge.
 _EP_ESTIMATED_TYPES = frozenset({trigger.PRICE_BREAKS_LEVEL, trigger.CATALYST})
+# The trigger types the estimate leaves to its own checks: those, and `volume_pace`, which has no
+# elapsed share of a session on a daily bar and is judged on the full day (`_full_day_pace`).
+_EP_SEPARATE_TYPES = _EP_ESTIMATED_TYPES | {trigger.VOLUME_PACE}
 # The estimated trigger times (seconds after midnight IST) of the daily estimate under the `time`
 # slot order: a gap over at the first trigger bar's end (09:20, ahead of a 5-minute trigger
 # then), a break at 09:30, ordered by its distance, and a pre-open playbook's at 09:35, the
@@ -817,7 +820,7 @@ class _Run:
         rule = self.spec.conventions.slot_order
 
         def strength(d: _Decision) -> Decimal | None:
-            return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted")
+            return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted", rounded=False)
 
         for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank, strength)):
             at = (
@@ -1083,6 +1086,9 @@ class _Run:
             return None
         if not self._ep_fires(playbook, row, bar, daily, day, prev):
             return None
+        if paced := self._full_day_pace(playbook, instrument_id, day):
+            self._skip(paced)
+            return None
         price = trigger.entry_limit(EP_ESTIMATE.entry(bar.open, bar.high), bar.open, daily.tick)
         if price > bar.high:
             return None  # the LIMIT is above anything the day traded
@@ -1114,7 +1120,8 @@ class _Run:
         prev: date,
     ) -> bool:
         """The estimate's trigger: the bar fires `EP_ESTIMATE`, and every enabled `gap_up`,
-        `early_volume` and daily-bar trigger criterion passes on the daily values."""
+        `early_volume` and daily-bar trigger criterion passes on the daily values (`volume_pace`
+        is judged on the full day's volume after, `_full_day_pace`)."""
         if not EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close):
             return False
         volumes = self.view.volumes_through(str(row.instrument_id), day, 1)
@@ -1124,7 +1131,7 @@ class _Run:
             open_price=bar.open,
             cum_volume=volume,
         )
-        rest = [i for i in playbook.trigger if i.type not in _EP_ESTIMATED_TYPES]
+        rest = [i for i in playbook.trigger if i.type not in _EP_SEPARATE_TYPES]
         results = trigger.daily_trigger_results(
             playbook, self._setup_bars(str(row.instrument_id), prev), day
         )

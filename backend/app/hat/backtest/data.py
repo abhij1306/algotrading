@@ -450,13 +450,18 @@ class MarketView:
         end = self.index[day] + 1
         return [self.breadth.get(d) for d in self.days[max(0, end - BREADTH_SESSIONS) : end]]
 
-    def feature(self, day: date, instrument_id: str, name: str) -> Decimal | None:
+    def feature(
+        self, day: date, instrument_id: str, name: str, *, rounded: bool = True
+    ) -> Decimal | None:
+        """The stored feature on `day`, at the store's 4 places, or with `rounded` False as
+        stored (a score ranked against others, where 4 places would make ties)."""
         rows = self.feature_rows.get(day)
         if rows is None:
             frame = self.features.get(day)
             rows = {} if frame is None else {str(r["instrument_id"]): r for r in frame.to_dicts()}
             self.feature_rows[day] = rows
-        return _price(rows.get(instrument_id, {}).get(name))
+        value = rows.get(instrument_id, {}).get(name)
+        return _price(value) if rounded else exact(value, floats=True)
 
     def bars_through(
         self,
