@@ -37,6 +37,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from ..data.bars_store import BarStore
 from ..data.ca_versions import digest as versions_digest
 from ..data.chains import stored_adjustment
 from ..data.demerger_notice import exit_day
@@ -176,12 +177,9 @@ class MarketData:
     industries: Mapping[str, str | Sequence[tuple[date, str]]] = field(default_factory=dict)
     series: Mapping[str, Sequence[tuple[date, str]]] = field(default_factory=dict)
     last_traded: Mapping[str, date] = field(default_factory=dict)
-    # 5-minute bars of a session, keyed (instrument_id, date): (high, low) per bar in time order,
-    # the 09:15 bar first, on the daily bars' (adjusted) scale. A session without them uses the
-    # daily estimate (PR 60).
-    intraday: Mapping[tuple[str, date], Sequence[tuple[Decimal, Decimal]]] = field(
-        default_factory=dict
-    )
+    # The store's raw 5-minute bars, read one session at a time for the candidates the loop
+    # decides on them (`intraday.session_bars`); None: every session uses the daily estimate.
+    intraday: BarStore | None = None
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
     pending: frozenset[tuple[str, date]] = frozenset()
@@ -518,6 +516,16 @@ class MarketView:
             return None
         last = through - 1
         return scaled_tick(tick, _exact(closes.adjusted[last]), _exact(closes.raw[last]))
+
+    def price_scale(self, instrument_id: str, day: date) -> Decimal | None:
+        """The instrument's adjusted close over its raw close on `day`, exactly: what puts a
+        raw price of that session on the run's price basis (`intraday.session_bars`); None
+        without a raw close that day."""
+        closes = self.raw_closes.get(instrument_id, _NO_RAW)
+        at = int(np.searchsorted(closes.days, _ordinal(day), side="left"))
+        if at >= len(closes.days) or closes.days[at] != _ordinal(day) or not closes.raw[at]:
+            return None
+        return Decimal(int(closes.adjusted[at])) / Decimal(int(closes.raw[at]))
 
     def real_shares(self, instrument_id: str, day: date, qty: int) -> int | None:
         """The whole shares `qty` price-basis shares were on `day` (`real_shares`), by the factor
@@ -1105,6 +1113,8 @@ def load_market(
     exits = frozenset((i, d) for i, d in exits if i in wanted)
     versions_sha, versions = versions_digest(session)
     symbols, listed_on = _symbols(session, instruments)
+    intraday = BarStore(store.root)
+    sessions_5m = [d for d in intraday.days() if start <= d <= end]
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -1122,6 +1132,7 @@ def load_market(
         isins=_isins(session, instruments),
         symbols=symbols,
         listed_on=listed_on,
+        intraday=intraday if sessions_5m else None,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -1132,6 +1143,8 @@ def load_market(
         "index": index,
         "index_points": len(closes),
         "breadth_points": len(breadth),
+        # the period's sessions with a `bars_5m` day file: the sessions a run may decide on them
+        "bars_5m_sessions": len(sessions_5m),
         **(
             {
                 "regime_index_points": len(index_closes[regime.INDEX_NAME]),

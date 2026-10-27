@@ -152,7 +152,7 @@ def test_bars_5m_scan_names_the_adjusted_basis() -> None:
     assert audit.basis_of(day(100.0, 100.0, grid=1)) == "off_grid"
     check = audit.check_bars_5m([day(50.1, 100.0, later=0.5), day(100.0, None)], 10, used=True)
     assert _codes(check) == {"bar_5m_adjusted_basis": 1, "bar_5m_no_daily": 1}
-    assert check["status"] == audit.FAIL
+    assert check["status"] == audit.WARN  # a run decides such a day on the daily estimate
     assert audit.check_bars_5m([day(100.4, 100.0)], 10, used=True)["status"] == audit.PASS
 
 

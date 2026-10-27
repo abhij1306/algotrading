@@ -260,6 +260,21 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `regime` profile, read when the run starts and recorded in its hashed conventions.
 - **Backtest gaps are listed.** Behaviours the backtest does not model are in `KNOWN_GAPS`
   (`backtest/spec.py`) and reported by every run; no fixture pins a result.
+- **Backtest entries on 5-minute bars, estimates named (S2).** A run decides each session's
+  entries, the pre-open playbooks' gap candidates included, by the live trigger on the stored
+  `bars_5m` (`entry_bars: bars_5m`, the default; `daily` is a comparison variant a promotion run
+  may not use); a session without bars falls back to the daily estimate, and the run records
+  only the estimates it took (`ESTIMATE_GAPS`) and its entries per year by basis
+  (`entry_bars_by_year`, `entries_5m`/`entries_daily` in `run.json`). Promotion: an estimated
+  pre-open trigger (`episodic_pivot_trigger_estimated`) blocks every pre-open playbook and an
+  estimated level break (`trigger_is_level_break_only`) every one with `volume_pace`, so their
+  evidence run lies inside the 5-minute years; `catalyst_not_evaluated` (no announcements are
+  stored for the past; the gap and the early volume stand in) blocks none, so a pre-open entry
+  decided on 5-minute bars is evidence. The pre-open estimate (`intraday.EP_ESTIMATE`) is
+  calibrated on the 279 neglected gaps of at least 10% from 2022 with bars from 09:15: live fired
+  on 24%, entering a median 2.48% over the open and 0.58% over the opening-range high after a low
+  4.02% under the open; the rule high >= 1% over the open, close in the upper half of the range
+  and day volume at least the `early_volume` multiple fires on 25% and agrees with live on 84%.
 - **The backtest's close phase decides on the daily close (owner 2026-10-25).** The backtest's
   close-phase rules decide and fill on the daily close, simple and the same over all history; no
   5-minute bars and no count of estimated exits. The daily close (the auction price) stands in for
@@ -385,7 +400,8 @@ Chosen where the owner has not ruled; the code implements them.
   two-sided Student-t CI on mean R; an undefined DSR is 0 (fail closed).
 - Criteria: an empty setup score is 1.0; linear score curves; a month is 21 sessions; F&O names are
   those with no price band; volume pace baseline the 50-day average.
-- Data: volume adjusts by the cumulative factor; daily-bar trigger proxy without minute history.
+- Data: volume adjusts by the cumulative factor; the daily-bar estimate of a trigger (and the
+  pre-open calibration) where no 5-minute bars are stored.
 - Ops: MCP backoff 1 s doubling to 30 s; NTP offset at most 1 s; a 2% fallback stop; statutory
   costs as versioned config.
 - Shadow results do not move the exposure ladder.

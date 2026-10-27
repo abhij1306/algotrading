@@ -227,6 +227,8 @@ def compute_metrics(
     skips: Mapping[str, int],
     ambiguous_days: int,
     lower_circuit_days: int,
+    estimated: Iterable[str] | None = None,
+    entry_bars: Mapping[int, Mapping[str, int]] | None = None,
 ) -> dict[str, Any]:
     """The run's metrics (HAT-BT-040, HAT-BT-041, HAT-BT-042): R statistics in Decimal, the
         standard drawdown, return and Sharpe figures from `app.hat.backtest.metrics`, the return
@@ -237,8 +239,10 @@ def compute_metrics(
         under, and `invested_share` is the mean of `invested`, the positions' share of each
         session's mark (PR 68, HAT-BT-014). Besides: the triggers that never became a signal
     (`skips`), the signals and their rejections by reason, and the ambiguous and lower-circuit days
-    the path rules counted (HAT-BT-021, PR 64). `folder.build` turns them into
-    the run's files; `evidence.RunMetrics` reads the facts a gate needs."""
+    the path rules counted (HAT-BT-021, PR 64), the known gaps of what the run `estimated`
+    (`spec.known_gaps`) and its entries by year and what decided them (`entry_bars`).
+    `folder.build` turns them into the run's files; `evidence.RunMetrics` reads the facts a
+    gate needs."""
     rs = [t.r_multiple for t in trades_]
     count = len(rs)
     wins = [r for r in rs if r > 0]
@@ -296,7 +300,12 @@ def compute_metrics(
         "strategy_version_id": str(spec.strategy_version_id),
         "risk_policy_version_id": str(spec.policy.version_id),
         "cooldown_sessions": spec.policy.policy.cooldown_sessions,
-        "known_gaps": known_gaps(spec),
+        "known_gaps": known_gaps(spec, estimated),
+        # the entries decided on each basis, by year (`loop.BASIS_5M` ...)
+        "entry_bars_by_year": {
+            str(year): dict(sorted(counts.items()))
+            for year, counts in sorted((entry_bars or {}).items())
+        },
         "entry_day_low": ENTRY_DAY_LOW,
         **used,
         "conventions": used,  # the block `config_digest` hashes (PR 65)

@@ -12,7 +12,12 @@ import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 
-from app.hat.backtest.spec import GAP_PLAYBOOKS, KNOWN_GAPS, REGIME_MULT_POLICY
+from app.hat.backtest.spec import (
+    ESTIMATE_GAPS,
+    GAP_PLAYBOOKS,
+    KNOWN_GAPS,
+    REGIME_MULT_POLICY,
+)
 from app.hat.engine.portfolio import lifecycle
 from app.hat.engine.portfolio.lifecycle import BacktestFacts, Evidence, LifecycleError
 
@@ -142,7 +147,9 @@ def test_backtest_refusal(facts: BacktestFacts) -> None:
     assert (verdict.allowed, verdict.reason) == (want is None, want or "ok")
     # the rule the gate pins is the backtest's, and every gap it maps is a listed one
     assert lifecycle.EVIDENCE_REGIME_RULE == REGIME_MULT_POLICY
-    assert set(GAP_PLAYBOOKS) <= set(KNOWN_GAPS)
+    # (or the code stored runs hold from before the episodic pivot was backtested)
+    stored = "episodic_pivot_not_backtested"
+    assert set(GAP_PLAYBOOKS) <= {*KNOWN_GAPS, *ESTIMATE_GAPS, stored}
 
 
 @given(st.sets(st.integers(0, 120), max_size=120), st.integers(0, 60), st.integers(0, 100))

@@ -21,7 +21,13 @@ from app.hat.backtest.evidence import (
 )
 from app.hat.backtest.overrides import Overrides
 from app.hat.backtest.report import TradeRow, compute_metrics
-from app.hat.backtest.spec import KNOWN_GAPS, membership_key, sleeve_weight
+from app.hat.backtest.spec import (
+    CATALYST_NOT_EVALUATED,
+    EP_TRIGGER_ESTIMATED,
+    KNOWN_GAPS,
+    membership_key,
+    sleeve_weight,
+)
 
 D = Decimal
 # without `volume_pace`, which the backtest does not model (`trigger_is_level_break_only`)
@@ -69,7 +75,10 @@ def test_run_metrics_reads_what_compute_metrics_writes() -> None:
         skips={},
         ambiguous_days=3,
         lower_circuit_days=0,
+        estimated={CATALYST_NOT_EVALUATED},
+        entry_bars={2026: {"bars_5m": 2}},
     )
+    assert written["entry_bars_by_year"] == {"2026": {"bars_5m": 2}}
     at = datetime(2026, 10, 23, 12, 30, tzinfo=UTC)
     pbo = {"prob": "0.25", "runs": 2, "variants": 2, "sessions": 8, "blocks": 2}
     stored = json.loads(json.dumps({**written, "pbo": pbo, "completed_at": at.isoformat()}))
@@ -80,7 +89,7 @@ def test_run_metrics_reads_what_compute_metrics_writes() -> None:
     assert read.held_sessions == written["held_sessions"]
     assert read.held_sessions > 0
     assert read.ambiguous_days == 3
-    assert read.known_gaps == KNOWN_GAPS
+    assert read.known_gaps == (*KNOWN_GAPS, CATALYST_NOT_EVALUATED)
     assert read.sleeve_weight == sleeve_weight(spec)
     assert read.regime_mult == "1"
     assert read.cooldown_sessions == spec.policy.policy.cooldown_sessions
@@ -117,7 +126,11 @@ def test_unbacktested() -> None:
     assert unbacktested(None, S2_BOOKS) == ep
     assert unbacktested(RunMetrics.from_json({}), S2_BOOKS) == ep  # no gap list
     assert unbacktested(RunMetrics.from_json({"known_gaps": "garbled"}), S2_BOOKS) == ep
-    assert unbacktested(RunMetrics.from_json({"known_gaps": [KNOWN_GAPS[1]]}), S2_BOOKS) == ep
+    estimated = RunMetrics.from_json({"known_gaps": [EP_TRIGGER_ESTIMATED]})
+    assert unbacktested(estimated, S2_BOOKS) == ep
+    # a pre-open playbook decided on 5-minute bars, the catalyst its only gap, is backtested
+    catalyst = RunMetrics.from_json({"known_gaps": [*KNOWN_GAPS, CATALYST_NOT_EVALUATED]})
+    assert unbacktested(catalyst, S2_BOOKS) == frozenset()
     assert unbacktested(RunMetrics.from_json({"known_gaps": []}), S2_BOOKS) == frozenset()  # PR 70
     assert unbacktested(None, (*BREAKOUT, GAP_AND_GO)) == frozenset({"gap_and_go"})
     assert unbacktested(None, seed_config(S1).playbooks) == frozenset({"default"})  # volume_pace
@@ -142,13 +155,15 @@ def test_history_holds() -> None:
         last_session=date(2023, 1, 1),
         held_sessions=100,
         ambiguous_days=10,
-        known_gaps=KNOWN_GAPS,
+        known_gaps=(*KNOWN_GAPS, EP_TRIGGER_ESTIMATED),
     )
     breakout = BREAKOUT
     assert history_holds(good, breakout)
     assert not history_holds(dataclasses.replace(good, last_session=date(2022, 6, 1)), breakout)
     assert not history_holds(good, S2_BOOKS)
     assert not history_holds(good, (*BREAKOUT, GAP_AND_GO))
+    on_bars = dataclasses.replace(good, known_gaps=(*KNOWN_GAPS, CATALYST_NOT_EVALUATED))
+    assert history_holds(on_bars, S2_BOOKS)
     assert not history_holds(dataclasses.replace(good, known_gaps=None), breakout)
     assert not history_holds(good, ())
     assert not history_holds(dataclasses.replace(good, ambiguous_days=11), breakout)

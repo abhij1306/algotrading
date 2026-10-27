@@ -549,6 +549,12 @@
               },
               "benchmark_return_pct": {
                 "$ref": "#/$defs/num"
+              },
+              "entries_5m": {
+                "type": "integer"
+              },
+              "entries_daily": {
+                "type": "integer"
               }
             }
           }
@@ -598,6 +604,32 @@
           },
           "additionalProperties": {
             "$ref": "#/$defs/bucket"
+          }
+        },
+        "by_playbook": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "signals",
+              "refusals",
+              "trades"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "signals": {
+                "type": "integer"
+              },
+              "refusals": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                }
+              },
+              "trades": {
+                "$ref": "#/$defs/bucket"
+              }
+            }
           }
         }
       }

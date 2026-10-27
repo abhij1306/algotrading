@@ -131,8 +131,10 @@ whose audit warns or fails):
 
 - `audit.json` first (`GET .../audits/audit`): `status` and each check's findings. Then
   `data_audit.json` (`GET .../audits/data_audit`), the data audit the run read.
-- `run.json`: `metrics` (whether), `binding` (did the change fire), `breakdowns` (by year,
-  regime, exit, industry, liquidity), `refusals` (what the risk gates blocked).
+- `run.json`: `metrics` (whether; `known_gaps` names only the estimates the run took),
+  `binding` (did the change fire), `breakdowns` (by year with the entries decided on 5-minute
+  bars and on the daily estimate, regime, exit, industry, liquidity, playbook with its signals
+  and refusals), `refusals` (what the risk gates blocked).
 - `trades.csv`, `equity.csv`, `refusals.csv` (with forward R of each blocked entry),
   `signals.csv`, `stocks.csv`: why.
 - `config.json`: everything the run used, enough to rerun it.
@@ -147,7 +149,7 @@ whose audit warns or fails):
 | `corporate_actions` | an adjustment factor that is not a positive number | an adjusted move > 20% on an ex-date; an action-shaped raw move (a split or bonus ratio) with no factor |
 | `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |
 | `unique_keys` | a duplicate bar, features row or index close | |
-| `bars_5m` | (when the run reads them) over the whole 5-minute store: a day with bars off the IST 5-minute grid, without a daily bar, or whose last close is > 5% off the daily close (`bar_5m_adjusted_basis` when the ratio is the stored factors after the day) | the same, while no run reads them |
+| `bars_5m` | | over the whole 5-minute store: a day with bars off the IST 5-minute grid, without a daily bar, or whose last close is > 5% off the daily close (`bar_5m_adjusted_basis` when the ratio is the stored factors after the day); a run decides such a day on the daily estimate (`intraday.on_basis`) |
 | `industries` | | > 5% of the member-days have no industry (`unknown`); a run (a sweep variant alone) whose policy caps positions per industry below its open positions while any member-day has no industry is refused `backtest_industry_cap_without_industries` |
 | `demergers` | | a member demerger whose ex-day open and close gaps differ > 15% and whose factor is not the close gap; the summary counts the period's undated member demergers (no `announced_on`) |
 | `golden` | a golden sample value drifted or missing; an unreadable golden file | an unresolvable key; a recorded mismatch still open; no golden file yet |
@@ -221,6 +223,7 @@ line flag sets the same for one run or every variant.
 | Slot order of a capped day | `slot_order: score` | `--slot-order` |
 | Entry fill rule, ambiguous days, suspension markdown | `entry_fill: touch`, `ambiguous: pessimistic`, `suspension_sessions: 3` | `--entry-fill`, `--ambiguous`, `--suspension-sessions` |
 | Start capital | `start_capital: 2500000` | `--start-capital` |
+| Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
 | Universe, window | one sweep per value (a sweep reads one market) | `--universe`, `--from`, `--to` |
 

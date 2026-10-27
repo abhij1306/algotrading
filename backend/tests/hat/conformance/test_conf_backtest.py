@@ -16,7 +16,16 @@ BACKTEST = HAT / "backtest" / "loop.py"
 # hold no decision.
 LOOP = tuple(
     HAT / "backtest" / f"{name}.py"
-    for name in ("loop", "spec", "data", "ledger", "fillrules", "report", "signal_features")
+    for name in (
+        "loop",
+        "spec",
+        "data",
+        "ledger",
+        "fillrules",
+        "report",
+        "signal_features",
+        "intraday",
+    )
 )
 RUNNERS = {"runs.py", "evidence.py", "overrides.py", "__main__.py"}
 PROPERTIES = Path(__file__).resolve().parents[1] / "properties"
