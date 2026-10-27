@@ -77,6 +77,7 @@ function PolicyFields({ draft, edit }: Readonly<{ draft: Draft; edit: Edit }>) {
         >
           <option value="time">time</option>
           <option value="score">score</option>
+          <option value="rs">rs</option>
           <option value="random">random</option>
         </select>
       </Labelled>

@@ -1,8 +1,10 @@
 """The S1 research rules at their seams: the step trail and the EMA exit (`engine.exits`), the
 override selector by type (`backtest.overrides`), the close entry's breakout volume test
 (`backtest.fillrules`), the regime without a slope test, the level trigger's entry timing and
-the known gaps that name a playbook, and a pivot used once (`engine.scan`). Small examples; no
-run of the loop."""
+the known gaps that name a playbook, a pivot used once (`engine.scan`), and the S1 book's rules
+on one position: breakeven, the half sale, the SMA20 exit's grace window, the chase and stop
+width skips, `volume_pace` on the full day, the volume pace convention and the RS slot order.
+Small examples; no run of the loop."""
 
 from __future__ import annotations
 
@@ -15,19 +17,36 @@ from pydantic import ValidationError
 
 from app.hat.backtest.data import last_through
 from app.hat.backtest.evidence import RunMetrics, unbacktested
-from app.hat.backtest.fillrules import breakout_volume_ok, first_trigger
+from app.hat.backtest.fillrules import (
+    breakout_volume_ok,
+    first_trigger,
+    full_day_pace_skip,
+)
+from app.hat.backtest.fills import entry_fill, raised_stop_dip
 from app.hat.backtest.overrides import OverrideError, Overrides
-from app.hat.backtest.spec import GAP_PLAYBOOKS
-from app.hat.engine import exits
+from app.hat.backtest.slots import is_slot_order, order_slots
+from app.hat.backtest.spec import (
+    GAP_PLAYBOOKS,
+    VOLUME_PACE_FULL_DAY,
+    BacktestError,
+    RunConventions,
+)
+from app.hat.costs import BacktestFills, load_cost_schedule
+from app.hat.engine import exits, trigger
 from app.hat.engine.criteria import evaluate_live
 from app.hat.engine.criteria.base import Bars
 from app.hat.engine.criteria.live import LiveContext, PriceBreaksLevelParams
 from app.hat.engine.exits import ExitView, PositionState, evaluate
 from app.hat.engine.regime_gate import close_above_sma_and_rising
 from app.hat.engine.scan import pivot_date, setup_taken
+from app.hat.engine.stops import SKIP_TOO_WIDE, final_contraction_low
 from app.hat.engine.strategy.config import (
     CloseAboveSma,
+    ExitBreakeven,
     ExitCloseBelowEma,
+    ExitCloseBelowSma,
+    ExitHardStop,
+    ExitPartialAtR,
     ExitStepTrail,
     StrategyConfig,
 )
@@ -194,7 +213,7 @@ def test_gaps_name_volume_pace_and_daily_close_playbooks() -> None:
     """S1's seed relies on `volume_pace`, which the backtest does not model; a daily-close
     entry is not traded live. Each names the playbook, which blocks its promotion."""
     named = {code for code, test in GAP_PLAYBOOKS.items() if test(seed_config(S1).playbooks[0])}
-    assert named == {"trigger_is_level_break_only"}
+    assert named == {"trigger_is_level_break_only", "volume_pace_on_full_day_volume"}
     plain = _s1_with(("playbooks[default].trigger[volume_pace].enabled", False))
     assert not any(test(plain.playbooks[0]) for test in GAP_PLAYBOOKS.values())
     close = _s1_with(
@@ -255,3 +274,116 @@ def test_a_used_pivot_needs_a_new_one() -> None:
     assert not setup_taken("A", date(2021, 4, 9), (), used)  # a new final contraction
     assert not setup_taken("B", date(2021, 3, 5), (), used)  # another name's pivot
     assert not setup_taken("A", None, (), used)  # no pivot date: the held rule only
+
+
+# --- the S1 book's entry and exit rules on one position ------------------------------------------
+
+# Breakeven at +2.5R, 50% sold at +3R, the rest under SMA20 after a 10-session grace window.
+BOOK = [
+    ExitHardStop(rule="hard_stop"),
+    ExitBreakeven(rule="move_stop_to_breakeven", at_r=2.5),
+    ExitPartialAtR(rule="partial_at_r", at_r=3, sell_fraction=0.5),
+    ExitCloseBelowSma(rule="close_below_sma", sma=20, grace_sessions=10),
+]
+
+
+def _close_view(price: str, days_held: int) -> ExitView:
+    return ExitView(D(price), days_held=days_held, sma={20: D(110)})
+
+
+def test_breakeven_moves_the_stop_at_two_and_a_half_r() -> None:
+    assert evaluate(BOOK, POS, ExitView(D("124.95")), "live").new_stop is None
+    assert evaluate(BOOK, POS, ExitView(D(125)), "live").new_stop == D(100)
+
+
+def test_half_the_position_sells_at_three_r() -> None:
+    raised = PositionState(10, 10, D(100), D(90), current_stop=D(100), fired=frozenset({"1"}))
+    assert not evaluate(BOOK, raised, ExitView(D("129.95")), "live").actions
+    (sale,) = evaluate(BOOK, raised, ExitView(D(130)), "live").actions
+    assert (sale.kind, sale.qty) == ("partial", 5)
+
+
+def test_sma20_exit_waits_out_the_grace_window() -> None:
+    """No SMA exit in the 10 sessions after the entry session; the stop still acts in them."""
+    assert not evaluate(BOOK, POS, _close_view("109", 10), "close").actions
+    (sale,) = evaluate(BOOK, POS, _close_view("109", 11), "close").actions
+    assert (sale.kind, sale.qty) == ("full", 10)
+    assert not evaluate(BOOK, POS, _close_view("111", 11), "close").actions  # above the SMA
+    (stopped,) = evaluate(BOOK, POS, ExitView(D(90), days_held=2), "live").actions
+    assert stopped.kind == "full"
+    plain = ExitCloseBelowSma(rule="close_below_sma", sma=20)
+    assert evaluate([plain], POS, _close_view("109", 0), "close").actions  # off by default
+    assert "grace_sessions" not in plain.model_dump(mode="json")  # the stored hashes keep
+
+
+def test_book_exits_act_together_on_one_position() -> None:
+    """One day's way up from 100 to 131 raises the stop to breakeven at 125 then sells half at
+    130; a low back at the raised stop with a close above it is the ambiguous day the
+    `pessimistic` convention fills; the rest leaves on a close under SMA20 after the grace."""
+    state, found, low = POS, [], D(100)
+    while (price := first_trigger(BOOK, state, low, D(131), D("0.05"))) is not None:
+        found.append(price)
+        state = exits.apply(state, evaluate(BOOK, state, ExitView(price), "live"))
+        low = price
+    assert found == [D(125), D(130)]
+    assert (state.current_stop, state.qty_open) == (D(100), 5)
+    assert raised_stop_dip(D(100), D(128), D(90), state.current_stop)
+    assert not raised_stop_dip(D("100.05"), D(128), D(90), state.current_stop)
+    assert not evaluate(BOOK, state, _close_view("109", 7), "close").actions
+    (rest,) = evaluate(BOOK, state, _close_view("109", 12), "close").actions
+    assert (rest.kind, rest.qty) == ("full", 5)
+
+
+def test_max_chase_skips_a_gap_over_two_pct() -> None:
+    """A gap-up open fills at the open: within 2% of the pivot it passes, beyond it fails."""
+    at = datetime(2021, 3, 1, 4, 0, tzinfo=UTC)
+    for open_, passed in (("102", True), ("102.05", False)):
+        price = entry_fill(D(open_), D(105), D(100), D("0.05"))
+        assert price == D(open_)
+        ctx = LiveContext(at=at, price=price, trigger_level=D(100), locked_upper_circuit=False)
+        assert evaluate_live("max_chase", {"pct": 2}, ctx).passed is passed
+
+
+def test_stop_skip_beyond_ten_pct() -> None:
+    """0.5% under the final contraction low, skipped when more than 10% under the entry."""
+    kept = final_contraction_low(D(100), D(91), D("0.5"), D(10), D("0.05"))
+    assert (kept.stop, kept.skipped) == (D("90.50"), False)
+    wide = final_contraction_low(D(100), D("90.40"), D("0.5"), D(10), D("0.05"))
+    assert (wide.stop, wide.skip) == (None, SKIP_TOO_WIDE)
+
+
+def test_volume_pace_on_the_full_day_volume() -> None:
+    """The daily estimate's `volume_pace`: the day's volume against vs_avg50 x the mean of the
+    50 sessions before it."""
+    assert trigger.volume_pace_multiple(seed_config(S1).playbooks[0]) == 1.5
+    plain = _s1_with(("playbooks[default].trigger[volume_pace].enabled", False))
+    assert trigger.volume_pace_multiple(plain.playbooks[0]) is None
+    before = [100.0] * 50
+    assert full_day_pace_skip([*before, 150.0], 1.5) is None
+    assert full_day_pace_skip([*before, 149.0], 1.5) == "volume_pace_low"
+    assert full_day_pace_skip(before, 1.5) == "volume_pace_missing"  # 49 sessions before it
+    assert full_day_pace_skip([*before[:-1], float("nan"), 150.0], 1.5) == "volume_pace_missing"
+
+
+def test_volume_pace_convention() -> None:
+    """`full_day` is recorded in the conventions (a default run keeps its digest); an unknown
+    rule is refused; the RS slot order may evidence a version."""
+    fills = BacktestFills(load_cost_schedule(), D(20))
+    window = (date(2021, 1, 1), date(2021, 12, 31))
+    default = RunConventions().record(fills, window, D("0.5"), {})
+    assert "volume_pace" not in default
+    forced = RunConventions(volume_pace=VOLUME_PACE_FULL_DAY).record(fills, window, D("0.5"), {})
+    assert forced["volume_pace"] == "full_day"
+    with pytest.raises(BacktestError, match="backtest_bad_volume_pace"):
+        RunConventions(volume_pace="pace")
+    RunConventions(slot_order="rs", regime_mult="policy").check_promotion(D(20))
+    with pytest.raises(BacktestError, match="backtest_promotion_off_time_order"):
+        RunConventions(slot_order="score", regime_mult="policy").check_promotion(D(20))
+
+
+def test_rs_slot_order_takes_the_strongest_first() -> None:
+    """Ties and missing scores keep the watchlist's score order, those without one last."""
+    rs = {"a": D(5), "b": None, "c": D(9), "d": D(5)}
+    ordered = order_slots(list(rs), "rs", date(2021, 3, 1), lambda _: (0, D(0)), rs.get)
+    assert ordered == ["c", "a", "d", "b"]
+    assert is_slot_order("rs")

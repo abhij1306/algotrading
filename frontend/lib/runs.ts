@@ -108,13 +108,19 @@ export type Bucket = {
   net_pnl?: Num;
 };
 
+/** One calendar year: `return_pct` is mark-to-market; the trade counts, expectancy and realized
+ * P&L each name their basis (the year a trade was entered or exited). A run before format 1.5
+ * has none of them. */
 export type YearRow = {
   year: number;
   return_pct: Num;
   max_dd_pct: Num;
-  trades: number;
-  expectancy_r: Num;
   benchmark_return_pct: Num;
+  trades_entered?: number;
+  expectancy_r_by_entry?: Num;
+  trades_exited?: number;
+  expectancy_r_by_exit?: Num;
+  realized_pnl_by_exit?: number;
 };
 
 export type Breakdowns = {

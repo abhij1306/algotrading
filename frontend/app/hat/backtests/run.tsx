@@ -237,8 +237,11 @@ const YEAR_COLUMNS = [
   { label: "Benchmark %", numeric: true },
   { label: "Excess pp", numeric: true },
   { label: "Max DD %", numeric: true },
-  { label: "Trades", numeric: true },
-  { label: "Exp. R", numeric: true },
+  { label: "Entered", numeric: true },
+  { label: "Exp. R (entry)", numeric: true },
+  { label: "Exited", numeric: true },
+  { label: "Exp. R (exit)", numeric: true },
+  { label: "Realized P&L (exit)", numeric: true },
 ];
 
 function ByYear({ years }: Readonly<{ years: Run["breakdowns"]["by_year"] }>) {
@@ -255,8 +258,11 @@ function ByYear({ years }: Readonly<{ years: Run["breakdowns"]["by_year"] }>) {
             {formatNumber(row.excess_pct, 1)}
           </TableCell>
           <TableCell numeric>{formatNumber(row.max_dd_pct, 1)}</TableCell>
-          <TableCell numeric>{formatNumber(row.trades, 0)}</TableCell>
-          <TableCell numeric>{formatNumber(row.expectancy_r, 2)}</TableCell>
+          <TableCell numeric>{formatNumber(row.trades_entered, 0)}</TableCell>
+          <TableCell numeric>{formatNumber(row.expectancy_r_by_entry, 2)}</TableCell>
+          <TableCell numeric>{formatNumber(row.trades_exited, 0)}</TableCell>
+          <TableCell numeric>{formatNumber(row.expectancy_r_by_exit, 2)}</TableCell>
+          <TableCell numeric>{formatNumber(row.realized_pnl_by_exit, 0)}</TableCell>
         </TableRow>
       ))}
     </DataTable>

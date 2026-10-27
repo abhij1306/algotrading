@@ -401,10 +401,13 @@ def _yearly(
     trades: Sequence[_Trade],
     benchmark: Sequence[tuple[date, Decimal]],
 ) -> list[dict[str, Any]]:
-    """Per calendar year: the return of the last close over the year before's (the first
-    over the start capital), the year's deepest fall from a peak starting at that base, its
-    exits' count and expectancy, the benchmark's return over the same closes, and its entries
-    decided on the stored 5-minute bars and on the daily bar (`entry_bars_by_year`)."""
+    """Per calendar year: the mark-to-market return of the last close over the year before's
+    (the first over the start capital), the year's deepest fall from a peak starting at that
+    base, the benchmark's return over the same closes, its entries decided on the stored
+    5-minute bars and on the daily bar (`entry_bars_by_year`), and the closed trades on each
+    basis named: those entered that year with their expectancy, those exited that year with
+    theirs, and the exits' realized P&L. A trade held over a year end counts by its entry in one
+    year and by its exit in the next, while its open profit marks both years' return."""
     out = []
     bases = result.metrics.get("entry_bars_by_year") or {}
     equity = list(result.equity)
@@ -416,6 +419,7 @@ def _yearly(
     for year in sorted({d.year for d, _ in equity}):
         days = [(d, v) for d, v in equity if d.year == year]
         year_dd = drawdowns(days, base)
+        entries = [t for t in trades if t.row.entry_date.year == year]
         exits = [t for t in trades if t.row.exit_date.year == year]
         last_bench = bench.get(days[-1][0])
         entered = bases.get(str(year)) or {}
@@ -424,8 +428,11 @@ def _yearly(
                 "year": year,
                 "return_pct": _f((days[-1][1] / base - 1) * 100) if base > 0 else None,
                 "max_dd_pct": _f(year_dd.max_pct),
-                "trades": len(exits),
-                "expectancy_r": _f(_mean([t.row.r_multiple for t in exits])),
+                "trades_entered": len(entries),
+                "expectancy_r_by_entry": _f(_mean([t.row.r_multiple for t in entries])),
+                "trades_exited": len(exits),
+                "expectancy_r_by_exit": _f(_mean([t.row.r_multiple for t in exits])),
+                "realized_pnl_by_exit": _money(sum((t.row.realized_pnl for t in exits), _ZERO)),
                 "benchmark_return_pct": _f((last_bench / bench_base - 1) * 100)
                 if last_bench is not None and bench_base
                 else None,

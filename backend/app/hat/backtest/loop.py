@@ -72,8 +72,16 @@ before the 15:15 cut-off, and live does not trade this timing: the known gap
 Slot order (PR 63, HAT-BT-026): live takes a day's triggers in the order they fire, so on a capped
 day the first breaks get the open slots. The loop takes the day's watchlist rows in their
 estimated trigger order (`slot_order` `time`, the default, `app.hat.backtest.slots`): gap overs
-first, then (level - open) / open ascending, ties by score. `score` (the PR 12 order) and
-`random:K` are variants; the rule is part of the run's conventions and `config_digest`.
+first, then (level - open) / open ascending, ties by score. `score` (the PR 12 order), `rs`
+(the signal night's `rs_weighted`, highest first: the S1 book's rule) and `random:K` are
+variants; the rule is part of the run's conventions and `config_digest`.
+
+Volume pace: a session decided on 5-minute bars judges an enabled `volume_pace` as live does, on
+the pace of the volume up to each bar. The daily estimate cannot: it judges it on the full day's
+volume against `vs_avg50` x the mean of the 50 sessions through the previous one
+(`volume_pace_low`, `volume_pace_missing` skips), a look-ahead the run records as the known gap
+`volume_pace_on_full_day_volume`. Under the `volume_pace` convention `full_day` the 5-minute
+sessions take that rule too, the replay deciding the trigger without the pace.
 
 Path pessimism (PR 64, HAT-BT-021): a stop the way up raised was placed after the
 low on the assumed path, though the low may have come after the high. A day whose low reaches
@@ -114,8 +122,9 @@ does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records 
 
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
 measured in shadow, besides the estimates the run took (`ESTIMATE_GAPS`: on a session without
-5-minute bars the trigger is the daily high's break of the level, without the opening range or
-`volume_pace`, and a pre-open playbook's the calibrated `intraday.EP_ESTIMATE`;
+5-minute bars the trigger is the daily high's break of the level, without the opening range,
+with `volume_pace` on the full day's volume, and a pre-open playbook's the calibrated
+`intraday.EP_ESTIMATE`;
 `catalyst_attached` is never judged): close-based exits decide on and fill at the daily close
 (the auction price), which stands in for the price live acts on before the 15:15 cut-off (owner
 2026-10-25), kill switches are not simulated (the exposure ladder is), a sleeve's health
@@ -189,6 +198,7 @@ from .data import Bar, MarketData, MarketView, industry_on
 from .fillrules import (
     breakout_volume_ok,
     first_trigger,
+    full_day_pace_skip,
     inferred_band,
     lower_circuit_locked,
     pre_break_low,
@@ -238,6 +248,8 @@ from .spec import (
     GAP_OVER_AT_OPEN,
     LEVEL_BREAK_ESTIMATED,
     REGIME_MULT_ONE,
+    VOLUME_PACE_ESTIMATED,
+    VOLUME_PACE_FULL_DAY,
     BacktestError,
     RunSpec,
     sleeve_weight,
@@ -803,7 +815,11 @@ class _Run:
         # the watchlist's score order, which the `score` and `random` slot orders keep
         decisions.sort(key=lambda d: (-d.row.score, d.row.playbook, str(d.row.instrument_id)))
         rule = self.spec.conventions.slot_order
-        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank)):
+
+        def strength(d: _Decision) -> Decimal | None:
+            return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted")
+
+        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank, strength)):
             at = (
                 _at(day, _AT_ENTRY, n) if found.at is None else found.at + timedelta(microseconds=n)
             )
@@ -850,6 +866,9 @@ class _Run:
             return None
         if price is None:
             return None  # the level did not break: the row expires at the session end
+        if not at_close and (paced := self._full_day_pace(playbook, instrument_id, day)):
+            self._skip(paced)
+            return None
         # A close entry comes after the whole day's path: its low is the day's low.
         lows = (
             (bar.low, None)
@@ -879,6 +898,32 @@ class _Run:
         plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close, None, basis)
         rank = trigger_rank(bar.open, level, self.spec.conventions.entry_fill_rule)
         return _Decision(row, plan, bar, _estimated_rank(rank))
+
+    def _full_day_pace(self, playbook: Playbook, instrument_id: str, day: date) -> str | None:
+        """The skip reason when the playbook's enabled `volume_pace` fails on the full day's
+        volume (`full_day_pace_skip`), None when it passes or the playbook has none; a judged
+        pace records the look-ahead gap `volume_pace_on_full_day_volume`."""
+        multiple = trigger.volume_pace_multiple(playbook)
+        if multiple is None:
+            return None
+        self.estimated.add(VOLUME_PACE_ESTIMATED)
+        volumes = self.view.volumes_through(instrument_id, day, trigger.AVG_VOLUME_DAYS + 1)
+        return full_day_pace_skip(volumes, multiple)
+
+    def _paced_live(self, playbook: Playbook) -> Playbook:
+        """The playbook the 5-minute replay decides with: as configured, or under the
+        `volume_pace` convention `full_day` without its `volume_pace` trigger, which the full
+        day's volume judges after the replay fires (`_full_day_pace`)."""
+        if self.spec.conventions.volume_pace != VOLUME_PACE_FULL_DAY:
+            return playbook
+        return playbook.model_copy(
+            update={
+                "trigger": [
+                    i.model_copy(update={"enabled": False}) if i.type == trigger.VOLUME_PACE else i
+                    for i in playbook.trigger
+                ]
+            }
+        )
 
     def _session_bars(
         self, day: date, instruments: Collection[str]
@@ -911,7 +956,7 @@ class _Run:
             bot_id=self.bot_id,
             strategy_key=self.config.bot,
             mode=NO_CATALYST_MODE,
-            playbook=playbook,
+            playbook=self._paced_live(playbook),
             instrument_id=row.instrument_id,
             symbol=instrument_id,
             trade_date=day,
@@ -935,14 +980,22 @@ class _Run:
         """The candidates whose session has 5-minute bars, decided by the live trigger replayed
         on them (`intraday.replay`): the level with the opening range, the close confirmation,
         `volume_pace`, the LIMIT entry, the low-of-day stop from the bars up to the trigger and
-        the entry filters are live's. A trigger whose stop cannot be planned is skipped, as on
-        the daily estimate."""
+        the entry filters are live's (under the `volume_pace` convention `full_day` the pace is
+        judged on the full day's volume once the replay fires). A trigger whose stop cannot be
+        planned is skipped, as on the daily estimate."""
         candidates = [self._candidate(r, day, prev) for r in rows if str(r.instrument_id) in bars]
         by_key = {(r.playbook, str(r.instrument_id)): r for r in rows}
         out: list[_Decision] = []
         for fired in replay(day, candidates, bars):
             candidate, planned = fired.candidate, fired.plan
             row = by_key[(candidate.playbook.name, candidate.symbol)]
+            if self.spec.conventions.volume_pace == VOLUME_PACE_FULL_DAY and (
+                paced := self._full_day_pace(
+                    self.config.playbook(row.playbook), candidate.symbol, day
+                )
+            ):
+                self._skip(paced)
+                continue
             if planned.entry is None or planned.level is None or planned.stop is None:
                 self._skip(planned.skip or SKIP_BAD_INPUT)
                 continue

@@ -78,6 +78,7 @@ from .spec import (
     ENTRY_BARS_5M,
     INITIAL_EQUITY,
     REGIME_MULT_POLICY,
+    VOLUME_PACE_LIVE,
     BacktestError,
     RunConventions,
     RunSpec,
@@ -518,6 +519,7 @@ def _config_doc(
             "regime_table": {k: str(v) for k, v in spec.regime_table.items()},
             "start_capital": str(spec.initial_equity),
             "entry_bars": c.entry_bars,
+            "volume_pace": c.volume_pace,
         },
         "labels": {
             "sweep_id": plan.labels.sweep_id,
@@ -851,6 +853,7 @@ VARIANT_KEYS = frozenset(
         "regime_mult",
         "start_capital",
         "entry_bars",
+        "volume_pace",
     }
 )
 SWEEP_KEYS = frozenset({"sweep_id", "sweep_name", "variants"})
@@ -878,8 +881,8 @@ def parse_variants(
     `overrides.parse_policy_set`), `policy` (a policy file's path, relative to the working
     directory, read by `read_policy`), `risk_pct`, `max_positions`, `max_per_industry`,
     `flat_ladder` (a boolean), `sleeve_weight`, `slot_order`, `entry_fill`, `ambiguous`,
-    `suspension_sessions`, `regime_mult`, `start_capital` and `entry_bars` (each replacing the
-    base's), and
+    `suspension_sessions`, `regime_mult`, `start_capital`, `entry_bars` and `volume_pace` (each
+    replacing the base's), and
     `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise. Each override path, and one change per variant, are checked
@@ -1014,6 +1017,7 @@ def _conventions(
         regime_mult=str(item.get("regime_mult", base.regime_mult)),
         start_capital=base.start_capital if capital is None else capital,
         entry_bars=str(item.get("entry_bars", base.entry_bars)),
+        volume_pace=str(item.get("volume_pace", base.volume_pace)),
     )
 
 
@@ -1259,6 +1263,7 @@ def _replayed(
             regime_mult=c["regime_mult"],
             start_capital=exact(c.get("start_capital", str(INITIAL_EQUITY))),
             entry_bars=c.get("entry_bars", ENTRY_BARS_5M),
+            volume_pace=c.get("volume_pace", VOLUME_PACE_LIVE),
         )
         universe = config["universe"]
         target = _Target(

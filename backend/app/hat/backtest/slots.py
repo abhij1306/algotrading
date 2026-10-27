@@ -5,9 +5,10 @@ slots) the first breaks get the slots. Daily bars cannot show that order, so the
 estimates it (`time`, the default): a gap over (an entry at the open) triggers at the open,
 before any break during the day, and the others break in ascending order of the distance from the
 open to the level, (level - open) / open. Ties keep the watchlist's score order. `score` (the
-PR 12 rule, the highest score first) and `random:K` (a permutation of the score order fixed by
-K and the day) are variants for sensitivity runs. The rule is recorded in the run's metrics and
-`config_digest`.
+PR 12 rule, the highest score first), `rs` (the relative strength score `rs_weighted` of the
+signal night, highest first; one without it last) and `random:K` (a permutation of the score
+order fixed by K and the day) are variants for sensitivity runs. The rule is recorded in the
+run's metrics and `config_digest`.
 
 These functions only order the candidates. Whether a candidate triggers and whether its entry
 is taken is the loop's and `evaluate_signal`'s decision.
@@ -26,6 +27,7 @@ from .fills import TOUCH
 
 __all__ = [
     "SLOT_ORDER_RANDOM",
+    "SLOT_ORDER_RS",
     "SLOT_ORDER_SCORE",
     "SLOT_ORDER_TIME",
     "is_slot_order",
@@ -35,6 +37,7 @@ __all__ = [
 
 SLOT_ORDER_TIME = "time"  # the default: the estimated trigger time
 SLOT_ORDER_SCORE = "score"  # the PR 12 rule: the watchlist score, highest first
+SLOT_ORDER_RS = "rs"  # `rs_weighted` of the signal night, highest first
 SLOT_ORDER_RANDOM = "random"  # `random:K`: the score order permuted by the seed K and the day
 # one spelling per seed, so digests agree; ASCII digits only
 _RANDOM = re.compile(r"random:(0|[1-9]\d{0,8})", re.ASCII)
@@ -47,9 +50,12 @@ T = TypeVar("T")
 
 
 def is_slot_order(rule: str) -> bool:
-    """Whether `rule` is `time`, `score` or `random:K` with K a whole number written without
-    leading zeros (below 10^9)."""
-    return rule in (SLOT_ORDER_TIME, SLOT_ORDER_SCORE) or _RANDOM.fullmatch(rule) is not None
+    """Whether `rule` is `time`, `score`, `rs` or `random:K` with K a whole number written
+    without leading zeros (below 10^9)."""
+    return (
+        rule in (SLOT_ORDER_TIME, SLOT_ORDER_SCORE, SLOT_ORDER_RS)
+        or _RANDOM.fullmatch(rule) is not None
+    )
 
 
 def trigger_rank(
@@ -71,16 +77,25 @@ def order_slots(
     rule: str,
     day: date,
     rank: Callable[[T], tuple[int, Decimal]],
+    strength: Callable[[T], Decimal | None] = lambda _: None,
 ) -> list[T]:
     """`candidates` (in the watchlist's score order) in the order they take the slots under
     `rule` on `day`: `time` sorts them stably by `rank` (ties keep the score order), `score`
-    keeps them, and `random:K` orders them by the SHA-256 of K, the day and each one's place in
-    the score order, so a run is reproducible and one day's order does not depend on the days
-    before it. An unknown rule raises ValueError."""
+    keeps them, `rs` sorts them stably by `strength` (the signal night's `rs_weighted`) highest
+    first, those without one last, and `random:K` orders them by the SHA-256 of K, the day and
+    each one's place in the score order, so a run is reproducible and one day's order does not
+    depend on the days before it. An unknown rule raises ValueError."""
     if rule == SLOT_ORDER_TIME:
         return sorted(candidates, key=rank)
     if rule == SLOT_ORDER_SCORE:
         return list(candidates)
+    if rule == SLOT_ORDER_RS:
+
+        def strongest(candidate: T) -> tuple[bool, Decimal]:
+            found = strength(candidate)
+            return (True, Decimal(0)) if found is None else (False, -found)
+
+        return sorted(candidates, key=strongest)
     found = _RANDOM.fullmatch(rule)
     if found is None:
         raise ValueError(f"unknown slot order {rule!r}")

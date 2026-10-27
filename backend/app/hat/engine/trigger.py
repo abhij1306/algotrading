@@ -67,7 +67,14 @@ from .criteria import (
     evaluate_live,
     get_type,
 )
-from .criteria.live import LEVEL_OPENING_RANGE, LiveContext, level_names, resolve_level
+from .criteria.live import (
+    LEVEL_OPENING_RANGE,
+    REASON_LOW_PACE,
+    LiveContext,
+    VolumePaceParams,
+    level_names,
+    resolve_level,
+)
 from .stops import (
     SKIP_BAD_INPUT,
     SeriesHistory,
@@ -108,6 +115,7 @@ __all__ = [
     "plan_entry",
     "upper_circuit_price",
     "daily_level",
+    "volume_pace_multiple",
     "watchlist_levels",
 ]
 
@@ -119,6 +127,8 @@ PRICE_BREAKS_LEVEL = "price_breaks_level"
 SKIP_NO_LEVEL = "level_undefined"
 SKIP_NO_PRICE = "no_live_price"
 AVG_VOLUME_DAYS = 50
+VOLUME_PACE = "volume_pace"
+PACE_LOW = REASON_LOW_PACE  # `volume_pace` failed: too little volume for the time of day
 _HUNDRED = Decimal(100)
 
 
@@ -485,6 +495,15 @@ def daily_level(playbook: Playbook, levels: Mapping[str, Decimal | None]) -> Dec
     and ranks on it. None without such a trigger or without its levels."""
     expression = playbook.level_expression
     return None if expression is None else resolve_level(expression, levels, daily=True)
+
+
+def volume_pace_multiple(playbook: Playbook) -> float | None:
+    """The `vs_avg50` of the playbook's enabled `volume_pace` trigger, None without one (the
+    backtest's daily estimate judges it on the full day's volume)."""
+    for instance in playbook.trigger:
+        if instance.enabled and instance.type == VOLUME_PACE:
+            return VolumePaceParams.model_validate(instance.params).vs_avg50
+    return None
 
 
 def needs_setup_level(playbook: Playbook) -> bool:
