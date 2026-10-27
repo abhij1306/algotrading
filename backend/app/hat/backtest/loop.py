@@ -1039,7 +1039,8 @@ class _Run:
             ):
                 self._skip(paced)
                 continue
-            if not candidate.playbook.preopen:
+            preopen = candidate.playbook.preopen
+            if not preopen:
                 self._passed(row.playbook, "breakout_volume")
             if planned.entry is None or planned.level is None or planned.stop is None:
                 self._skip(planned.skip or SKIP_BAD_INPUT)
