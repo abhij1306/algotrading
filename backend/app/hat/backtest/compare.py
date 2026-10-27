@@ -9,11 +9,11 @@ the change bound, how many knobs it changed against its base (`5b`: a declared b
 policy drifted), the run and data audit statuses, and the headline metrics with the promotion
 criteria's (longest drawdown in sessions, the benchmark's CAGR, the CAGR without the top five
 trades, the entries above 5% of ADV), and the invested share (the equity held in positions: the
-mean over sessions, and the highest session's from `equity.csv`). With `--criteria` (the strategy's notes, their
-`hat-criteria` block) a second table gives each run's criteria, pass or fail, as the review
-computes them (`criteria.in_sample_rows`, the DSR and PBO at the family today; a hold-out run's
-in-sample rows are its validated run's, beside its own hold-out rows), and the family's own
-trials against the budget.
+mean over sessions, and the highest session's from `equity.csv`). With `--criteria` (the
+strategy's notes, their `hat-criteria` block) a second table gives each run's criteria, pass or
+fail, as the review computes them (`criteria.in_sample_rows`, the DSR and PBO at the family
+today; a hold-out run's in-sample rows are its validated run's, beside its own hold-out rows),
+and the family's own trials against the budget.
 """
 
 from __future__ import annotations
