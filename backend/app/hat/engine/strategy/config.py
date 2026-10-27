@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from decimal import Decimal
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, model_validator
@@ -23,16 +24,18 @@ from ...data.index_history import INDEX_NAMES, INDIA_VIX
 from ...errors import HatError
 from ...risk.policy import POLICY_FIELDS, SEED_POLICY
 from ..criteria import PREOPEN, REGISTRY, UnknownCriterionError, get_type
-from ..criteria.base import STAGES
+from ..criteria.base import STAGES, dec
 from ..criteria.live import (
     DAILY_CLOSE,
     INTRADAY_BREAK,
     LEVEL_OPENING_RANGE,
+    GapUpParams,
     PriceBreaksLevelParams,
     level_names,
 )
 
 PRICE_BREAKS_LEVEL = "price_breaks_level"
+GAP_UP = "gap_up"
 
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PLAYBOOK = "default"
@@ -523,6 +526,16 @@ class Playbook(Model):
             if instance.type == PRICE_BREAKS_LEVEL and instance.enabled:
                 return str(instance.params["level"])
         return None
+
+    @property
+    def gap_min_pct(self) -> Decimal | None:
+        """The least `min_pct` of the playbook's enabled `gap_up` triggers, None without one."""
+        found = [
+            dec(GapUpParams.model_validate(i.params).min_pct)
+            for i in self.trigger
+            if i.type == GAP_UP and i.enabled
+        ]
+        return min(found, default=None)
 
     @property
     def preopen(self) -> bool:

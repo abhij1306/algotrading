@@ -67,7 +67,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   the risk policy as a new policy version.
 - **A playbook's handling comes from its criteria, not its name:** a playbook is pre-open
   (`Playbook.preopen`) when one of its criteria declares `preopen` in its `data_needs`; the gap
-  scan builds its candidates, so its trigger level can only be the opening range (refused on
+  scan builds its candidates (gapped at least the least enabled `gap_up` minimum of the active
+  bots' pre-open playbooks, `gap_floor`, each playbook's own minimum applied at its trigger; the
+  setup judged on the bars to the previous session, `ep_setup_passes`), so its trigger level can only be the opening range (refused on
   save otherwise), the nightly scan skips it, and the known gap `episodic_pivot_not_backtested`
   names it (trades are left out of comparisons per strategy version and playbook). The trigger inputs are built by one function each,
   for live, the backtest and the scan: the stop history at each rule's own length

@@ -82,7 +82,8 @@ _TYPES = (
         ("price_band",),
         universe.price_band_allowed,
     ),
-    _t("adr_min", "universe", universe.AdrMinParams, (BARS,), universe.adr_min),
+    # also a playbook setup criterion: a pre-open setup judges it on the previous session
+    _t("adr_min", "universe", universe.AdrMinParams, (BARS,), universe.adr_min, ("setup",)),
     _t("sma_above", "setup", setup.SmaAboveParams, (BARS,), setup.sma_above),
     _t("sma_rising", "setup", setup.SmaRisingParams, (BARS,), setup.sma_rising),
     _t("pct_from_52w_low", "setup", setup.PctFrom52wLowParams, (BARS,), setup.pct_from_52w_low),
