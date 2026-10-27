@@ -391,5 +391,8 @@ def test_a_sweep_with_an_unknown_path_fails_before_any_run() -> None:
         sweep = parse_variants(_sweep({"label": "a"}, {"label": "b", **bad}), RunConventions())
         with pytest.raises(BacktestError, match=code):
             check_paths(sweep, config, version)
-    valued = _sweep({"label": "a", "set": ["exits[0].enabled=7"]})
-    check_paths(parse_variants(valued, RunConventions()), config, version)
+    for value in ("exits[0].enabled=7", 'exits[+]={"rule": "max_hold", "dayz": 60}'):
+        valued = parse_variants(_sweep({"label": "a", "set": [value]}), RunConventions())
+        check_paths(valued, config, version)
+        with pytest.raises(OverrideError, match="backtest_override_invalid"):
+            valued.variants[0].conventions.overrides.apply_config(config)

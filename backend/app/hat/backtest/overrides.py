@@ -250,7 +250,8 @@ class Overrides:
     def apply_config(self, config: StrategyConfig) -> StrategyConfig:
         """`config` with the sets applied, parsed afresh; `backtest_bad_override_path` (or the
         selector's code) for a path that names nothing, a key the model does not know among
-        them, and `backtest_override_invalid` for a value the model refuses."""
+        them, and `backtest_override_invalid` for a value the model refuses (an unknown key
+        inside a set's value among them)."""
         if not self.sets:
             return config
         doc = config.to_json()
@@ -259,7 +260,13 @@ class Overrides:
         try:
             return parse_config(doc)
         except ConfigError as exc:
-            unknown = "extra_forbidden" in exc.codes
+            # a path error only when the unknown field is a key a set's path names, not one
+            # inside a set's value (`exits[+]={"rule": "max_hold", "dayz": 60}` is a bad value)
+            named = {_segments(path)[-1][0] for path, _ in self.sets}
+            unknown = any(
+                code == "extra_forbidden" and where.rpartition(".")[2] in named
+                for where, code in exc.problems
+            )
             code = "backtest_bad_override_path" if unknown else "backtest_override_invalid"
             raise OverrideError(code) from None
 
