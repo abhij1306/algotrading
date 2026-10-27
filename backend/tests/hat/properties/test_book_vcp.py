@@ -320,3 +320,14 @@ def test_book_vcp_counts_an_earlier_broken_base() -> None:
     assert memo  # the earlier dates' geometry is kept for the next night
     one = BookVcpParams(max_base_number=1)
     assert book_vcp(ctx, one).reason == "late_stage_base"
+
+
+def test_book_vcp_switched_off_rules_need_no_data() -> None:
+    frame, _ = _one_base()
+    frame = frame.with_columns(pl.lit(None, dtype=pl.Float64).alias("volume"))
+    assert book_vcp(_ctx(frame, []), P).reason == "no_volume_data"
+    off = BookVcpParams(dryup_mean_max=None, dryup_session_max=None, rc_max_ratio=None)
+    result = book_vcp(_ctx(frame, []), off)
+    assert result.passed, result.reason
+    assert "dryup_mean_ratio" not in result.extras
+    assert "index_depth_pct" not in result.extras

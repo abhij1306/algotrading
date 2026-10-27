@@ -342,6 +342,11 @@ def dryup_ratios(
     return sum(values, Decimal(0)) / len(values) / base, min(values) / base
 
 
+def dryup_on(params: BookVcpParams) -> bool:
+    """Whether either dry-up rule is on."""
+    return params.dryup_mean_max is not None or params.dryup_session_max is not None
+
+
 def dryup_fault(mean: Decimal, lowest: Decimal, params: BookVcpParams) -> str | None:
     if params.dryup_mean_max is not None and mean >= dec(params.dryup_mean_max):
         return "no_volume_dryup"
@@ -615,19 +620,20 @@ def book_vcp(ctx: EvalContext, params: BookVcpParams) -> CriterionResult:
     if fault is not None:
         return verdict(False, float(after), fault)
     # E: dry-up over the final contraction
+    # a rule switched off never rejects for want of its data
     ratios = dryup_ratios(series.volume, final, params.dryup_avg_days)
-    if ratios is None:
+    if ratios is None and dryup_on(params):
         return verdict(False, None, "no_volume_data")
-    fault = dryup_fault(*ratios, params)
-    if fault is not None:
+    fault = None if ratios is None else dryup_fault(*ratios, params)
+    if ratios is not None and fault is not None:
         return verdict(False, float(ratios[0]), fault)
     # F: relative correction against the NIFTY 500
     first_depth = contractions[0].depth_pct
     idx_depth = index_depth_pct(_benchmark_closes(ctx, series.dates[geo.h0]))
-    if idx_depth is None:
+    if idx_depth is None and params.rc_max_ratio is not None:
         return verdict(False, None, "no_benchmark")
-    rc_ratio = None if idx_depth == 0 else float(first_depth / idx_depth)
-    if relative_fault(first_depth, idx_depth, params):
+    rc_ratio = None if not idx_depth else float(first_depth / idx_depth)
+    if idx_depth is not None and relative_fault(first_depth, idx_depth, params):
         return verdict(False, rc_ratio, "correction_too_deep_vs_index")
     # G: base count
     evaluable, passes, below = template_passes(series.high, series.low, series.close)
@@ -659,12 +665,14 @@ def book_vcp(ctx: EvalContext, params: BookVcpParams) -> CriterionResult:
         "shakeout": shakeout(contractions),
         "tc_low_sessions": before,
         "tc_after_sessions": after,
-        "dryup_mean_ratio": float(ratios[0]),
-        "dryup_min_ratio": float(ratios[1]),
-        "index_depth_pct": float(idx_depth),
         "base_number": number,
         "stage2_start_unknown": unknown,
     }
+    if ratios is not None:
+        extras["dryup_mean_ratio"] = float(ratios[0])
+        extras["dryup_min_ratio"] = float(ratios[1])
+    if idx_depth is not None:
+        extras["index_depth_pct"] = float(idx_depth)
     if rc_ratio is not None:
         extras["rc_ratio"] = rc_ratio
     return CriterionResult(True, 1.0, float(len(contractions)), REASON_OK, extras)
