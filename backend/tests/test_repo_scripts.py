@@ -5,7 +5,7 @@ network, a broker, herdr, git or a database."""
 import importlib.util
 import json
 import sys
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -33,6 +33,7 @@ merge = _script("agents/merge_check.py")
 builder = _script("agents/builder.py")
 secrets = _script("set_secrets.py")
 fyers_login = _script("fyers_login.py")
+results_probe = _script("research/s2_results_probe.py")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -480,3 +481,112 @@ def test_hook__style_of() -> None:
     assert hook.style_of(idle) == "fg=green"
     assert hook.style_of({**idle, "results": {"1": "idle no-verdict"}}) == "fg=yellow"
     assert hook.style_of({**idle, "state": "needs-input"}) == "fg=red"
+
+
+# ---------------------------------------------------------------------------------------------
+# s2_results_probe (recorded NSE answers, trimmed, under fixtures/nse_results)
+
+NSE_RESULTS = PROJECT_ROOT / "backend" / "tests" / "fixtures" / "nse_results"
+
+
+def _nse(name: str) -> bytes:
+    return (NSE_RESULTS / name).read_bytes()
+
+
+def test_results_probe__nse_time_formats() -> None:
+    ist = results_probe.IST
+    assert results_probe.nse_time("16-Jan-2025 20:20:21") == datetime(
+        2025, 1, 16, 20, 20, 21, tzinfo=ist
+    )
+    assert results_probe.nse_time("16-Jan-2025 20:20") == datetime(2025, 1, 16, 20, 20, tzinfo=ist)
+    assert results_probe.nse_time("30-JUN-2026") == datetime(2026, 6, 30, tzinfo=ist)
+    assert results_probe.nse_time("-") is None
+    assert results_probe.nse_time(None) is None
+
+
+def test_results_probe__results_listing() -> None:
+    xbrl, gap, old = results_probe.parse_results_listing(_nse("results_listing.json"))
+    assert (xbrl.period_end, xbrl.basis, xbrl.source) == (date(2024, 12, 31), "standalone", "reg33")
+    assert xbrl.filed_at == datetime(2025, 1, 16, 20, 20, 21, tzinfo=results_probe.IST)
+    assert xbrl.filing_date_field == "broadCastDate"
+    assert xbrl.xbrl_url is not None
+    assert xbrl.xbrl_url.endswith(".xml")
+    assert (gap.period_end, gap.xbrl_url, gap.detail_url) == (date(2018, 3, 31), None, None)
+    assert old.xbrl_url is None
+    assert old.detail_url is not None
+    assert "financial_results" in old.detail_url
+
+
+def test_results_probe__insurance_listing_reads_period_end() -> None:
+    (row,) = results_probe.parse_results_listing(_nse("insurance_listing.json"), "insurance")
+    assert (row.period_end, row.basis, row.source) == (
+        date(2024, 12, 31),
+        "standalone",
+        "insurance",
+    )
+    assert "Life-Insurance" in row.listing_format
+
+
+def test_results_probe__integrated_listing_keeps_financials() -> None:
+    rows, total = results_probe.parse_integrated_listing(_nse("integrated_listing.json"))
+    assert total == 19
+    assert [(r.period_end, r.basis) for r in rows] == [
+        (date(2026, 6, 30), "consolidated"),
+        (date(2026, 6, 30), "standalone"),
+    ]
+    assert rows[0].filing_date_field == "broadcast_Date"
+    assert rows[0].filed_at == datetime(2026, 7, 17, 19, 50, 3, tzinfo=results_probe.IST)
+
+
+@pytest.mark.parametrize(
+    ("name", "kind", "basis"),
+    [
+        ("indas", "reg33_indas", "standalone"),
+        ("banking", "reg33_banking", "consolidated"),
+        ("nbfc", "reg33_nbfc", "consolidated"),
+        ("non_indas", "reg33_non_indas", "standalone"),
+        ("insurance", "reg33_insurance", "standalone"),
+        ("integrated_indas", "integrated_indas", "consolidated"),
+        ("integrated_li", "integrated_li", "consolidated"),
+    ],
+)
+def test_results_probe__classify_xbrl(name: str, kind: str, basis: str) -> None:
+    found = results_probe.classify_xbrl(_nse(f"xbrl_{name}.xml"))
+    assert (found.format, found.basis) == (kind, basis)
+    assert found.schema_ref.endswith(".xsd")
+
+
+def test_results_probe__classify_not_xbrl() -> None:
+    assert results_probe.classify_xbrl(b"<html>blocked</html>").format == "not_xbrl"
+
+
+def test_results_probe__detail_page_figures() -> None:
+    assert results_probe.detail_has_figures(_nse("detail_page.html"))
+    assert not results_probe.detail_has_figures(b"<html></html>")
+
+
+def test_results_probe__results_announcement_is_the_pdf_one() -> None:
+    items = results_probe.parse_announcements(_nse("announcements.json"))
+    ist = results_probe.IST
+    match, rule = results_probe.results_announcement(items)
+    assert match is not None
+    assert (match.at, rule) == (datetime(2025, 1, 16, 19, 25, 42, tzinfo=ist), "result_updates")
+    filed = datetime(2025, 1, 16, 20, 15, 20, tzinfo=ist)
+    assert results_probe.seconds_between(filed, match.at) == 2978
+    board = results_probe.Announcement(
+        datetime(2025, 1, 16, 19, 0, tzinfo=ist), "Outcome of Board Meeting", "held today", ""
+    )
+    others = [i for i in items if i.desc != "Financial Result Updates"]  # Integrated Filing etc.
+    assert results_probe.results_announcement(others) == (None, "")
+    assert results_probe.results_announcement([*others, board]) == (board, "board_outcome")
+
+
+def test_results_probe__xbrl_name_stamp_and_quarters() -> None:
+    url = "https://x/INTEGRATED_FILING_INDAS_1695741_17072026075004_WEB.xml"
+    assert results_probe.xbrl_name_stamp(url) == "2026-07-17 07:50:04"
+    assert results_probe.xbrl_name_stamp("https://x/corporate/xbrl/-") == ""
+    stamp = results_probe.xbrl_stamp_at(url)
+    assert stamp == datetime(2026, 7, 17, 7, 50, 4, tzinfo=results_probe.IST)
+    assert results_probe.quarters_in(2025, date(2026, 10, 28)) == 4
+    assert results_probe.quarters_in(2026, date(2026, 10, 28)) == 2  # Sep 2026 due mid-Nov
+    assert results_probe.summary([30, -10, 50]) == {"n": 3, "median": 30, "min": -10, "max": 50}
