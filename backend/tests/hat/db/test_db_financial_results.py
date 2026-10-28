@@ -37,7 +37,11 @@ def _instrument(session: Session) -> uuid.UUID:
 
 
 def _row(
-    iid: uuid.UUID, version: int, public_at: datetime, revenue: str, **kw
+    iid: uuid.UUID,
+    version: int,
+    public_at: datetime,
+    revenue: str,
+    supersedes_id: uuid.UUID | None = None,
 ) -> HatFinancialResult:
     return HatFinancialResult(
         instrument_id=iid,
@@ -56,7 +60,7 @@ def _row(
         source_url=f"https://example.invalid/{version}.xml",
         sha256=str(version) * 64,
         raw_path=f"blobs/{version}.gz",
-        **kw,
+        supersedes_id=supersedes_id,
     )
 
 
