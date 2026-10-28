@@ -284,7 +284,7 @@ def _span_days(start: date | None, end: date | None) -> int | None:
     return None if start is None or end is None else (end - start).days
 
 
-def _period(
+def reporting_period(
     context: dict[str, Fact], defined: tuple[date | None, date | None] | None
 ) -> tuple[date | None, date | None]:
     start = _date(_text(context, "DateOfStartOfReportingPeriod"))
@@ -320,8 +320,8 @@ def parse(body: bytes) -> Parsed:
     basis = basis_of_document(facts)
     one = facts.get(QUARTER_CONTEXT, {})
     four = facts.get(YTD_CONTEXT, {})
-    start, end = _period(one, periods.get(QUARTER_CONTEXT))
-    ytd_start, ytd_end = _period(four, periods.get(YTD_CONTEXT))
+    start, end = reporting_period(one, periods.get(QUARTER_CONTEXT))
+    ytd_start, ytd_end = reporting_period(four, periods.get(YTD_CONTEXT))
     fy_start = _date(_text(one, "DateOfStartOfFinancialYear"))
     ytd_start = ytd_start or (fy_start if ytd_end else None)
     blank = Parsed(kind, basis, start, end, None, ytd_start, None, None, None, fy_start)
@@ -374,7 +374,7 @@ def _nine_month(
     for ref, context in facts.items():
         if ref in (QUARTER_CONTEXT, YTD_CONTEXT):
             continue
-        start, stop = _period(context, periods.get(ref))
+        start, stop = reporting_period(context, periods.get(ref))
         span = _span_days(start, stop)
         if span is not None and 250 <= span <= 290 and stop is not None:
             if 88 <= (end - stop).days <= 92:
