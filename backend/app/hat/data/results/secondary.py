@@ -130,13 +130,20 @@ def _row(rows: list[list[str]], labels: tuple[str, ...]) -> list[str] | None:
     return None
 
 
+def _basis(label: str) -> str:
+    """The basis a page names first above its table ('Standalone Figures in Rs. Crores / View
+    Consolidated' is standalone: the link names the other basis); "" when it names neither."""
+    named = [(label.lower().find(b), b) for b in ("consolidated", "standalone")]
+    found = sorted((at, b) for at, b in named if at >= 0)
+    return found[0][1] if found else ""
+
+
 def parse_page(body: bytes) -> list[Quarter]:
     """The quarters of one company page, with the basis the page names (none when it names
     neither)."""
     table = _QuartersTable()
     table.feed(body.decode("utf-8", errors="replace"))
-    sub = table.sub.lower()
-    basis = next((b for b in ("consolidated", "standalone") if b in sub), "")
+    basis = _basis(table.sub)
     if not basis or not table.dates:
         return []
     revenue = _row(table.rows, REVENUE_LABELS)

@@ -553,6 +553,16 @@ def test_results__secondary_page() -> None:
     assert page_url("TCS", "standalone") == "https://www.screener.in/company/TCS/"
 
 
+def test_results__secondary_standalone_page_is_standalone() -> None:
+    """The recorded RELIANCE standalone page names its basis first ('Standalone Figures in Rs.
+    Crores / View Consolidated'): the link to the other basis never decides it."""
+    quarters = parse_page((FIXTURES / "secondary_quarters_reliance_standalone.html").read_bytes())
+    assert len(quarters) == 13
+    assert {q.basis for q in quarters} == {"standalone"}
+    assert quarters[-1].period_end == date(2026, 6, 30)
+    assert quarters[-1].revenue == Decimal("163631") * CR
+
+
 def test_results__raw_cache_keeps_bodies_by_sha(tmp_path: Path) -> None:
     cache = RawCache(tmp_path)
     when = datetime(2026, 10, 28, tzinfo=UTC)
