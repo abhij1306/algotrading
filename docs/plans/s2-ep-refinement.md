@@ -23,6 +23,9 @@ Sources the rules come from (reference only):
 The probe (A0), the store (A1), the parser rules (A2) and point-in-time growth (A3) are built:
 `backend/app/hat/data/results/`, `docs/decisions.md` (Financial results store), `docs/runbook.md`
 (Financial results). Every rule's test is in `backend/tests/hat/properties/test_results.py`.
+Scope (owner 2026-10-28), for A1 and A3: NIFTY 500 point-in-time members only, consolidated basis
+(standalone only for a quarter with no consolidated filing); A3 growth therefore compares
+consolidated quarters, falling back to standalone only where both quarters are standalone.
 
 ### A4. Validation report. STOP after this.
 - Coverage by year and by format: filings found, parsed, excluded (with reason counts).

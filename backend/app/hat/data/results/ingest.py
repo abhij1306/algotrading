@@ -50,6 +50,7 @@ from .nse import (
     parse_announcements,
 )
 from .raw import RawCache
+from .scope import BASIS_CONSOLIDATED_FIRST, by_rule
 from .secondary import Quarter, page_url, parse_page
 from .timing import (
     FiledAt,
@@ -190,6 +191,7 @@ def parse(
     start: date,
     end: date,
     report_dir: Path,
+    basis: str = BASIS_CONSOLIDATED_FIRST,
 ) -> ParseReport:  # pragma: no cover - the database and the cache
     from app.database import db_session_scope, live_writer_engine
 
@@ -205,15 +207,19 @@ def parse(
     report = ParseReport()
     outcomes: list[Outcome] = []
     for n, member in enumerate(members, 1):
-        filings = [
-            f for f in member_filings(nse, member, insurance, owners) if in_scope(f, start, end)
-        ]
+        filings = by_rule(
+            [f for f in member_filings(nse, member, insurance, owners) if in_scope(f, start, end)],
+            basis,
+        )
         with db_session_scope(writes_data=True) as session:
             ingest = MemberIngest(session, nse, member, announced)
             stored = ingest.nse(filings)
             outcomes += stored
             if not is_insurer(member, insurance, stored):  # insurers: metadata rows only
-                outcomes += ingest.secondary(_secondary_quarters(secondary, member), start, end)
+                quarters = secondary_by_rule(
+                    _secondary_quarters(secondary, member), basis, ingest.nse_consolidated()
+                )
+                outcomes += ingest.secondary(quarters, start, end)
         report.members = n
         if n % 50 == 0:
             logger.info("parse %d/%d members, %d outcomes", n, len(members), len(outcomes))
@@ -237,6 +243,15 @@ def _secondary_quarters(cache: RawCache, member: Member) -> list[PageQuarter]:
         if entry is not None and entry.status == 200:
             out += [(q, url, entry.sha256, entry.fetched_at) for q in parse_page(cache.body(entry))]
     return out
+
+
+def secondary_by_rule(
+    quarters: Sequence[PageQuarter], rule: str, consolidated_elsewhere: Iterable[date]
+) -> list[PageQuarter]:
+    """The secondary-source quarters the basis rule keeps (`scope.by_rule`), a quarter NSE gives
+    consolidated figures for counting as consolidated."""
+    kept = {id(q) for q in by_rule([t[0] for t in quarters], rule, consolidated_elsewhere)}
+    return [t for t in quarters if id(t[0]) in kept]
 
 
 def is_insurer(member: Member, insurance: Sequence[Filing], outcomes: Sequence[Outcome]) -> bool:
@@ -305,6 +320,10 @@ class MemberIngest:  # pragma: no cover - the database
         for row in rows:
             self.shas.add(row.sha256)
             self._hold(row)
+
+    def nse_consolidated(self) -> set[date]:
+        """The period ends with a stored consolidated NSE row."""
+        return {e for e, b, source in self.latest if b == "consolidated" and source == SOURCE_NSE}
 
     def _hold(self, row: HatFinancialResult) -> None:
         ytd = Figures(

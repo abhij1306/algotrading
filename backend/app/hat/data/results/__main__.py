@@ -12,6 +12,9 @@ downloads the secondary source's company pages for the covered instruments into
 reads only the cache and appends what is new to `hat_financial_result` (`ingest.py`); `derive`
 rebuilds `hat_financial_growth` from it (`derive.py`). Every step is incremental and can be
 stopped and rerun. `--offline` makes `fetch` read the cache only.
+
+`--universe nifty500|ep` and `--basis consolidated-first|both` (fetch, fetch-secondary and parse;
+defaults nifty500 and consolidated-first) set the scope (`scope.py`).
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from typing import TYPE_CHECKING
 
 from ...settings import operator_settings
 from ...time import trade_date_of, utc_now
+from .scope import BASIS_CONSOLIDATED_FIRST, BASIS_RULES, UNIVERSE_NIFTY500, UNIVERSES
 
 if TYPE_CHECKING:
     from ...settings import HatSettings
@@ -46,6 +50,8 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p.add_argument("--symbols", default="", help="comma-separated symbols (default: all)")
     p.add_argument("--offline", action="store_true", help="fetch: read the cache only")
     p.add_argument("--no-announcements", action="store_true", help="fetch: skip the days")
+    p.add_argument("--universe", choices=UNIVERSES, default=UNIVERSE_NIFTY500)
+    p.add_argument("--basis", choices=BASIS_RULES, default=BASIS_CONSOLIDATED_FIRST)
     return p.parse_args(argv)
 
 
@@ -63,27 +69,30 @@ def main(argv: Sequence[str] | None = None) -> None:
     today = trade_date_of(utc_now())
     end = args.end or today
     root = settings.data_root
-    covered = _covered(settings, today, args.symbols)
+    covered = _covered(settings, today, args.symbols, args.universe)
     if args.step == "fetch":
         from .fetch import fetch_nse
         from .nse import Client
 
         client = Client(RawCache(root / NSE_RAW), offline=args.offline)
         announcements = not args.no_announcements
-        _out(fetch_nse(client, covered, args.start, end, today, announcements=announcements))
+        report = fetch_nse(
+            client, covered, args.start, end, today, announcements=announcements, basis=args.basis
+        )
+        _out(report)
     elif args.step == "fetch-secondary":
         from .secondary import fetch_secondary
 
-        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered))
+        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered, args.basis))
     else:
         from .ingest import parse
 
         nse, secondary = RawCache(root / NSE_RAW), RawCache(root / SECONDARY_RAW)
-        _out(parse(nse, secondary, covered, args.start, end, root / REPORT_DIR))
+        _out(parse(nse, secondary, covered, args.start, end, root / REPORT_DIR, args.basis))
 
 
-def _covered(settings: HatSettings, today: date, symbols: str) -> list[Member]:
-    """The universe (`universe.members`), narrowed to `symbols` when given."""
+def _covered(settings: HatSettings, today: date, symbols: str, universe: str) -> list[Member]:
+    """The universe (`universe.members`, `scope.UNIVERSES`), narrowed to `symbols` when given."""
     from app.database import db_session_scope
 
     from ..store import DataStore
@@ -92,7 +101,7 @@ def _covered(settings: HatSettings, today: date, symbols: str) -> list[Member]:
     wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with db_session_scope() as session:
-        covered = members(session, store, UNIVERSE_SINCE, today)
+        covered = members(session, store, UNIVERSE_SINCE, today, universe)
     if wanted:
         covered = [m for m in covered if wanted & set(m.symbols)]
     logging.info(
