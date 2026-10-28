@@ -255,7 +255,9 @@ def ep_gate(
     series: str | None = None,
 ) -> str | None:
     """`ep_setup_passes`'s verdict as the gate that failed: `universe`, `setup` or the type of
-    the first failing hard setup criterion (`neglect`), None when all pass."""
+    the first failing hard setup criterion (`neglect`), None when all pass. The universe stage
+    reads the bars and the series only, as the nightly scan's does (no price bands: no stored
+    config's universe uses `price_band_allowed`)."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
     before = bars.filter(pl.col("date") < trade_date)
     if not enabled or before.is_empty() or previous is None or before["date"].max() != previous:
