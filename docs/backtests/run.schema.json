@@ -471,12 +471,22 @@
           "stopout_cap",
           "open_risk_cap",
           "regime_off",
-          "kill_switch"
+          "kill_switch",
+          "insufficient_same_day_credit"
         ]
       },
       "additionalProperties": {
         "type": "integer"
       }
+    },
+    "overlay": {
+      "description": "The idle-cash ETF overlay's block: its config, sleeve summary, net cash flow (sleeve trades less all tax) and benchmarks; only in an overlay run",
+      "type": "object",
+      "required": [
+        "config",
+        "net_flow",
+        "benchmarks"
+      ]
     },
     "binding": {
       "type": "object",

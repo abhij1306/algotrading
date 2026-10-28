@@ -291,6 +291,8 @@ def check_pnl(
     if r_off:
         findings.append(_finding("r_not_net_over_risk", FAIL, r_off))
     total = sum(nets, Decimal(0))
+    # an overlay run's sleeve trades and tax are cash outside the trades (`overlay.net_flow`)
+    total += _dec((run.get("overlay") or {}).get("net_flow")) or Decimal(0)
     final = _dec(metrics.get("final_equity"))
     stated = {
         "trades": (len(trades), metrics.get("trades"), 0),

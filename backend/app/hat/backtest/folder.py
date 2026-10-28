@@ -31,6 +31,7 @@ from app.paths import BACKTEST_SCHEMA
 from ..money import exact
 from . import ep_log
 from .ep_log import EP_CANDIDATE_COLUMNS, EP_COLUMNS
+from .overlay import OVERLAY_CSV_HEADER
 from .report import BacktestResult, LegRow, SignalRow, TradeRow
 from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
@@ -74,7 +75,8 @@ __all__ = [
 ]
 
 # `ep_candidates` only in a run with a pre-open playbook (`ep_log`)
-CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks", "ep_candidates")
+# `overlay` only in a run with the ETF overlay (its columns `overlay.OVERLAY_CSV_HEADER`)
+CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks", "ep_candidates", "overlay")
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
@@ -832,6 +834,12 @@ def build(
     }
     if result.ep_candidates:
         csvs["ep_candidates"] = _csv(EP_CANDIDATE_COLUMNS, result.ep_candidates)
+    if result.overlay:
+        doc["overlay"] = dict(result.overlay)
+        csvs["overlay"] = _csv(
+            OVERLAY_CSV_HEADER,
+            (dict(zip(OVERLAY_CSV_HEADER, row, strict=True)) for row in result.overlay_rows),
+        )
     return doc, csvs
 
 

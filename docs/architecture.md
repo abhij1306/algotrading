@@ -148,6 +148,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `backtest/evidence.py`); a strategy version names its evidence by run id.
   `backtests/jobs/<job id>/` holds an app-started job's variants file and its child's stdout and
   stderr (`backtest/jobs.py`).
+- `etf/` holds the idle-cash ETF overlay's data (NIFTYBEES, GOLDBEES, LIQUIDBEES daily and
+  5-minute bars, LIQUIDBEES' total-return series, NIFTY 50 and the reference TRIs, a manifest),
+  written by `scripts/data/overlay_etf.py store` and read by an overlay run
+  (`backtest/etf_data.py`).
 - `features_daily/_state.json` holds the inputs digest and per-day fingerprints: changed days,
   chains or inputs are recomputed; the backtest refuses stale features
   (`backtest_features_stale`).

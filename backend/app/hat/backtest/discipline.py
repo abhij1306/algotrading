@@ -86,6 +86,8 @@ def knobs_of(
     }
     if conventions.volume_pace != VOLUME_PACE_LIVE:
         named["volume_pace"] = conventions.volume_pace
+    if o.playbooks is not None:  # a knob only when set, so a run before it compares alike
+        named["playbooks"] = sorted(o.playbooks)
     return out | {name: _text(value) for name, value in named.items()}
 
 

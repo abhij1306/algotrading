@@ -41,6 +41,7 @@ from .fills import (
     TOUCH,
     TRIGGER_PROXY,
 )
+from .overlay import OverlayConfig
 from .overrides import Overrides
 from .slots import SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
 
@@ -70,6 +71,7 @@ __all__ = [
     "VOLUME_PACE_LIVE",
     "VOLUME_PACE_RULES",
     "BacktestError",
+    "CoSleeve",
     "RunConventions",
     "RunSpec",
     "known_gaps",
@@ -193,6 +195,23 @@ GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
     VOLUME_PACE_ESTIMATED: _volume_pace,
     "daily_close_entry_not_live": _daily_close,
 }
+# Reported, besides `KNOWN_GAPS`, by a run of more than one strategy (`RunSpec.co_sleeves`): its
+# window is chosen for the portfolio, so it may hold a member strategy's own in-sample dates (S2
+# chose its config on 2022-2024, inside a combined hold-out from 2022): such a hold-out is not
+# independent of that strategy's selection.
+CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
+# Reported by a run with the ETF overlay (`RunSpec.overlay`): today's tax rules on every year, the
+# year's tax paid on its last session, a sleeve sale priced at the day's open without 5-minute ETF
+# bars (counted `sleeve_price_estimated`), LIQUIDBEES' return from the 1D Rate Index less its
+# expense ratio where its dividends are not known (the ranges in `overlay.liquidbees_tr_proxy`),
+# ETF trades on the stock cost model (equity delivery STT on every ETF, LIQUIDBEES included).
+OVERLAY_GAPS = (
+    "tax_rules_current_for_all_years",
+    "tax_paid_at_fy_end",
+    "sleeve_price_estimated_at_open",
+    "liquidbees_tr_proxy",
+    "etf_costs_on_stock_cost_model",
+)
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
@@ -342,8 +361,35 @@ class RunConventions:
 
 
 @dataclass(frozen=True)
+class CoSleeve:
+    """A strategy run beside the run's own on the same account (a portfolio run): its config
+    (overrides applied), version, weight of the account and the regime table it sizes under.
+    Its trades share the cash, the policy's account caps and the market with the run's."""
+
+    config: StrategyConfig
+    strategy_version_id: uuid.UUID
+    weight: Decimal
+    regime_table: Mapping[str, Decimal] = field(
+        default_factory=lambda: dict(regime_v1.DEFAULT_MULTIPLIERS), hash=False
+    )
+    overrides: Overrides = field(default_factory=Overrides, hash=False)  # those `config` took
+
+    def record(self) -> dict[str, Any]:
+        """As the conventions record it (the overrides only when set, as the run's own)."""
+        return {
+            "strategy_version_id": str(self.strategy_version_id),
+            "bot": self.config.bot,
+            "weight": format(self.weight.normalize(), "f"),
+            "regime_table": {k: str(self.regime_table[k]) for k in regime_v1.STATES},
+            **({} if self.overrides.empty else {"overrides": self.overrides.record()}),
+        }
+
+
+@dataclass(frozen=True)
 class RunSpec:
-    """One run: a strategy version, one risk-policy version, a period and a fill model."""
+    """One run: a strategy version, one risk-policy version, a period and a fill model; in a
+    portfolio run also the strategies beside it on the same account (`co_sleeves`) and the ETF
+    overlay (`overlay`). A run without either is the run it always was, digest included."""
 
     config: StrategyConfig
     strategy_version_id: uuid.UUID
@@ -359,6 +405,8 @@ class RunSpec:
     regime_table: Mapping[str, Decimal] = field(
         default_factory=lambda: dict(regime_v1.DEFAULT_MULTIPLIERS), hash=False
     )
+    co_sleeves: tuple[CoSleeve, ...] = ()
+    overlay: OverlayConfig | None = None
 
     def __post_init__(self) -> None:
         """Refuse a run flagged for promotion under conventions it may not use, a sleeve weight
@@ -366,17 +414,37 @@ class RunSpec:
         for every state: a spec that exists is a valid run."""
         if self.for_promotion:
             self.conventions.check_promotion(self.fills.slippage_bps)
-        sleeve_weight(self)
+        weight = sleeve_weight(self)
+        if self.co_sleeves:
+            if self.for_promotion:  # evidence is of one sleeve
+                raise BacktestError("backtest_promotion_portfolio")
+            bots = [self.config.bot, *(c.config.bot for c in self.co_sleeves)]
+            if len(set(bots)) != len(bots):
+                raise BacktestError("backtest_portfolio_duplicate_strategy")
+            if any(c.config.regime.index != self.config.regime.index for c in self.co_sleeves):
+                raise BacktestError("backtest_sweep_mixed_index")
+            weights = [weight, *(c.weight for c in self.co_sleeves)]
+            cap = self.policy.policy.cluster_cap
+            if not all(0 < w <= cap for w in weights) or sum(weights) > 1:
+                raise BacktestError("backtest_bad_sleeve_weight")
+        if self.overlay is not None and self.for_promotion:
+            raise BacktestError("backtest_promotion_portfolio")
         if set(self.regime_table) != set(regime_v1.STATES) or not all(
             isinstance(v, Decimal) and v.is_finite() for v in self.regime_table.values()
         ):
             raise BacktestError("backtest_bad_regime_table")
 
     def recorded_conventions(self) -> dict[str, Any]:
-        """The conventions block recorded in the run's metrics, which `config_digest` hashes."""
-        return self.conventions.record(
+        """The conventions block recorded in the run's metrics, which `config_digest` hashes;
+        the co-sleeves and the overlay only when the run has them."""
+        out = self.conventions.record(
             self.fills, (self.start, self.end), sleeve_weight(self), self.regime_table
         )
+        if self.co_sleeves:
+            out["co_sleeves"] = [c.record() for c in self.co_sleeves]
+        if self.overlay is not None:
+            out["overlay"] = self.overlay.record()
+        return out
 
 
 def sleeve_weight(spec: RunSpec) -> Decimal:
@@ -406,7 +474,10 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
     under `touch`."""
     found = set(ESTIMATE_GAPS if estimated is None else estimated)
     return [
-        *KNOWN_GAPS,
+        # a portfolio run's account caps bind across its sleeves, as live
+        *(g for g in KNOWN_GAPS if not (spec.co_sleeves and g == "single_sleeve_caps")),
+        *(CO_SLEEVE_GAPS if spec.co_sleeves else ()),
+        *(OVERLAY_GAPS if spec.overlay is not None else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
     ]

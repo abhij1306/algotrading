@@ -7,6 +7,7 @@ Usage (from the repo root, backend venv active; `kotak` needs `neo-api-client py
     python scripts/data/overlay_etf.py --work DIR indices      # TRIs and the 1D Rate Index
     python scripts/data/overlay_etf.py --work DIR dividends    # LIQUIDBEES dividends (the AMC)
     python scripts/data/overlay_etf.py --work DIR build [--expense-ratio 0.0069]
+    python scripts/data/overlay_etf.py --work DIR store        # build/ into HAT_DATA_ROOT/etf/
 
 `--work` (or `OVERLAY_DATA_DIR`) is a directory outside the repo. Every download is kept raw
 under it, one file per request, and never overwritten: a rerun asks only for what is missing.
@@ -25,6 +26,8 @@ under it, one file per request, and never overwritten: a rerun asks only for wha
   LIQUIDBEES total-return series (dividend-based where the dividends cover a day, else the
   1D Rate Index less the expense ratio, flagged by date range), the index series and
   `coverage.json` (per series: span, sessions, gaps against the trading calendar, sources).
+- `store` writes `build/` and the raw 5-minute bars into the store a backtest's overlay reads,
+  `HAT_DATA_ROOT/etf/` (`app.hat.backtest.etf_data`), and prints its manifest.
 """
 
 from __future__ import annotations
@@ -845,6 +848,15 @@ def _dividends(work: Work) -> dict[date, float]:
     }
 
 
+def cmd_store(work: Work) -> None:
+    _backend()
+    from app.hat.backtest import etf_data  # noqa: PLC0415
+    from app.paths import HAT_DATA_ROOT  # noqa: PLC0415
+
+    found = etf_data.write(HAT_DATA_ROOT, work.build, work.kotak / "raw")
+    print(json.dumps(found, indent=1, sort_keys=True))
+
+
 def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="overlay_etf.py",
@@ -859,7 +871,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     )
     p.add_argument("--interval", type=float, default=1.05, help="seconds between calls")
     sub = p.add_subparsers(dest="cmd", required=True)
-    for name in ("local", "kotak", "indices", "dividends"):
+    for name in ("local", "kotak", "indices", "dividends", "store"):
         sub.add_parser(name)
     b = sub.add_parser("build")
     b.add_argument("--expense-ratio", type=float, default=EXPENSE_RATIO)
@@ -884,6 +896,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             cmd_dividends(work, args.interval)
         case "build":
             cmd_build(work, args.expense_ratio)
+        case "store":
+            cmd_store(work)
     return 0
 
 

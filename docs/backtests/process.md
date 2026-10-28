@@ -181,6 +181,51 @@ whose audit warns or fails):
 | `trials` | no `dsr_n_trials` | no DSR |
 | `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |
 
+## How to define a backtest
+
+A backtest is one portfolio file (`backend/app/hat/backtest/portfolio.py` lists every key), run
+with `python -m app.hat.backtest --portfolio FILE`, or with `--variants FILE --criteria NOTES` for
+a sweep over it (the variants change the first strategy and the account). Keep the files with the
+research files. `<s1>` and `<s2>` are strategy version ids.
+
+```yaml
+# VCP alone (S1): the same run as --strategy-version <s1> --universe "NIFTY 500"
+portfolio: s1-vcp
+universe: NIFTY 500
+window: {from: 2016-01-01, to: 2021-12-31}
+strategies:
+  - {version: <s1>}
+---
+# Qullamaggie EP only: S2 with its breakout playbook off
+portfolio: s2-ep-only
+universe: NIFTY 500
+window: {from: 2022-01-01, to: 2024-12-31}
+strategies:
+  - {version: <s2>, playbooks: [episodic_pivot]}
+---
+# S1 + S2 on one account: shared cash, the global open-risk cap across both
+portfolio: s1-s2
+universe: NIFTY 500
+window: {from: 2022-01-01, to: 2024-12-31}
+start_capital: 2000000
+conventions: {regime_mult: policy}
+strategies:
+  - {version: <s1>, weight: 0.5}
+  - {version: <s2>, weight: 0.5, set: ['exits[partial_after_days].days=3']}
+---
+# any of these plus the ETF sleeve: add an overlay block (every key optional, the plan's values)
+overlay:
+  sleeve: regime          # none | liquid | nifty | regime | regime_gold
+  tax: {slab_rate: 0.3}   # or false
+```
+
+Each `---` part is its own file. The first strategy is the run's own: its `weight` is the
+`sleeve_weight` knob, its `set` and `playbooks` are its overrides, and the account keys
+(`risk_pct`, `max_positions`, `policy_set`, ...) are the table's knobs below. With more than one
+strategy every one needs a `weight`, and a strategy appears once. An overlay run needs the ETF
+store (`scripts/data/overlay_etf.py store`, `runbook.md`) and adds the overlay block
+and `overlay.csv` to its folder (`result-standard.md`). A portfolio run cannot be a promotion run.
+
 ## Variants file
 
 ```yaml
@@ -216,6 +261,7 @@ line flag sets the same for one run or every variant.
 
 | Knob | Variants file | Command line |
 | --- | --- | --- |
+| Playbooks kept (the others off) | `playbooks: [episodic_pivot]` | `--playbooks episodic_pivot` |
 | Setup criteria and params, mode, weight, on/off, add | `set: ['playbooks[default].setup.criteria[vcp].params.contractions=[3,6]']`, `...criteria[vcp].enabled=false`, `...setup.threshold=0.7` | `--set` |
 | Universe filters | `set: ['universe[min_turnover].params.inr_cr=20']` | `--set` |
 | Trigger and entry timing, breakout volume | `set: ['playbooks[default].trigger[price_breaks_level].params.entry_timing=daily_close']`, `...params.volume_vs_avg=1.5` | `--set` |

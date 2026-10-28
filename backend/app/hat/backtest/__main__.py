@@ -1,7 +1,8 @@
 """The backtest command line: `python -m app.hat.backtest --bot <id> --from YYYY-MM-DD --to
 YYYY-MM-DD [...]` backtests a sleeve over the Parquet store and publishes the run's folder
 (`runs`, `folder`); `--strategy-version <id> --universe <id or name>` in place of `--bot` is a
-research run with no bot. With `--variants FILE` it runs a sweep of variants over one load of
+research run with no bot, and `--portfolio FILE` a run defined by a portfolio file
+(`portfolio`). With `--variants FILE` it runs a sweep of variants over one load of
 the market (`runs.sweep_bot`); `--rerun <run_id>` runs a run's `config.json` again
 (`runs.rerun`), and with `--split hold_out --from --to` runs it as the hold-out of that run
 (`runs.hold_out`). It reads the database in a read-only transaction: no backtest writes to it."""
@@ -12,9 +13,10 @@ import argparse
 import json
 import sys
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, TextIO
 
 import yaml
@@ -37,6 +39,7 @@ from .fills import (
     SUSPENSION_SESSIONS,
 )
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
+from .portfolio import parse_portfolio
 from .runs import (
     HOLD_OUT,
     IN_SAMPLE,
@@ -110,6 +113,13 @@ def _policy_arg(text: str) -> RiskPolicy:  # pragma: no cover - the command line
         ) from None
 
 
+def _playbooks_arg(text: str) -> tuple[str, ...]:  # pragma: no cover - the command line
+    names = tuple(n.strip() for n in text.split(",") if n.strip())
+    if not names:
+        raise argparse.ArgumentTypeError("playbook names, comma separated, e.g. ep")
+    return names
+
+
 def _risk_pct_arg(text: str) -> Decimal:  # pragma: no cover - the command line
     number = exact(text)
     if number is None:
@@ -173,6 +183,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     [--sweep-id ID] [--sweep-name NAME] [--variant LABEL] [--base RUN_ID] [--change TEXT]
     [--variants FILE --criteria NOTES]
     python -m app.hat.backtest --rerun RUN_ID [--split hold_out --from YYYY-MM-DD --to YYYY-MM-DD]
+    python -m app.hat.backtest --portfolio FILE [--variants FILE --criteria NOTES]
 
     Backtests the sleeve's live strategy version (or `--version`) on its universe, or in research
     mode `--strategy-version` on `--universe` with no bot (`runs.RunRequest`), over the
@@ -213,10 +224,16 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     against the budget, beside the DSR's count (`dsr_n_trials`). A hold-out run is
     refused by its guards (`discipline.check_hold_out`). `--rerun RUN_ID` takes nothing else,
     or `--split hold_out --from --to`: the run's own config as its hold-out (`_rerun`).
+    `--portfolio FILE` runs the backtest a portfolio file defines (`portfolio`: the strategies
+    on one account with their weights and playbooks, the universe, window, policy overrides,
+    conventions and the ETF overlay), or with `--variants` a sweep over it (`_portfolio`).
+    `--playbooks A,B` keeps only those playbooks of the version's config.
     """
     args_list = list(sys.argv[1:] if argv is None else argv)
     if args_list[:1] == ["--rerun"]:
         return _rerun(args_list)
+    if args_list[:1] == ["--portfolio"]:
+        return _portfolio(args_list)
     parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
     parser.add_argument("--bot", type=uuid.UUID, default=None)
     parser.add_argument("--universe", default=None)
@@ -237,6 +254,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--volume-pace", choices=VOLUME_PACE_RULES, default=VOLUME_PACE_LIVE)
     parser.add_argument("--for-promotion", action="store_true")
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
+    parser.add_argument("--playbooks", type=_playbooks_arg, default=None)
     parser.add_argument("--risk-pct", type=_risk_pct_arg, default=None)
     parser.add_argument("--max-positions", type=int, default=None)
     parser.add_argument("--max-per-industry", type=int, default=None)
@@ -257,6 +275,59 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     args = parser.parse_args(args_list)
     if args.variants is not None and args.split == IN_SAMPLE and args.criteria is None:
         parser.error("an in-sample sweep needs --criteria NOTES (its trial budget)")
+
+    def build() -> RunRequest:
+        return RunRequest(
+            bot_id=args.bot,
+            universe=args.universe,
+            start=args.start,
+            end=args.end,
+            slippage_bps=args.slippage_bps,
+            cost_model=args.cost_model,
+            version_id=args.version,
+            cooldown_sessions=args.cooldown_sessions,
+            for_promotion=args.for_promotion,
+            conventions=RunConventions(
+                entry_fill_rule=args.entry_fill,
+                slot_order=args.slot_order,
+                ambiguous=args.ambiguous,
+                suspension_sessions=args.suspension_sessions,
+                sleeve_weight=args.sleeve_weight,
+                regime_mult=args.regime_mult,
+                start_capital=args.start_capital,
+                entry_bars=args.entry_bars,
+                volume_pace=args.volume_pace,
+                overrides=Overrides(
+                    sets=tuple(args.sets),
+                    playbooks=args.playbooks,
+                    risk_pct=args.risk_pct,
+                    max_positions=args.max_positions,
+                    max_per_industry=args.max_per_industry,
+                    flat_ladder=args.flat_ladder,
+                    policy=args.policy,
+                    policy_sets=tuple(args.policy_sets),
+                ),
+            ),
+            labels=Labels(
+                sweep_id=args.sweep_id,
+                sweep_name=args.sweep_name,
+                variant=args.variant,
+                base=args.base,
+                change=args.change,
+                split=args.split,
+                validates=args.validates,
+            ),
+            args=tuple(args_list),
+        )
+
+    return _run(build, args.variants, args.criteria)
+
+
+def _run(
+    build: Callable[[], RunRequest], variants: TextIO | None, criteria: TextIO | None
+) -> int:  # pragma: no cover - needs the database
+    """Run the request `build` makes (a refusal of it is the run's), or with `variants` the
+    sweep of them over it, printing one line per variant; the summary or the refusal."""
     settings = operator_settings()
     refused: str | None = None
     summary: dict[str, Any] = {}
@@ -264,51 +335,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         # a backtest writes no row: hat_live is read-only already, hat_state is made so
         session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
         try:
-            request = RunRequest(
-                bot_id=args.bot,
-                universe=args.universe,
-                start=args.start,
-                end=args.end,
-                slippage_bps=args.slippage_bps,
-                cost_model=args.cost_model,
-                version_id=args.version,
-                cooldown_sessions=args.cooldown_sessions,
-                for_promotion=args.for_promotion,
-                conventions=RunConventions(
-                    entry_fill_rule=args.entry_fill,
-                    slot_order=args.slot_order,
-                    ambiguous=args.ambiguous,
-                    suspension_sessions=args.suspension_sessions,
-                    sleeve_weight=args.sleeve_weight,
-                    regime_mult=args.regime_mult,
-                    start_capital=args.start_capital,
-                    entry_bars=args.entry_bars,
-                    volume_pace=args.volume_pace,
-                    overrides=Overrides(
-                        sets=tuple(args.sets),
-                        risk_pct=args.risk_pct,
-                        max_positions=args.max_positions,
-                        max_per_industry=args.max_per_industry,
-                        flat_ladder=args.flat_ladder,
-                        policy=args.policy,
-                        policy_sets=tuple(args.policy_sets),
-                    ),
-                ),
-                labels=Labels(
-                    sweep_id=args.sweep_id,
-                    sweep_name=args.sweep_name,
-                    variant=args.variant,
-                    base=args.base,
-                    change=args.change,
-                    split=args.split,
-                    validates=args.validates,
-                ),
-                args=tuple(args_list),
-            )
+            request = build()
             store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
-            if args.variants is not None:
-                sweep = parse_variants(_variants_doc(args.variants), request.conventions)
-                budget = None if args.criteria is None else _budget(args.criteria)
+            if variants is not None:
+                sweep = parse_variants(_variants_doc(variants), request.conventions)
+                budget = None if criteria is None else _budget(criteria)
 
                 def after(outcome: RunOutcome) -> None:
                     sys.stdout.write(json.dumps(_outcome_json(outcome, budget)) + "\n")
@@ -330,6 +361,30 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         else:
             summary = _outcome_json(outcome)
     return _report(refused, summary)
+
+
+def _portfolio(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
+    """`--portfolio FILE [--variants FILE --criteria NOTES]`: the run a portfolio file defines
+    (`portfolio.parse_portfolio`; a `policy` path is read from the file's directory), or the
+    sweep of the variants over it."""
+    parser = argparse.ArgumentParser(prog="python -m app.hat.backtest")
+    parser.add_argument("--portfolio", type=Path, required=True)
+    parser.add_argument("--variants", type=argparse.FileType("r", encoding="utf-8"), default=None)
+    parser.add_argument("--criteria", type=argparse.FileType("r", encoding="utf-8"), default=None)
+    args = parser.parse_args(argv)
+    here = args.portfolio.parent
+
+    def build() -> RunRequest:
+        try:
+            doc = yaml.safe_load(args.portfolio.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            raise BacktestError("backtest_portfolio_bad_file") from None
+        request = parse_portfolio(doc, lambda p: read_policy_file(here / p), tuple(argv))
+        if args.variants is not None and request.labels.split == IN_SAMPLE and not args.criteria:
+            raise BacktestError("backtest_sweep_bad_criteria")  # an in-sample sweep's budget
+        return request
+
+    return _run(build, args.variants, args.criteria)
 
 
 def _rerun(argv: Sequence[str]) -> int:  # pragma: no cover - needs the database
