@@ -103,7 +103,7 @@ marked +) a non-positive denominator leaves the metric undefined.
 | `interest_coverage` | (TTM PBT + TTM finance cost) / TTM finance cost + |
 | `debtor_days`, `inventory_days`, `payable_days` | receivables / TTM revenue x 365; inventories, payables / TTM cost of goods (materials + purchases + inventory change) x 365, + |
 | `cfo`, `free_cash_flow`, `cfo_to_net_profit` | the latest year's CFO; CFO - capex (PPE + intangibles), else screener's; CFO / the year's profit |
-| `shares` | paid-up capital / face value (latest NSE quarter), else screener's share capital / face value; x 1/factor for each split or bonus after that period end up to the price's session |
+| `shares` | paid-up capital / face value (latest NSE quarter), else screener's share capital / face value; x 1/factor for each split or bonus after that period end up to the price's session; none while such a factor is not yet known (`known_on`, CA5), and then no share-based valuation |
 | `price`, `market_cap` | the last close known at the moment (from 15:30 IST that session); shares x close |
 | `pe`, `earnings_yield`, `pb`, `book_value_per_share` | market cap / TTM profit +; TTM profit / market cap; market cap / equity +; equity / shares |
 | `dividend_yield` | the latest year's dividends paid (cash flow), else payout x the year's profit, / market cap |

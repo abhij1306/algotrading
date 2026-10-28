@@ -320,9 +320,14 @@ def test_metrics_valuation() -> None:
     assert found["roe"] == Decimal("0.1")
     assert found["npm"] == Decimal("0.1")
     # a 1:1 bonus after the share count's period end: twice the shares at the post-bonus close
-    split = Quote(date(2024, 5, 1), Decimal(20), ((date(2024, 4, 15), Decimal("0.5")),))
+    ex = date(2024, 4, 15)
+    split = Quote(date(2024, 5, 1), Decimal(20), ((ex, Decimal("0.5"), ex),))
     after = {m.name: m.value for m in metrics(book, date(2024, 5, 1), split)}
     assert (after["shares"], after["market_cap"]) == (Decimal(200), Decimal(4000))
+    # a factor known only after the close's session: the share count is not yet known
+    pending = Quote(date(2024, 5, 1), Decimal(20), ((ex, Decimal("0.5"), date(2024, 5, 2)),))
+    unknown = {m.name: m.value for m in metrics(book, date(2024, 5, 1), pending)}
+    assert {"shares", "market_cap", "pe"}.isdisjoint(unknown)
 
 
 def test_metric_history_is_point_in_time() -> None:

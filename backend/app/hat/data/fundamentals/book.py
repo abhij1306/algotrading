@@ -190,14 +190,17 @@ class Reader:
         )
 
 
+Split = tuple[date, Decimal, date | None]  # ex-date, price factor, known on (None: nobody knows)
+
+
 @dataclass(frozen=True)
 class Quote:
     """The last close known at a moment, and the instrument's splits and bonuses (ex-date, price
-    factor) for carrying a share count forward to that close."""
+    factor, the date it became known or None) for carrying a share count forward to that close."""
 
     day: date
     close: Decimal
-    splits: tuple[tuple[date, Decimal], ...] = ()
+    splits: tuple[Split, ...] = ()
 
 
 def metrics(book: Book, until: date, quote: Quote | None = None) -> list[Metric]:
@@ -334,8 +337,10 @@ class _Derivation:
         r, put, quote = self.r, self.put, self.quote
         count, se = self.shares()
         if quote is not None and count is not None and se is not None:
-            after = [factor for ex, factor in quote.splits if se < ex <= quote.day]
-            count *= f.split_multiplier(after)
+            after = [(factor, known) for ex, factor, known in quote.splits if se < ex <= quote.day]
+            pending = any(known is None or known > quote.day for _factor, known in after)
+            # a factor not yet known leaves the share count unknown (CA5's factor-pending days)
+            count = None if pending else count * f.split_multiplier(a for a, _k in after)
         put("shares", count, se)
         equity = r.equity(self.be)
         put("book_value_per_share", f.positive_ratio(equity, count), self.be)

@@ -21,7 +21,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING
 
 from ...time import IST, as_utc
-from .book import Book, KnownFact, Metric, Quote, metrics
+from .book import Book, KnownFact, Metric, Quote, Split, metrics
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -63,12 +63,11 @@ def close_known_on(moment: datetime) -> date:
 
 @dataclass
 class Prices:
-    """One instrument's closes by session, ascending, and its splits and bonuses (ex-date, price
-    factor)."""
+    """One instrument's closes by session, ascending, and its splits and bonuses (`book.Split`)."""
 
     days: list[date] = field(default_factory=list)
     closes: list[Decimal] = field(default_factory=list)
-    splits: tuple[tuple[date, Decimal], ...] = ()
+    splits: tuple[Split, ...] = ()
 
     def at(self, day: date) -> Quote | None:
         """The close of the last session on or before `day`."""
@@ -158,9 +157,9 @@ def load_prices(
 
 def load_splits(
     session: Session,
-) -> dict[str, tuple[tuple[date, Decimal], ...]]:  # pragma: no cover
-    """Every instrument's splits and bonuses (ex-date, price factor), from the corporate actions
-    (read only)."""
+) -> dict[str, tuple[Split, ...]]:  # pragma: no cover
+    """Every instrument's splits and bonuses (ex-date, price factor, known on), from the corporate
+    actions (read only)."""
     from sqlalchemy import select
 
     from ...models import HatCorporateAction
@@ -170,11 +169,12 @@ def load_splits(
             HatCorporateAction.instrument_id,
             HatCorporateAction.ex_date,
             HatCorporateAction.adjustment_factor,
+            HatCorporateAction.known_on,
         ).where(HatCorporateAction.action_type.in_(("split", "bonus")))
     )
-    out: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
-    for instrument_id, ex_date, factor in rows:
-        out[str(instrument_id)].append((ex_date, Decimal(factor)))
+    out: dict[str, list[Split]] = defaultdict(list)
+    for instrument_id, ex_date, factor, known_on in rows:
+        out[str(instrument_id)].append((ex_date, Decimal(factor), known_on))
     return {k: tuple(sorted(v)) for k, v in out.items()}
 
 
