@@ -76,10 +76,11 @@ def owners_profit(owners: D, period: D) -> D:
 
 
 def operating_profit(revenue: D, total_expenses: D, finance_cost: D, depreciation: D) -> D:
-    """EBITDA before other income: revenue - (total expenses - finance cost - depreciation)."""
-    if revenue is None or total_expenses is None:
+    """EBITDA before other income: revenue - (total expenses - finance cost - depreciation);
+    unknown when any part is (the Ind AS statement states a nil line as 0)."""
+    if revenue is None or total_expenses is None or finance_cost is None or depreciation is None:
         return None
-    return revenue - (total_expenses - (finance_cost or 0) - (depreciation or 0))
+    return revenue - (total_expenses - finance_cost - depreciation)
 
 
 def cost_of_goods(material: D, purchases: D, inventory_change: D) -> D:
@@ -88,10 +89,8 @@ def cost_of_goods(material: D, purchases: D, inventory_change: D) -> D:
 
 
 def ebit(pbt: D, finance_cost: D) -> D:
-    """Profit before tax + finance cost."""
-    if pbt is None:
-        return None
-    return pbt + (finance_cost or 0)
+    """Profit before tax + finance cost; unknown when either is."""
+    return total((pbt, finance_cost))
 
 
 def equity(owners: D, total_equity: D, minority: D, share_capital: D, reserves: D) -> D:
@@ -117,10 +116,9 @@ def borrowings(stated: D, current: D, noncurrent: D, debt_securities: D, subordi
 
 
 def capital_employed(equity_value: D, borrowings_value: D) -> D:
-    """Equity + borrowings (the secondary source's definition)."""
-    if equity_value is None:
-        return None
-    return equity_value + (borrowings_value or 0)
+    """Equity + borrowings (the secondary source's definition); unknown when either is (a
+    debt-free company states its borrowings as 0)."""
+    return total((equity_value, borrowings_value))
 
 
 def days(balance: D, annual_flow: D) -> D:

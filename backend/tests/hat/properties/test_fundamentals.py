@@ -15,6 +15,7 @@ from app.hat.data.fundamentals.derive import (
     Prices,
     StoredFiling,
     close_known_on,
+    known_at,
     metric_history,
 )
 from app.hat.data.fundamentals.extract import (
@@ -218,6 +219,10 @@ def test_screener_public_at() -> None:
         [_figure(date(2026, 10, 28), "snapshot", "instant")], {}, "consolidated", FETCHED
     )
     assert snapshot == PublicAt(FETCHED, "observed", False)
+    # a September page period with the quarter and the half-year balance sheet: the 45-day deadline
+    half = [_figure(date(2018, 9, 30)), _figure(date(2018, 9, 30), "bs", "instant")]
+    mixed = screener_public_at(half, {}, "consolidated", FETCHED)
+    assert mixed.at == datetime(2018, 11, 14, 23, 59, tzinfo=IST)
 
 
 def test_screener_filings_consolidated_first() -> None:
@@ -251,6 +256,13 @@ def test_formulas() -> None:
     assert f.equity(None, None, None, Decimal(5), Decimal(95)) == Decimal(100)
     assert f.borrowings(None, Decimal(3), Decimal(7), Decimal(5), None) == Decimal(15)
     assert f.operating_profit(Decimal(100), Decimal(80), Decimal(5), Decimal(10)) == Decimal(35)
+    # a missing line is unknown, not nil (a nil line is stated as 0)
+    assert f.operating_profit(Decimal(100), Decimal(80), None, Decimal(10)) is None
+    assert f.operating_profit(Decimal(100), Decimal(80), Decimal(5), None) is None
+    assert f.ebit(Decimal(50), None) is None
+    assert f.ebit(Decimal(50), Decimal(0)) == Decimal(50)
+    assert f.capital_employed(Decimal(100), None) is None
+    assert f.capital_employed(Decimal(100), Decimal(0)) == Decimal(100)
     assert f.days(Decimal(10), Decimal(365)) == Decimal(10)
     assert f.shares(Decimal(1000), Decimal(10)) == Decimal(100)
     assert f.free_cash_flow(Decimal(50), Decimal(-20)) == Decimal(30)
@@ -342,6 +354,13 @@ def test_metric_history_is_point_in_time() -> None:
     rows = metric_history(filings, facts, Prices())
     qoq = [(r.as_of, r.metric.value) for r in rows if r.metric.name == "revenue_qoq"]
     assert qoq == [(at(10), Decimal("0.5"))]  # nothing before the second quarter is public
+    # a restated secondary-source page is known only from its fetch, whatever its public_at
+    assert known_at(at(1), at(20), point_in_time=False) == at(20)
+    assert known_at(at(1), at(20), point_in_time=True) == at(1)
+    page = StoredFiling("p", "screener", "standalone", Q[1], 1, known_at(at(1), at(20), False), "x")
+    rows = metric_history([page, *filings], {**facts, "p": [_q(Q[1], "revenue", 80)]}, Prices())
+    qoq = [(r.as_of, r.metric.value) for r in rows if r.metric.name == "revenue_qoq"]
+    assert qoq == [(at(10), Decimal("0.5"))]  # no Q2-on-Q1 growth at at(1) from the page
     assert close_known_on(datetime(2024, 5, 2, 9, 0, tzinfo=IST)) == date(2024, 5, 1)
     assert close_known_on(datetime(2024, 5, 2, 15, 30, tzinfo=IST)) == date(2024, 5, 2)
     prices = Prices([date(2024, 5, 1), date(2024, 5, 3)], [Decimal(1), Decimal(2)])

@@ -21,10 +21,12 @@ and basis.
   `point_in_time=false`): the figures one company page shows for one period end. A page shows
   figures as restated when it was fetched, **not the originals as first published**. `public_at`
   is the earliest NSE filing of the same period end (same basis first). Otherwise it is the
-  regulatory deadline at 23:59 IST, `estimated`: 45 days after a quarter end, 60 for a March
-  quarter or a year, 21 for a shareholding pattern alone. It is never later than the page's fetch
-  time (`observed`). The fetch-time summary is public when fetched. Where both sources give a
-  figure, NSE's is used.
+  regulatory deadline at 23:59 IST, `estimated`: 45 days after a quarter end (with its half-year
+  balance sheet), 60 for a March quarter or a year, 21 for a shareholding pattern alone. It is
+  never later than the page's fetch time (`observed`). The fetch-time summary is public when
+  fetched. Where both sources give a figure, NSE's is used. Since the figures are restated, the
+  point-in-time reads (`known_at`) take a page's figures only from the later of `public_at` and
+  `fetched_at`: before the fetch, the store reads NSE alone.
 
 **`hat_fundamental_fact`**: one numeric figure of a filing, keyed by `(filing_id, n)`.
 
@@ -42,11 +44,11 @@ half-year and year-end cash flow statement), its balance sheet as at the period 
 lines of other expenses). Comparatives (`PY_I`) are left out. XBRL values are already in rupees.
 Screener crore figures are multiplied by 10^7. To get the long format with the filing's columns,
 join on `filing_id`. `derive.facts_as_of(session, instrument_id, ts)` does this at a moment: the
-latest version public by `ts`.
+latest version known by `ts` (`public_at`, and for a secondary-source page also `fetched_at`).
 
 **`hat_fundamental_metric`**: `(instrument_id, metric, as_of)`. A row is written when a metric's
 value or period changes, so the value at a moment is the latest row at or before it
-(`derive.metrics_as_of`). The moments are each filing's `public_at`, plus the latest session's
+(`derive.metrics_as_of`). The moments are each filing's `known_at`, plus the latest session's
 close. `period_end` is the quarter, year or balance sheet the value reflects.
 
 ## Canonical items
@@ -84,7 +86,8 @@ almost nothing with Ind AS: their facts keep raw elements.
 Each formula is in `formulas.py`; `book.py` picks the inputs. One basis is used per moment:
 consolidated when the latest quarter has consolidated figures, else standalone. Profit is the
 owners' share where tagged, else the period's. A missing input, a zero denominator, or (where
-marked +) a non-positive denominator leaves the metric undefined.
+marked +) a non-positive denominator leaves the metric undefined. A missing finance cost,
+depreciation or borrowings is unknown, never 0: a statement states a nil line as 0.
 
 | metric | formula |
 | --- | --- |

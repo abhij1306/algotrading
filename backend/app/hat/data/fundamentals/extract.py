@@ -44,7 +44,7 @@ from ..results.timing import (
     xbrl_at,
 )
 from ..results.xbrl import XbrlError
-from .items import SHAREHOLDING, SNAPSHOT
+from .items import ANNUAL, SHAREHOLDING, SNAPSHOT
 from .nse import Document, fact_key, parse_document
 from .screener import Figure, parse_page
 
@@ -235,7 +235,7 @@ def screener_public_at(
         return PublicAt(first.at, first.source, first.estimated)
     if all(f.statement == SHAREHOLDING for f in figures):
         days = SHAREHOLDING_DAYS
-    elif end.month == 3 or any(f.period_kind != "quarter" for f in figures):
+    elif end.month == 3 or any(f.period_kind == ANNUAL for f in figures):
         days = YEAR_DAYS
     else:
         days = QUARTER_DAYS

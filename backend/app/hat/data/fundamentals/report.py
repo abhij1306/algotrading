@@ -398,10 +398,7 @@ def _example(session: Session, symbol: str, now: datetime) -> list[str]:  # prag
     )
     if not rows:
         return ["", f"## Example: {symbol}", "", "Not in the store."]
-    filings = [
-        StoredFiling(str(r.id), r.source, r.basis, r.period_end, r.version, r.public_at, r.family)
-        for r in rows
-    ]
+    filings = [StoredFiling.of(r) for r in rows]
     book = book_as_of(
         filings, stored_facts(session, HatFundamentalFact, [f.id for f in filings]), now
     )

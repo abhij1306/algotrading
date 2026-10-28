@@ -1,11 +1,13 @@
 """The derive step: `hat_fundamental_metric` rebuilt from the stored filings (`book.py` holds the
 rules and `formulas.py` the formulas), and the point-in-time reads of the store.
 
-Per instrument, the moments are each distinct `public_at` of its filings, plus the close of the
-latest session in the price store (so the latest valuation is current). At each moment the book
-holds the filings public by then; the metrics are computed with the last close known then (a
-session's close is known from 15:30 IST that day). A metric row is written when its value or
-period changes, so a read at any moment takes the latest row at or before it.
+Per instrument, the moments are each distinct `known_at` of its filings, plus the close of the
+latest session in the price store (so the latest valuation is current). A filing is known from its
+`public_at`; a secondary-source page's figures are as restated when it was fetched
+(`point_in_time` false), so they are known only from the later of `public_at` and the fetch. At
+each moment the book holds the filings known by then; the metrics are computed with the last
+close known then (a session's close is known from 15:30 IST that day). A metric row is written
+when its value or period changes, so a read at any moment takes the latest row at or before it.
 """
 
 from __future__ import annotations
@@ -26,12 +28,20 @@ from .book import Book, KnownFact, Metric, Quote, Split, metrics
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
 
+    from ...models import HatFundamentalFiling
     from ..store import DataStore
 
 logger = logging.getLogger(__name__)
 
 CLOSE_KNOWN = time(15, 30)
 PRICE_SERIES = ("EQ", "BE", "BZ")  # the first a session has wins
+
+
+def known_at(public_at: datetime, fetched_at: datetime, point_in_time: bool) -> datetime:
+    """When a stored filing's figures could be read as stored (module doc)."""
+    if point_in_time:
+        return as_utc(public_at)
+    return max(as_utc(public_at), as_utc(fetched_at))
 
 
 @dataclass(frozen=True)
@@ -41,8 +51,20 @@ class StoredFiling:
     basis: str
     period_end: date
     version: int
-    public_at: datetime
+    known_at: datetime  # `known_at()`
     family: str
+
+    @classmethod
+    def of(cls, row: HatFundamentalFiling) -> StoredFiling:
+        return cls(
+            str(row.id),
+            row.source,
+            row.basis,
+            row.period_end,
+            row.version,
+            known_at(row.public_at, row.fetched_at, row.point_in_time),
+            row.family,
+        )
 
 
 @dataclass(frozen=True)
@@ -78,7 +100,7 @@ class Prices:
 
 
 def moments(filings: Sequence[StoredFiling], latest_session: date | None) -> list[datetime]:
-    found = {as_utc(f.public_at) for f in filings}
+    found = {as_utc(f.known_at) for f in filings}
     if latest_session is not None:
         found.add(as_utc(datetime.combine(latest_session, CLOSE_KNOWN, tzinfo=IST)))
     return sorted(found)
@@ -90,13 +112,13 @@ def metric_history(
     prices: Prices,
 ) -> list[MetricRow]:
     """The metric rows of one instrument (module doc): `facts` by filing id."""
-    ordered = sorted(filings, key=lambda f: (as_utc(f.public_at), f.version))
+    ordered = sorted(filings, key=lambda f: (as_utc(f.known_at), f.version))
     book = Book()
     last: dict[str, tuple[Decimal, date]] = {}
     out: list[MetricRow] = []
     i = 0
     for moment in moments(filings, prices.days[-1] if prices.days else None):
-        while i < len(ordered) and as_utc(ordered[i].public_at) <= moment:
+        while i < len(ordered) and as_utc(ordered[i].known_at) <= moment:
             filing = ordered[i]
             book.add(filing.source, filing.basis, filing.period_end, facts.get(filing.id, []))
             if filing.source == "nse":
@@ -211,17 +233,7 @@ def derive(store: DataStore, price_since: date) -> DeriveReport:  # pragma: no c
         for row in session.scalars(select(HatFundamentalFiling)):
             key = str(row.instrument_id)
             symbols[key] = row.symbol
-            by_instrument[key].append(
-                StoredFiling(
-                    str(row.id),
-                    row.source,
-                    row.basis,
-                    row.period_end,
-                    row.version,
-                    row.public_at,
-                    row.family,
-                )
-            )
+            by_instrument[key].append(StoredFiling.of(row))
         prices = load_prices(store, set(by_instrument), price_since)
         for instrument_id, splits in load_splits(session).items():
             if instrument_id in prices:
@@ -279,9 +291,9 @@ def stored_facts(
 def facts_as_of(
     session: Session, instrument_id: uuid.UUID, ts: datetime
 ) -> list[tuple[object, ...]]:  # pragma: no cover - the database
-    """The instrument's facts known at `ts`: of filings with `public_at <= ts`, the latest
+    """The instrument's facts known at `ts`: of filings known by `ts` (`known_at`), the latest
     version of each (source, basis, period end); every fact with its filing's columns."""
-    from sqlalchemy import func, select
+    from sqlalchemy import func, or_, select
 
     from ...models import HatFundamentalFact, HatFundamentalFiling
 
@@ -296,7 +308,11 @@ def facts_as_of(
             )
             .label("rank"),
         )
-        .where(filing.instrument_id == instrument_id, filing.public_at <= ts)
+        .where(
+            filing.instrument_id == instrument_id,
+            filing.public_at <= ts,
+            or_(filing.point_in_time, filing.fetched_at <= ts),
+        )
         .subquery()
     )
     rows = session.execute(
@@ -329,10 +345,10 @@ def metrics_as_of(
 def book_as_of(
     filings: Iterable[StoredFiling], facts: dict[str, list[KnownFact]], ts: datetime
 ) -> Book:
-    """The book of the filings public at `ts` (the report's company sheet reads it)."""
+    """The book of the filings known at `ts` (the report's company sheet reads it)."""
     book = Book()
-    for filing in sorted(filings, key=lambda f: (as_utc(f.public_at), f.version)):
-        if as_utc(filing.public_at) <= ts:
+    for filing in sorted(filings, key=lambda f: (as_utc(f.known_at), f.version)):
+        if as_utc(filing.known_at) <= ts:
             book.add(filing.source, filing.basis, filing.period_end, facts.get(filing.id, []))
             if filing.source == "nse":
                 book.family = filing.family
