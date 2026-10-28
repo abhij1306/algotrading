@@ -242,6 +242,10 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   includes, excludes). A run is a sleeve's evidence only when that key is its live universe
   version's (`evidence.evidence_run`): a run over another member set, or over today's list, is
   not.
+- **Financial results are point in time.** A result is used at a moment only if its `public_at`
+  is at or before it (`results_as_of`); a revision counts from its own filing, never from the
+  original's announcement; a stored result is never changed (`hat_financial_result` refuses UPDATE
+  and DELETE). An estimated `public_at` is late, never early.
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank. The scan's `rs_eligible` ranks only the members

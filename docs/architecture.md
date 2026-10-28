@@ -102,7 +102,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 
 - **hat_live** (`app.base.Base`, `DB_NAME`): the stock data only. Instruments one per ISIN, symbol
   history, calendar, bands, industries, corporate actions and their versions, lineage, index
-  membership by date, announcements, demerger notices, broker symbols, universes, quality checks.
+  membership by date, announcements, demerger notices, broker symbols, universes, quality checks,
+  and the quarterly financial results (`hat_financial_result`, one row per filing version,
+  append-only; `hat_financial_growth`, derived from it; `data/results/`, read point in time with
+  `results_as_of`).
   Only the data jobs and importers write it (`HatDataSessionLocal`, `db_session_scope(writes_data=True)`:
   the nightly ingest, `ca.adjust`, quality gate, reference, bands, calendar, announcements poll,
   the `app.hat.data` command lines and the admin data commands `admin.DATA_COMMANDS`); every other
@@ -128,7 +131,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   `data/store.py` (`bars_daily_cap` price basis, `bars_daily` total return), `index_daily` (the
   nightly indices, and NIFTY 500 TRI fetched by the nightly ingest from niftyindices), `features_daily`, breadth, `bars_5m` (raw) and `bars_5m_rejects`. `raw_tri/` keeps niftyindices' TRI answers `verify-tri --fetch` saved (one per year and fetch, never rewritten). `ca_bc/` keeps each night's
   NSE `bc` file as fetched (`bc_<trade date>.csv`, immutable; a later, different copy of that
-  date is kept beside it as `bc_<trade date>_<sha256>.csv`).
+  date is kept beside it as `bc_<trade date>_<sha256>.csv`). `raw/nse-results/` and
+  `raw/secondary-results/` keep every answer the results fetch got, gzipped under its sha256 with a
+  `manifest.jsonl` of URLs (`data/results/raw.py`).
 - `backtests/runs/<run_id>/` holds every run's folder in the Backtest Result Standard
   (`docs/backtests/result-standard.md`: `run.json` validated against `run.schema.json`,
   `config.json`, the CSVs, `audit.json`, `data_audit.json` and, for a completed run,

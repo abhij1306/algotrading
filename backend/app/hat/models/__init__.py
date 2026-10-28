@@ -42,6 +42,7 @@ from .reference import (
     HatPriceBand,
     HatTradingCalendar,
 )
+from .results import HatFinancialGrowth, HatFinancialResult
 from .runtime import (
     HatApproval,
     HatFill,
@@ -60,6 +61,8 @@ __all__ = [
     "HatCommandLog",
     "HatDailyBotSnapshot",
     "HatEvent",
+    "HatFinancialGrowth",
+    "HatFinancialResult",
     "HatFill",
     "HatHoldingBaseline",
     "HatOrder",

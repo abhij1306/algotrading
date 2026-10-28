@@ -19,48 +19,10 @@ Sources the rules come from (reference only):
 
 ## Part A: NSE historical financial-results data
 
-### A0. Feasibility probe (report only). STOP after this.
-1. Find how the repo currently fetches NSE data (session handling, headers, rate limits, `robots.txt` compliance) and reuse it.
-2. Probe NSE's financial-results endpoint (the source behind nseindia.com/companies-listing/corporate-filings-financial-results) and the Integrated Filing – Financials listing (used for results from the March 2025 quarter onward).
-3. For 20 symbols (mix of large/mid/small caps, at least 2 banks, 2 NBFCs), for each year 2016–2026, record:
-   - whether filing metadata exists, with its filing timestamp field
-   - whether the XBRL document downloads (HTTP status)
-   - XBRL format/taxonomy (Reg 33 Ind AS, Reg 33 banking, NBFC, insurance, Integrated Filing variants)
-   - whether standalone, consolidated, or both exist
-4. For 20 results filings, compare the results endpoint's filing timestamp with the corporate-announcement broadcast time of the same results (the PDF announcement). Report the typical difference. Background: companies must file the results PDF within 30 minutes of the board meeting ending, but the XBRL within 24 hours, so the two timestamps can differ.
-5. Report: coverage table by year, the earliest year with complete XBRL coverage, the timestamp comparison, and any blocking issues.
-   Expected (from third-party reports, to be confirmed): metadata back to ~2007; XBRL documents fully available from 2019, partial 2018, missing 2017 and earlier.
-
-### A1. Storage (append-only)
-Table `hat_financial_result` (new Alembic migration), one row per filing version:
-- instrument_id, symbol, isin
-- period_start, period_end (from the XBRL document, NOT the filing metadata; if they disagree, the document wins and the mismatch is logged)
-- basis: standalone | consolidated
-- format: reg33_indas | reg33_banking | reg33_nbfc | integrated_indas | integrated_banking | integrated_nbfc | other
-- revenue (operations), total_income, net_profit (attributable to owners where tagged), eps_basic, eps_diluted, all for the QUARTER
-- ytd_revenue, ytd_net_profit, ytd_eps (if present)
-- public_at: the earliest of (results-announcement broadcast time, results filing timestamp), timezone-aware IST
-- xbrl_at: the XBRL filing timestamp
-- version (1 = original; revisions get 2, 3, …), supersedes_id
-- source_url, sha256 of the raw file, raw file path
-Raw XBRL files are cached on disk by sha256 and never overwritten. Revisions are new rows, never updates.
-Insurance companies: store the metadata row, skip parsing, flag `format=insurance_skipped`.
-
-### A2. Parser rules (each needs a failing-then-passing unit test with a recorded fixture)
-1. Quarter vs year-to-date: tags/contexts for the current quarter ("One…" contexts) are the quarter; "Four…" contexts are year-to-date. Never read YTD as the quarter. Test: Q3 fixture where YTD ≈ 3× quarter.
-2. Banks: no revenue-from-operations tag. Map interest earned → revenue, profit/loss for the period → net_profit. Same for NBFCs if their template differs. Test with one bank fixture and one NBFC fixture.
-3. Period: always from the document; log mismatches with metadata.
-4. Q4: if a Q4 filing carries only annual and nine-month figures, derive Q4 = annual − nine-month YTD (same basis), and flag `q4_derived=true`.
-5. Units: parse the declared unit/decimals. Sanity check: if quarterly revenue differs from the same company's median of the previous 4 quarters by more than 20× in either direction, flag `unit_suspect=true` and exclude the row from growth calculations.
-6. Both old Reg 33 and Integrated Filing formats map into the same schema.
-
-### A3. Point-in-time growth (derived, recomputed from A1)
-For each (instrument, period_end, basis), using the latest version public at the evaluation time:
-- sales_yoy = revenue / revenue(same quarter one year earlier, same basis) − 1
-- eps_yoy = eps_basic / eps_basic(same quarter one year earlier, same basis) − 1, defined only when both are > 0
-- turnaround = prior-year EPS ≤ 0 and current EPS > 0
-- Basis choice: use consolidated when both the current and prior-year quarter have it; otherwise standalone when both have it; otherwise growth is undefined. Never mix bases in one comparison.
-- API: `results_as_of(instrument_id, ts)` returns only rows whose public_at ≤ ts.
+### A0-A3. Done
+The probe (A0), the store (A1), the parser rules (A2) and point-in-time growth (A3) are built:
+`backend/app/hat/data/results/`, `docs/decisions.md` (Financial results store), `docs/runbook.md`
+(Financial results). Every rule's test is in `backend/tests/hat/properties/test_results.py`.
 
 ### A4. Validation report. STOP after this.
 - Coverage by year and by format: filings found, parsed, excluded (with reason counts).

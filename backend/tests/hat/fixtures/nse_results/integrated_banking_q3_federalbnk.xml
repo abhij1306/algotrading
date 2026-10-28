@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-capmkt="http://www.sebi.gov.in/xbrl/2025-01-31/in-capmkt" xmlns:in-capmkt-ent="http://www.sebi.gov.in/xbrl/IntegratedFinance_Banking/2025-01-31/in-capmkt/in-capmkt-ent" xmlns:in-capmkt-roles="http://www.sebi.gov.in/xbrl/IntegratedFinance_Banking/2025-01-31/in-capmkt-roles" xmlns:in-capmkt-types="http://www.sebi.gov.in/xbrl/2025-01-31/in-capmkt-types" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:xl="http://www.xbrl.org/2003/XLink" xmlns:xlink="http://www.w3.org/1999/xlink">
+<link:schemaRef xlink:href="in-capmkt-ent-2025-01-31.xsd" xlink:type="simple"/>
+<xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+<xbrli:unit id="pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit>
+<xbrli:unit id="INRPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+<in-capmkt:DateOfStartOfFinancialYear contextRef="OneD">2025-04-01</in-capmkt:DateOfStartOfFinancialYear>
+<in-capmkt:DateOfEndOfFinancialYear contextRef="OneD">2026-03-31</in-capmkt:DateOfEndOfFinancialYear>
+<in-capmkt:LevelOfRounding contextRef="OneD">Lakhs</in-capmkt:LevelOfRounding>
+<in-capmkt:ReportingQuarter contextRef="OneD">Third quarter</in-capmkt:ReportingQuarter>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="OneD">2025-10-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="OneD">2025-12-31</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="OneD">Standalone</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:InterestEarned contextRef="OneD" decimals="-5" unitRef="INR">68675000000</in-capmkt:InterestEarned>
+<in-capmkt:Income contextRef="OneD" decimals="-5" unitRef="INR">79677900000</in-capmkt:Income>
+<in-capmkt:ProfitLossForThePeriod contextRef="OneD" decimals="-5" unitRef="INR">10412100000</in-capmkt:ProfitLossForThePeriod>
+<in-capmkt:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates contextRef="OneD" decimals="-5" unitRef="INR">10412100000</in-capmkt:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates>
+<in-capmkt:BasicEarningsPerShareAfterExtraordinaryItems contextRef="OneD" decimals="INF" unitRef="INRPerShare">4.23</in-capmkt:BasicEarningsPerShareAfterExtraordinaryItems>
+<in-capmkt:DilutedEarningsPerShareAfterExtraordinaryItems contextRef="OneD" decimals="INF" unitRef="INRPerShare">4.19</in-capmkt:DilutedEarningsPerShareAfterExtraordinaryItems>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="FourD">2025-04-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="FourD">2025-12-31</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="FourD">Standalone</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:InterestEarned contextRef="FourD" decimals="-5" unitRef="INR">202962900000</in-capmkt:InterestEarned>
+<in-capmkt:Income contextRef="FourD" decimals="-5" unitRef="INR">235917300000</in-capmkt:Income>
+<in-capmkt:ProfitLossForThePeriod contextRef="FourD" decimals="-5" unitRef="INR">28582200000</in-capmkt:ProfitLossForThePeriod>
+<in-capmkt:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates contextRef="FourD" decimals="-5" unitRef="INR">28582200000</in-capmkt:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates>
+<in-capmkt:BasicEarningsPerShareAfterExtraordinaryItems contextRef="FourD" decimals="INF" unitRef="INRPerShare">11.63</in-capmkt:BasicEarningsPerShareAfterExtraordinaryItems>
+<in-capmkt:DilutedEarningsPerShareAfterExtraordinaryItems contextRef="FourD" decimals="INF" unitRef="INRPerShare">11.51</in-capmkt:DilutedEarningsPerShareAfterExtraordinaryItems>
+</xbrli:xbrl>

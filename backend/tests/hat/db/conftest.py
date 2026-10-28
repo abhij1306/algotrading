@@ -53,6 +53,7 @@ def drop_hat_objects(engine: Engine) -> None:
             "hat_signal_confidence_immutable",
             "hat_event_is_append_only",
             "hat_corporate_action_version_is_append_only",
+            "hat_financial_result_is_append_only",
             "hat_strategy_version_immutable",  # dropped from the schema; kept for old databases
             "hat_universe_version_immutable",
             "hat_risk_policy_version_immutable",  # dropped from the schema; kept for old ones

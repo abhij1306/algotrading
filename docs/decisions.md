@@ -307,6 +307,26 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `close_bias_large_on_expiry_and_rebalance_days`. Both kinds of day are derived by rule from the
   stored sessions (`backtest/auction_days.py`, sources there).
 
+- **Financial results store (owner 2026-10-28).** NSE's quarterly results from the quarter ending
+  2020-03-31, parsed from the XBRL filings only (the pre-XBRL HTML pages are not parsed; XBRL is
+  complete from 2020, A0 probe), for the instruments passing the S2 EP universe on any session from
+  2021-01-01. One row per filing version, never updated: a revision is a new row with the next
+  version superseding the last (`hat_financial_result`, created like every table, no migration
+  tool). `public_at` is the results announcement's broadcast time ('Financial Result Updates', or
+  the board-meeting outcome naming the results in the Integrated Filing era; the one naming the
+  filing's quarter end, never one naming only another quarter), or the XBRL filing time when that
+  is earlier or no announcement matches; never the listing's broadcast time, a later re-broadcast
+  for many filings before 2022, and never the XBRL file name's clock (12-hour, no AM/PM: only its
+  date is read). A quarter NSE does not list, or whose XBRL fails, is filled from the secondary
+  source's public company pages (no login, robots.txt honoured, one request every 3 s, pages
+  cached), `source=secondary`, used only where no NSE row of the same (instrument, period end,
+  basis) is public; its `public_at` is NSE's results announcement for the quarter, else the
+  regulatory deadline (45 days after the quarter end, 60 for March, at 23:59 IST) with
+  `public_at_estimated`; a later change to its figures is a new version public from when the page
+  was fetched (`observed`). The secondary source shows only the latest 13 quarters, so older gaps
+  stay gaps. Growth compares like with like: consolidated when both quarters have it, else
+  standalone, never mixed (`data/results/growth.py`).
+
 ## Operations
 
 - **Self-hosted, one machine.** Always-on host with an ISP static IP registered with Fyers, a UPS
@@ -404,7 +424,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 ## Planned, not built
 
-Regime v2 (HMM/GMM), fundamentals from XBRL, screener universes, US markets, a Kotak
+Regime v2 (HMM/GMM), fundamentals beyond quarterly revenue, profit and EPS, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
 live trading of `entry_timing: daily_close`.
