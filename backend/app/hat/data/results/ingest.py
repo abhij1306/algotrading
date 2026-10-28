@@ -7,7 +7,10 @@ document once, by URL; a listing row whose ISIN names another covered instrument
 - a document already stored (same sha256 for the instrument) is skipped, so a rerun adds only
   what is new; a document not fetched, not 200 or unreadable is excluded with its reason;
 - the period and basis are the document's (the listing's basis where the document states none);
-  a period that differs from the listing's is kept and flagged (`period_mismatch`);
+  a period that differs from the listing's is kept and flagged (`period_mismatch`), except one
+  exactly a year before the listing's (a document misdated by a year: it would become a false
+  revision of that earlier quarter), which is excluded (`period_year_before_listing`);
+- the parser's flags (`xbrl.FLAG_*`) are kept on the row (`quality_flags`);
 - an insurer (the insurance listing, or an insurance taxonomy) is a metadata row,
   `format=insurance_skipped`, without figures;
 - a Q4 document with only the year's figures gets Q4 = year - nine months (the document's nine
@@ -39,7 +42,7 @@ from sqlalchemy.orm import Session
 
 from ...models import HatFinancialResult
 from .fetch import in_scope, listing_urls
-from .growth import derive_q4, quarter_ends_before
+from .growth import derive_q4, quarter_ends_before, year_ago
 from .nse import (
     ANNOUNCEMENTS_API,
     LISTING_INSURANCE,
@@ -95,6 +98,7 @@ class Outcome:
     q4_derived: bool = False
     period_mismatch: bool = False
     public_at_source: str = ""
+    flags: str = ""
 
 
 @dataclass
@@ -278,6 +282,12 @@ def document_period(document_end: date | None, listing_end: date) -> tuple[date,
     return end, end != listing_end
 
 
+def year_before_listing(document_end: date | None, listing_end: date) -> bool:
+    """Whether the document's period end is exactly a year before the listing's (D2: misdated by
+    a year, excluded rather than written as a revision of the earlier quarter)."""
+    return document_end is not None and document_end == year_ago(listing_end)
+
+
 def write_outcomes(path: Path, outcomes: Iterable[Outcome]) -> None:
     rows = [asdict(o) for o in outcomes]
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -403,6 +413,15 @@ class MemberIngest:  # pragma: no cover - the database
         basis = (parsed.basis if parsed else "") or filing.basis
         if not basis:
             return self._outcome(filing, result="excluded", reason="basis_unknown")
+        if parsed and year_before_listing(parsed.period_end, filing.period_end):
+            logger.info(
+                "period a year before the listing's %s %s: listing %s, document %s",
+                filing.symbol,
+                filing.xbrl_url,
+                filing.period_end,
+                parsed.period_end,
+            )
+            return self._outcome(filing, result="excluded", reason="period_year_before_listing")
         period_end, mismatch = document_period(
             parsed.period_end if parsed else None, filing.period_end
         )
@@ -455,6 +474,7 @@ class MemberIngest:  # pragma: no cover - the database
             q4_derived=q4,
             period_mismatch=mismatch,
             public_at_source=when.source,
+            flags=row.quality_flags or "",
             **base,
         )
 
@@ -509,6 +529,7 @@ class MemberIngest:  # pragma: no cover - the database
             q4_derived=q4,
             listing_period_end=c.filing.period_end if mismatch else None,
             period_mismatch=mismatch,
+            quality_flags=";".join(parsed.flags) if parsed and parsed.flags else None,
             public_at=when.at,
             public_at_source=when.source,
             public_at_estimated=when.estimated,

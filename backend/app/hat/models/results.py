@@ -80,6 +80,9 @@ class HatFinancialResult(Base):
     # the listing's period end when it differs from the document's
     listing_period_end = Column(Date)
     period_mismatch = Column(Boolean, nullable=False, default=False)
+    # the parser's flags, `;`-joined (`data/results/xbrl.py` FLAG_*): figures read under a rule
+    # that corrects a filer's error (a mislabelled quarter start, a swapped owners' profit tag)
+    quality_flags = Column(Text)
     public_at = Column(Timestamptz, nullable=False)
     public_at_source = Column(Text, nullable=False)
     public_at_estimated = Column(Boolean, nullable=False, default=False)

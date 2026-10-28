@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-capmkt="http://www.sebi.gov.in/xbrl/2025-01-31/in-capmkt" xmlns:in-capmkt-ent="http://www.sebi.gov.in/xbrl/IntegratedFinance_NBFC/2025-01-31/in-capmkt/in-capmkt-ent" xmlns:in-capmkt-roles="http://www.sebi.gov.in/xbrl/IntegratedFinance_NBFC/2025-01-31/in-capmkt-roles" xmlns:in-capmkt-types="http://www.sebi.gov.in/xbrl/2025-01-31/in-capmkt-types" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:xl="http://www.xbrl.org/2003/XLink" xmlns:xlink="http://www.w3.org/1999/xlink">
+<link:schemaRef xlink:href="in-capmkt-ent-2025-01-31.xsd" xlink:type="simple"/>
+<xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+<xbrli:unit id="pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit>
+<xbrli:unit id="INRPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+<xbrli:context id="OneD"><xbrli:entity><xbrli:identifier scheme="http://www.sebi.gov.in/in-capmkt/ScripCode">544026</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-07-01</xbrli:startDate><xbrli:endDate>2025-09-30</xbrli:endDate></xbrli:period></xbrli:context>
+<xbrli:context id="FourD"><xbrli:entity><xbrli:identifier scheme="http://www.sebi.gov.in/in-capmkt/ScripCode">544026</xbrli:identifier></xbrli:entity><xbrli:period><xbrli:startDate>2025-04-01</xbrli:startDate><xbrli:endDate>2025-09-30</xbrli:endDate></xbrli:period></xbrli:context>
+<in-capmkt:DateOfStartOfFinancialYear contextRef="OneD">2025-04-01</in-capmkt:DateOfStartOfFinancialYear>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="OneD">2025-07-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="OneD">2025-09-30</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="OneD">Consolidated</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:InterestEarned contextRef="OneD" decimals="-5" unitRef="INR">20304300000</in-capmkt:InterestEarned>
+<in-capmkt:RevenueFromOperations contextRef="OneD" decimals="-5" unitRef="INR">20572800000</in-capmkt:RevenueFromOperations>
+<in-capmkt:Income contextRef="OneD" decimals="-5" unitRef="INR">20578500000</in-capmkt:Income>
+<in-capmkt:ProfitLossForPeriod contextRef="OneD" decimals="-5" unitRef="INR">5493300000</in-capmkt:ProfitLossForPeriod>
+<in-capmkt:ComprehensiveIncomeForThePeriod contextRef="OneD" decimals="-5" unitRef="INR">6147700000</in-capmkt:ComprehensiveIncomeForThePeriod>
+<in-capmkt:ProfitOrLossAttributableToOwnersOfParent contextRef="OneD" decimals="-5" unitRef="INR">6147600000</in-capmkt:ProfitOrLossAttributableToOwnersOfParent>
+<in-capmkt:ProfitOrLossAttributableToNonControllingInterests contextRef="OneD" decimals="-7" unitRef="INR">0</in-capmkt:ProfitOrLossAttributableToNonControllingInterests>
+<in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="OneD" decimals="INF" unitRef="INRPerShare">1.97</in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-capmkt:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="OneD" decimals="INF" unitRef="INRPerShare">1.97</in-capmkt:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="FourD">2025-04-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="FourD">2025-09-30</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="FourD">Consolidated</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:InterestEarned contextRef="FourD" decimals="-5" unitRef="INR">39395300000</in-capmkt:InterestEarned>
+<in-capmkt:RevenueFromOperations contextRef="FourD" decimals="-5" unitRef="INR">40048800000</in-capmkt:RevenueFromOperations>
+<in-capmkt:Income contextRef="FourD" decimals="-5" unitRef="INR">40176900000</in-capmkt:Income>
+<in-capmkt:ProfitLossForPeriod contextRef="FourD" decimals="-5" unitRef="INR">7962100000</in-capmkt:ProfitLossForPeriod>
+<in-capmkt:ComprehensiveIncomeForThePeriod contextRef="FourD" decimals="-5" unitRef="INR">8809700000</in-capmkt:ComprehensiveIncomeForThePeriod>
+<in-capmkt:ProfitOrLossAttributableToOwnersOfParent contextRef="FourD" decimals="-5" unitRef="INR">8809700000</in-capmkt:ProfitOrLossAttributableToOwnersOfParent>
+<in-capmkt:ProfitOrLossAttributableToNonControllingInterests contextRef="FourD" decimals="-7" unitRef="INR">0</in-capmkt:ProfitOrLossAttributableToNonControllingInterests>
+<in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="FourD" decimals="INF" unitRef="INRPerShare">2.88</in-capmkt:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-capmkt:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="FourD" decimals="INF" unitRef="INRPerShare">2.88</in-capmkt:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+</xbrli:xbrl>

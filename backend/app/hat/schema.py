@@ -290,6 +290,8 @@ CREATE OR REPLACE TRIGGER hat_corporate_action_version_no_update
   FOR EACH ROW EXECUTE FUNCTION hat_corporate_action_version_is_append_only()
 """,
     _FINANCIAL_RESULT_APPEND_ONLY_FN,
+    # A4 D1/D3: a database created before the column (hat_live) gains it
+    "ALTER TABLE hat_financial_result ADD COLUMN IF NOT EXISTS quality_flags text",
     """
 CREATE OR REPLACE TRIGGER hat_financial_result_no_update
   BEFORE UPDATE OR DELETE ON hat_financial_result
