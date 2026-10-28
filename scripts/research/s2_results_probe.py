@@ -736,7 +736,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - networ
             )
         print(f"{symbol}: {len(filings)} filings, {client.requests} requests so far", flush=True)
     timing = timing_rows(client, pick_timing_filings(by_symbol))
-    lag = listing_vs_stamp(i for items in by_symbol.values() for i in items)
     diffs = [
         r["listing_minus_announcement_s"]
         for r in timing
