@@ -279,19 +279,24 @@ class Client:
             return Answer(url, entry.status, self.cache.body(entry), entry)
         if self.offline:
             return Answer(url, 0, b"", None)
-        status, body = 0, b""
-        for attempt in range(len(BACKOFF_SECONDS) + 1):
-            if attempt:
-                self.sleep(BACKOFF_SECONDS[attempt - 1])
-                if status in (401, 403) and referer:
-                    self._warm.discard(referer)
-            status, body = self._fetch(url, referer)
-            if status not in RETRY_STATUSES and status != 0:
-                break
+        status, body = self._attempts(url, referer)
         if status in RETRY_STATUSES or status == 0:
             return Answer(url, status, body, None)
         entry = self.cache.put(url, status, body)
         return Answer(url, status, body, entry)
+
+    def _attempts(self, url: str, referer: str | None) -> tuple[int, bytes]:
+        """Fetch `url`, backing off and retrying on 401/403/429 or a network failure; on a
+        401/403 the referer page is visited again first (fresh cookies)."""
+        status, body = self._fetch(url, referer)
+        for pause in BACKOFF_SECONDS:
+            if status not in RETRY_STATUSES and status != 0:
+                break
+            self.sleep(pause)
+            if status in (401, 403) and referer:
+                self._warm.discard(referer)
+            status, body = self._fetch(url, referer)
+        return status, body
 
     def _fetch(self, url: str, referer: str | None) -> tuple[int, bytes]:  # pragma: no cover
         import requests  # network: never in tests

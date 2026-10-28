@@ -81,9 +81,13 @@ class _QuartersTable(HTMLParser):
             self.in_sub = True
         elif tag == "table" and not self.dates and not self.rows:
             self.in_table = True
-        elif self.in_table and tag == "th" and values.get("data-date-key"):
-            self.dates.append(values["data-date-key"] or "")
-        elif self.in_table and tag == "tbody":
+        elif self.in_table:
+            self._table_start(tag, values.get("data-date-key"))
+
+    def _table_start(self, tag: str, date_key: str | None) -> None:
+        if tag == "th" and date_key:
+            self.dates.append(date_key)
+        elif tag == "tbody":
             self.in_body = True
         elif self.in_body and tag == "tr":
             self.row = []
@@ -132,7 +136,7 @@ def parse_page(body: bytes) -> list[Quarter]:
     table = _QuartersTable()
     table.feed(body.decode("utf-8", errors="replace"))
     sub = table.sub.lower()
-    basis = "consolidated" if "consolidated" in sub else "standalone" if "standalone" in sub else ""
+    basis = next((b for b in ("consolidated", "standalone") if b in sub), "")
     if not basis or not table.dates:
         return []
     revenue = _row(table.rows, REVENUE_LABELS)

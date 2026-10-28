@@ -89,28 +89,13 @@ def fetch_nse(
     listing_fresh = fresh(LISTING_MAX_AGE, now)
     client.get(insurance_url(start, today), reuse=listing_fresh)
     if announcements:
-        days = announcement_days(start, today)
-        for n, day in enumerate(days, 1):
-            answer = client.get(
-                announcements_day_url(day), referer=ANNOUNCEMENTS_PAGE, reuse=day_final(day)
-            )
-            report.announcement_days += answer.status == 200
-            if n % 100 == 0:
-                logger.info("announcements %d/%d days, %d requests", n, len(days), client.requests)
+        _announcements(client, start, today, report)
     started = time.monotonic()
     seen: set[str] = set()
     for n, member in enumerate(members, 1):
         before = client.requests
         filings = _listings(client, member.symbols, listing_fresh, report)
-        for filing in filings:
-            if not in_scope(filing, start, end) or filing.xbrl_url in seen:
-                continue
-            assert filing.xbrl_url is not None
-            seen.add(filing.xbrl_url)
-            report.documents += 1
-            if client.cache.entry(filing.xbrl_url) is None:
-                client.get(filing.xbrl_url)
-                report.documents_fetched += 1
+        _documents(client, [f for f in filings if in_scope(f, start, end)], seen, report)
         report.members = n
         elapsed = time.monotonic() - started
         logger.info(
@@ -126,6 +111,32 @@ def fetch_nse(
         )
     report.statuses = dict(client.statuses)
     return report
+
+
+def _announcements(client: Client, start: date, today: date, report: FetchReport) -> None:
+    days = announcement_days(start, today)
+    for n, day in enumerate(days, 1):
+        answer = client.get(
+            announcements_day_url(day), referer=ANNOUNCEMENTS_PAGE, reuse=day_final(day)
+        )
+        report.announcement_days += answer.status == 200
+        if n % 100 == 0:
+            logger.info("announcements %d/%d days, %d requests", n, len(days), client.requests)
+
+
+def _documents(
+    client: Client, filings: Iterable[Filing], seen: set[str], report: FetchReport
+) -> None:
+    """Fetch each filing's XBRL document not yet `seen` this run and not in the cache."""
+    for filing in filings:
+        url = filing.xbrl_url
+        if url is None or url in seen:
+            continue
+        seen.add(url)
+        report.documents += 1
+        if client.cache.entry(url) is None:
+            client.get(url)
+            report.documents_fetched += 1
 
 
 def _listings(

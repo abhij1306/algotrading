@@ -141,11 +141,10 @@ class PublicAt:
 def public_at(version: int, announced: datetime | None, filed: FiledAt | None) -> PublicAt | None:
     """When version `version` of a filing became public (rules above); None when nothing dates
     it (the filing is then excluded)."""
-    filed_source = (
-        PublicAt(filed.at, "xbrl_date" if filed.estimated else "xbrl", filed.estimated)
-        if filed
-        else None
-    )
+    filed_source = None
+    if filed is not None:
+        source = "xbrl_date" if filed.estimated else "xbrl"
+        filed_source = PublicAt(filed.at, source, filed.estimated)
     if version > 1 or announced is None:
         return filed_source
     announced = pm_fix(announced, filed)

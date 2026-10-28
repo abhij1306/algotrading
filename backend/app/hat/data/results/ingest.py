@@ -85,7 +85,7 @@ class Outcome:
     basis: str
     format: str
     url: str
-    outcome: str  # stored | already_stored | same_figures | insurance_skipped | excluded
+    result: str  # stored | already_stored | same_figures | insurance_skipped | excluded
     reason: str = ""
     version: int = 0
     q4_derived: bool = False
@@ -213,12 +213,12 @@ def parse(
         if n % 50 == 0:
             logger.info("parse %d/%d members, %d outcomes", n, len(members), len(outcomes))
     for item in outcomes:
-        report.outcomes[item.outcome] = report.outcomes.get(item.outcome, 0) + 1
+        report.outcomes[item.result] = report.outcomes.get(item.result, 0) + 1
     report.stored = sum(
-        1 for o in outcomes if o.outcome == "stored" and o.format != FORMAT_SECONDARY
+        1 for o in outcomes if o.result == "stored" and o.format != FORMAT_SECONDARY
     )
     report.secondary = sum(
-        1 for o in outcomes if o.format == FORMAT_SECONDARY and o.outcome == "stored"
+        1 for o in outcomes if o.format == FORMAT_SECONDARY and o.result == "stored"
     )
     write_outcomes(report_dir / "filings.csv", outcomes)
     return report
@@ -252,7 +252,7 @@ def write_outcomes(path: Path, outcomes: Iterable[Outcome]) -> None:
 
 def figures_key(figures: Figures | None) -> tuple[Any, ...]:
     if figures is None:
-        return ()
+        return (None,) * 5
     return (
         figures.revenue,
         figures.total_income,
@@ -348,20 +348,20 @@ class MemberIngest:  # pragma: no cover - the database
         assert filing.xbrl_url is not None
         entry = self.cache.entry(filing.xbrl_url)
         if entry is None:
-            return self._outcome(filing, outcome="excluded", reason="not_fetched")
+            return self._outcome(filing, result="excluded", reason="not_fetched")
         if entry.status != 200:
-            return self._outcome(filing, outcome="excluded", reason=f"xbrl_http_{entry.status}")
+            return self._outcome(filing, result="excluded", reason=f"xbrl_http_{entry.status}")
         if entry.sha256 in self.shas:
-            return self._outcome(filing, outcome="already_stored")
+            return self._outcome(filing, result="already_stored")
         parsed: Parsed | None = None
         if filing.listing != LISTING_INSURANCE:
             try:
                 parsed = parse_xbrl(self.cache.body(entry))
             except XbrlError as exc:
-                return self._outcome(filing, outcome="excluded", reason=str(exc))
+                return self._outcome(filing, result="excluded", reason=str(exc))
         basis = (parsed.basis if parsed else "") or filing.basis
         if not basis:
-            return self._outcome(filing, outcome="excluded", reason="basis_unknown")
+            return self._outcome(filing, result="excluded", reason="basis_unknown")
         period_end, mismatch = document_period(
             parsed.period_end if parsed else None, filing.period_end
         )
@@ -388,33 +388,20 @@ class MemberIngest:  # pragma: no cover - the database
         insurer = c.parsed is None or c.parsed.kind.format == FORMAT_INSURANCE
         fmt = FORMAT_INSURANCE if insurer else c.parsed.kind.format  # type: ignore[union-attr]
         base = {"period_end": c.period_end.isoformat(), "basis": c.basis, "format": fmt}
-        quarter: Figures | None = None
-        q4 = False
-        if not insurer:
-            assert c.parsed is not None
-            quarter = c.parsed.quarter
-            if quarter is None and c.parsed.annual is not None:
-                nine = c.parsed.nine_month or self._nine_months(
-                    c.period_end, c.basis, c.parsed.fy_start
-                )
-                if nine is None:
-                    return self._outcome(
-                        c.filing, outcome="excluded", reason="q4_nine_month_missing", **base
-                    )
-                quarter, q4 = derive_q4(c.parsed.annual, nine), True
+        quarter, q4 = (None, False) if insurer else self._quarter(c)
+        if q4 and quarter is None:
+            return self._outcome(
+                c.filing, result="excluded", reason="q4_nine_month_missing", **base
+            )
         key = (c.period_end, c.basis, SOURCE_NSE)
         held = self.latest.get(key)
         if held is not None and figures_key(_normal(quarter)) == held.figures and not insurer:
-            return self._outcome(c.filing, outcome="same_figures", **base)
+            return self._outcome(c.filing, result="same_figures", **base)
         version = 1 if held is None else held.version + 1
-        announced = None
-        anchor = anchor_date(c.filing)
-        if version == 1 and anchor is not None:
-            match = match_announcement(self.items, anchor, c.period_end)
-            announced = match.at if match else None
+        announced = self._announced(c) if version == 1 else None
         when = public_at(version, announced, c.filed)
         if when is None:
-            return self._outcome(c.filing, outcome="excluded", reason="no_time", **base)
+            return self._outcome(c.filing, result="excluded", reason="no_time", **base)
         mismatch = document_period(c.period_end, c.filing.period_end)[1]
         row = self._row(c, fmt, quarter, q4, mismatch, when, version, held)
         self.session.add(row)
@@ -422,13 +409,28 @@ class MemberIngest:  # pragma: no cover - the database
         self._hold(row)
         return self._outcome(
             c.filing,
-            outcome=FORMAT_INSURANCE if insurer else "stored",
+            result=FORMAT_INSURANCE if insurer else "stored",
             version=version,
             q4_derived=q4,
             period_mismatch=mismatch,
             public_at_source=when.source,
             **base,
         )
+
+    def _quarter(self, c: Candidate) -> tuple[Figures | None, bool]:
+        """The quarter's figures and whether they are derived (Q4 = year less nine months);
+        (None, True) when Q4 must be derived and the nine months are not known."""
+        parsed = c.parsed
+        assert parsed is not None
+        if parsed.quarter is not None or parsed.annual is None:
+            return parsed.quarter, False
+        nine = parsed.nine_month or self._nine_months(c.period_end, c.basis, parsed.fy_start)
+        return (None if nine is None else derive_q4(parsed.annual, nine)), True
+
+    def _announced(self, c: Candidate) -> datetime | None:
+        anchor = anchor_date(c.filing)
+        match = match_announcement(self.items, anchor, c.period_end) if anchor else None
+        return match.at if match else None
 
     def _nine_months(self, period_end: date, basis: str, fy_start: date | None) -> Figures | None:
         q3_end = quarter_ends_before(period_end, 1)[0]
@@ -451,7 +453,9 @@ class MemberIngest:  # pragma: no cover - the database
         held: Held | None,
     ) -> HatFinancialResult:
         parsed = c.parsed
-        ytd = parsed.ytd if parsed and not q4 else (parsed.annual if parsed else None)
+        ytd = None
+        if parsed is not None:
+            ytd = parsed.annual if q4 else parsed.ytd
         return HatFinancialResult(
             instrument_id=uuid.UUID(self.member.instrument_id),
             symbol=c.filing.symbol or self.member.symbols[0],
@@ -461,23 +465,15 @@ class MemberIngest:  # pragma: no cover - the database
             basis=c.basis,
             format=fmt,
             source=SOURCE_NSE,
-            revenue=quarter.revenue if quarter else None,
-            total_income=quarter.total_income if quarter else None,
-            net_profit=quarter.net_profit if quarter else None,
-            eps_basic=quarter.eps_basic if quarter else None,
-            eps_diluted=quarter.eps_diluted if quarter else None,
-            ytd_period_start=parsed.ytd_start if parsed else None,
-            ytd_revenue=ytd.revenue if ytd else None,
-            ytd_net_profit=ytd.net_profit if ytd else None,
-            ytd_eps=ytd.eps_basic if ytd else None,
+            **_quarter_columns(quarter),
+            **_ytd_columns(parsed.ytd_start if parsed else None, ytd),
             q4_derived=q4,
             listing_period_end=c.filing.period_end if mismatch else None,
             period_mismatch=mismatch,
             public_at=when.at,
             public_at_source=when.source,
             public_at_estimated=when.estimated,
-            xbrl_at=c.filed.at if c.filed else None,
-            xbrl_at_estimated=bool(c.filed and c.filed.estimated),
+            **_xbrl_columns(c.filed),
             version=version,
             supersedes_id=held.id if held else None,
             listing=c.filing.listing,
@@ -510,38 +506,9 @@ class MemberIngest:  # pragma: no cover - the database
             held = self.latest.get((quarter.period_end, quarter.basis, SOURCE_SECONDARY))
             if held is not None and held.figures == figures_key(_normal(figures)):
                 continue
-            match = quarter_announcement(self.items, quarter.period_end, used)
-            when = (
-                PublicAt(match.at, "announcement", False)
-                if match
-                else PublicAt(deadline(quarter.period_end), "deadline", True)
-            )
+            when = _secondary_public_at(self.items, quarter.period_end, used)
             version = 1 if held is None else held.version + 1
-            row = HatFinancialResult(
-                instrument_id=uuid.UUID(self.member.instrument_id),
-                symbol=self.member.symbols[0],
-                isin=self.member.isin,
-                period_start=quarter_start(quarter.period_end),
-                period_end=quarter.period_end,
-                basis=quarter.basis,
-                format=FORMAT_SECONDARY,
-                source=SOURCE_SECONDARY,
-                revenue=quarter.revenue,
-                net_profit=quarter.net_profit,
-                eps_basic=quarter.eps_basic,
-                q4_derived=False,
-                period_mismatch=False,
-                public_at=when.at,
-                public_at_source=when.source,
-                public_at_estimated=when.estimated,
-                version=version,
-                supersedes_id=held.id if held else None,
-                listing=SOURCE_SECONDARY,
-                listing_seq="",
-                source_url=url,
-                sha256=sha,
-                raw_path=str(self.cache.blob_path(sha)),
-            )
+            row = self._secondary_row(quarter, url, sha, when, version, held)
             self.session.add(row)
             self.session.flush()
             self._hold(row)
@@ -562,6 +529,73 @@ class MemberIngest:  # pragma: no cover - the database
                 )
             )
         return outcomes
+
+    def _secondary_row(
+        self,
+        quarter: Quarter,
+        url: str,
+        sha: str,
+        when: PublicAt,
+        version: int,
+        held: Held | None,
+    ) -> HatFinancialResult:
+        return HatFinancialResult(
+            instrument_id=uuid.UUID(self.member.instrument_id),
+            symbol=self.member.symbols[0],
+            isin=self.member.isin,
+            period_start=quarter_start(quarter.period_end),
+            period_end=quarter.period_end,
+            basis=quarter.basis,
+            format=FORMAT_SECONDARY,
+            source=SOURCE_SECONDARY,
+            revenue=quarter.revenue,
+            net_profit=quarter.net_profit,
+            eps_basic=quarter.eps_basic,
+            q4_derived=False,
+            period_mismatch=False,
+            public_at=when.at,
+            public_at_source=when.source,
+            public_at_estimated=when.estimated,
+            version=version,
+            supersedes_id=held.id if held else None,
+            listing=SOURCE_SECONDARY,
+            listing_seq="",
+            source_url=url,
+            sha256=sha,
+            raw_path=str(self.cache.blob_path(sha)),
+        )
+
+
+def _quarter_columns(quarter: Figures | None) -> dict[str, Decimal | None]:
+    names = ("revenue", "total_income", "net_profit", "eps_basic", "eps_diluted")
+    return dict(zip(names, figures_key(quarter), strict=True))
+
+
+def _ytd_columns(start: date | None, ytd: Figures | None) -> dict[str, Any]:
+    if ytd is None:
+        return {"ytd_period_start": start}
+    return {
+        "ytd_period_start": start,
+        "ytd_revenue": ytd.revenue,
+        "ytd_net_profit": ytd.net_profit,
+        "ytd_eps": ytd.eps_basic,
+    }
+
+
+def _xbrl_columns(filed: FiledAt | None) -> dict[str, Any]:
+    if filed is None:
+        return {"xbrl_at": None, "xbrl_at_estimated": False}
+    return {"xbrl_at": filed.at, "xbrl_at_estimated": filed.estimated}
+
+
+def _secondary_public_at(
+    items: Sequence[Announcement], period_end: date, used: set[datetime]
+) -> PublicAt:
+    """A secondary-source quarter's results announcement time, else its deadline (estimated)."""
+    match = quarter_announcement(items, period_end, used)
+    if match is not None:
+        return PublicAt(match.at, "announcement", False)
+    return PublicAt(deadline(period_end), "deadline", True)
 
 
 def _normal(figures: Figures | None) -> Figures | None:

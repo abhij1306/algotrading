@@ -22,9 +22,14 @@ import sys
 from collections.abc import Sequence
 from datetime import date
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ...settings import operator_settings
 from ...time import trade_date_of, utc_now
+
+if TYPE_CHECKING:
+    from ...settings import HatSettings
+    from .universe import Member
 
 FIRST_PERIOD_END = date(2020, 3, 31)  # owner, 2026-10-28: XBRL from the March 2020 quarter
 UNIVERSE_SINCE = date(2021, 1, 1)
@@ -44,7 +49,7 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     return p.parse_args(argv)
 
 
-def main(argv: Sequence[str] | None = None) -> int:
+def main(argv: Sequence[str] | None = None) -> None:
     args = _parse_args(argv)
     settings = operator_settings()  # before the database module, which reads .env too
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
@@ -52,18 +57,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         from .derive import derive
 
         _out(derive())
-        return 0
-    from app.database import db_session_scope
-
-    from ..store import DataStore
+        return
     from .raw import RawCache
-    from .universe import members
 
     today = trade_date_of(utc_now())
     end = args.end or today
     root = settings.data_root
-    wanted = {s.strip().upper() for s in args.symbols.split(",") if s.strip()}
-    store = DataStore(root, memory_limit=settings.duckdb_memory)
+    covered = _covered(settings, today, args.symbols)
+    if args.step == "fetch":
+        from .fetch import fetch_nse
+        from .nse import Client
+
+        client = Client(RawCache(root / NSE_RAW), offline=args.offline)
+        announcements = not args.no_announcements
+        _out(fetch_nse(client, covered, args.start, end, today, announcements=announcements))
+    elif args.step == "fetch-secondary":
+        from .secondary import fetch_secondary
+
+        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered))
+    else:
+        from .ingest import parse
+
+        nse, secondary = RawCache(root / NSE_RAW), RawCache(root / SECONDARY_RAW)
+        _out(parse(nse, secondary, covered, args.start, end, root / REPORT_DIR))
+
+
+def _covered(settings: HatSettings, today: date, symbols: str) -> list[Member]:
+    """The universe (`universe.members`), narrowed to `symbols` when given."""
+    from app.database import db_session_scope
+
+    from ..store import DataStore
+    from .universe import members
+
+    wanted = {s.strip().upper() for s in symbols.split(",") if s.strip()}
+    store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with db_session_scope() as session:
         covered = members(session, store, UNIVERSE_SINCE, today)
     if wanted:
@@ -71,26 +98,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.info(
         "%d instruments covered (%d NIFTY 500)", len(covered), sum(m.nifty500 for m in covered)
     )
-    if args.step == "fetch":
-        from .fetch import fetch_nse
-        from .nse import Client
-
-        client = Client(RawCache(root / NSE_RAW), offline=args.offline)
-        report = fetch_nse(
-            client, covered, args.start, end, today, announcements=not args.no_announcements
-        )
-        _out(report)
-        return 0
-    if args.step == "fetch-secondary":
-        from .secondary import fetch_secondary
-
-        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered))
-        return 0
-    from .ingest import parse
-
-    nse, secondary = RawCache(root / NSE_RAW), RawCache(root / SECONDARY_RAW)
-    _out(parse(nse, secondary, covered, args.start, end, root / REPORT_DIR))
-    return 0
+    return covered
 
 
 def _out(value: object) -> None:
@@ -98,4 +106,4 @@ def _out(value: object) -> None:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()

@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import re
 import xml.etree.ElementTree as ET  # noqa: S405 - a doctype or entity is refused first
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 
@@ -326,15 +326,13 @@ def parse(body: bytes) -> Parsed:
     quarter = figures(one, kind.format, basis)
     ytd = figures(four, kind.format, basis) if four else None
     if _annual_only(start, end, fy_start, ytd_start, quarter, ytd):
-        return replace(
-            blank,
-            period_start=quarter_start(end),
-            annual=quarter,
-            ytd=quarter,
-            ytd_start=fy_start or start,
-            nine_month=_nine_month(facts, periods, kind.format, basis, end),
+        nine = _nine_month(facts, periods, kind.format, basis, end)
+        q_start = quarter_start(end)
+        return Parsed(
+            kind, basis, q_start, end, None, fy_start or start, quarter, quarter, nine, fy_start
         )
-    return replace(blank, period_start=start or quarter_start(end), quarter=quarter, ytd=ytd)
+    q_start = start or quarter_start(end)
+    return Parsed(kind, basis, q_start, end, quarter, ytd_start, ytd, None, None, fy_start)
 
 
 def _annual_only(

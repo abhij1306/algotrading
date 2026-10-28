@@ -131,8 +131,9 @@ def test_results__unit_suspect_20x_either_way() -> None:
 
 def test_results__money_must_be_inr() -> None:
     body = (FIXTURES / "reg33_banking_q3_federalbnk.xml").read_bytes()
+    usd = body.replace(b"iso4217:INR</xbrli:measure>", b"iso4217:USD</xbrli:measure>")
     with pytest.raises(xbrl.XbrlError, match="unit_not_inr"):
-        xbrl.parse(body.replace(b"iso4217:INR</xbrli:measure>", b"iso4217:USD</xbrli:measure>"))
+        xbrl.parse(usd)
 
 
 # --- A2 rule 6: Reg 33 and Integrated into one schema; insurers -----------------------------
