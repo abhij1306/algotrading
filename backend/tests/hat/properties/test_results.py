@@ -637,10 +637,10 @@ def test_results__consolidated_elsewhere_drops_the_standalone_quarter() -> None:
 
 
 def test_results__secondary_standalone_page_only_without_consolidated_quarters() -> None:
-    assert scope.secondary_pages(scope.BASIS_CONSOLIDATED_FIRST, 13) == ()
-    assert scope.secondary_pages(scope.BASIS_CONSOLIDATED_FIRST, 0) == ("standalone",)
-    assert scope.secondary_pages(scope.BASIS_CONSOLIDATED_FIRST, None) == ("standalone",)
-    assert scope.secondary_pages(scope.BASIS_BOTH, 13) == ("standalone",)
+    assert not scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, 13)
+    assert scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, 0)
+    assert scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, None)
+    assert scope.read_standalone(scope.BASIS_BOTH, 13)
 
 
 def test_results__secondary_quarters_by_rule() -> None:

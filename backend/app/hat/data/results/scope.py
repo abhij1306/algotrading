@@ -53,13 +53,11 @@ def by_rule(items: Iterable[T], rule: str, consolidated_elsewhere: Iterable[date
     return consolidated_first(items, consolidated_elsewhere)
 
 
-def secondary_pages(rule: str, consolidated_quarters: int | None) -> tuple[str, ...]:
-    """The secondary-source pages to read beyond the consolidated one: the standalone page under
-    `both`, or under `consolidated-first` when the consolidated page has no quarters (None: not
-    read, or not found)."""
-    if rule == BASIS_BOTH or not consolidated_quarters:
-        return ("standalone",)
-    return ()
+def read_standalone(rule: str, consolidated_quarters: int | None) -> bool:
+    """Whether to read the secondary source's standalone page beyond the consolidated one: always
+    under `both`; under `consolidated-first` only when the consolidated page has no quarters
+    (None: not read, or not found)."""
+    return rule == BASIS_BOTH or not consolidated_quarters
 
 
 def nifty500_first(

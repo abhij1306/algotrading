@@ -23,7 +23,7 @@ from urllib.parse import quote
 
 from ...money import exact
 from .raw import RawCache
-from .scope import BASIS_CONSOLIDATED_FIRST, secondary_pages
+from .scope import BASIS_CONSOLIDATED_FIRST, read_standalone
 from .universe import Member
 
 if TYPE_CHECKING:
@@ -191,7 +191,7 @@ def fetch_secondary(
     cache: RawCache, members: list[Member], basis: str = BASIS_CONSOLIDATED_FIRST
 ) -> SecondaryReport:  # pragma: no cover - the network
     """The consolidated page of every covered instrument's current symbol, and its standalone
-    page when the basis rule asks for it (`scope.secondary_pages`), one request every 3 s; a page
+    page when the basis rule asks for it (`scope.read_standalone`), one request every 3 s; a page
     cached in the last `PAGE_MAX_AGE` is not asked again."""
     from .nse import Client
 
@@ -209,8 +209,8 @@ def fetch_secondary(
     for n, member in enumerate(members, 1):
         consolidated = read(page_url(member.symbols[0], "consolidated"))
         found = len(parse_page(consolidated.body)) if consolidated.status == 200 else None
-        for other in secondary_pages(basis, found):
-            read(page_url(member.symbols[0], other))
+        if read_standalone(basis, found):
+            read(page_url(member.symbols[0], "standalone"))
         report.members = n
         if n % 50 == 0:
             logger.info("secondary %d/%d, %d requests", n, len(members), client.requests)
