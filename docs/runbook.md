@@ -256,12 +256,14 @@ python -m app.hat.data.results derive            # hat_financial_growth, rebuilt
 
 `--symbols A,B` limits `fetch`, `fetch-secondary` and `parse` to some instruments; `--from`/`--to`
 limit the period ends `fetch` and `parse` take (default 2020-03-31 to today; `fetch-secondary`
-reads whole pages); `fetch --offline` reads the cache only. `derive` takes no option: it rebuilds
-the whole table. The scope (`scope.py`): `--universe nifty500` (default) covers the NIFTY 500
+reads whole pages); `fetch --offline` reads the cache only. `derive` rebuilds the whole table and
+takes only `--basis`. The scope (`scope.py`): `--universe nifty500` (default) covers the NIFTY 500
 point-in-time members with a membership on any day from 2021-01-01, `--universe ep` the instruments
 passing the S2 EP universe on any session since; `--basis consolidated-first` (default) takes each
 company's consolidated results, and its standalone results only for a quarter it filed no
-consolidated results for (`both` takes every filing). Both NSE listings are read: Reg 33 holds the
+consolidated results for (`both` takes every filing); a consolidated filing NSE lists counts even
+when its XBRL is unreadable, and `derive` and `results_as_of` apply the same rule to rows already
+stored. Both NSE listings are read: Reg 33 holds the
 quarters to December 2024, the Integrated Filing listing those from March 2025. Every step is
 incremental and can be stopped and rerun: a document is fetched once, a server error or no answer
 again on the next run (raw answers live gzipped by sha256 under `raw/nse-results/` and

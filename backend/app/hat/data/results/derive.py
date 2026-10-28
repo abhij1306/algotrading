@@ -4,8 +4,9 @@ point-in-time read `results_as_of`.
 One growth row per result row: the growth of the row's (instrument, period_end) as known when the
 row became public (`growth.growth_as_of`), and whether the row itself is unit-suspect as known
 then (`growth.suspect_row`). A suspect row is left out of every comparison made at or after the
-time it became public. The table is derived: each run replaces it whole, in one transaction that
-locks both tables first.
+time it became public. Both apply the basis rule (`scope.py`, consolidated-first by default) to
+what is stored, so rows stored under another rule never reach a comparison. The table is derived:
+each run replaces it whole, in one transaction that locks both tables first.
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from sqlalchemy.orm import Session
 from ...models import HatFinancialGrowth, HatFinancialResult
 from ...time import as_utc
 from .growth import INSURANCE, ResultRow, growth_as_of, known_at, suspect_row
+from .scope import BASIS_CONSOLIDATED_FIRST
 
 
 def result_row(row: HatFinancialResult) -> ResultRow:
@@ -38,16 +40,19 @@ def result_row(row: HatFinancialResult) -> ResultRow:
     )
 
 
-def growth_rows(instrument_id: uuid.UUID, rows: Sequence[ResultRow]) -> list[HatFinancialGrowth]:
-    """The growth rows of one instrument's result rows (pure but for the model objects)."""
+def growth_rows(
+    instrument_id: uuid.UUID, rows: Sequence[ResultRow], rule: str = BASIS_CONSOLIDATED_FIRST
+) -> list[HatFinancialGrowth]:
+    """The growth rows of one instrument's result rows under the basis rule `rule` (pure but for
+    the model objects)."""
     ordered = sorted((r for r in rows if r.format != INSURANCE), key=lambda r: r.public_at)
     suspect: set[str] = set()
     out = []
     for row in ordered:
-        flagged = suspect_row(row, ordered, suspect)
+        flagged = suspect_row(row, ordered, suspect, rule)
         if flagged:
             suspect.add(row.id)
-        found = growth_as_of(ordered, row.period_end, row.public_at, suspect)
+        found = growth_as_of(ordered, row.period_end, row.public_at, suspect, rule)
         out.append(
             HatFinancialGrowth(
                 result_id=uuid.UUID(row.id),
@@ -76,7 +81,7 @@ class DeriveReport:
     defined_eps: int = 0
 
 
-def derive() -> DeriveReport:  # pragma: no cover - the database
+def derive(rule: str = BASIS_CONSOLIDATED_FIRST) -> DeriveReport:  # pragma: no cover - the database
     from app.database import db_session_scope
 
     report = DeriveReport()
@@ -97,7 +102,7 @@ def derive() -> DeriveReport:  # pragma: no cover - the database
             by_instrument[row.instrument_id].append(result_row(row))
         session.execute(delete(HatFinancialGrowth))
         for instrument_id, rows in by_instrument.items():
-            made = growth_rows(instrument_id, rows)
+            made = growth_rows(instrument_id, rows, rule)
             session.add_all(made)
             report.instruments += 1
             report.rows += len(made)
@@ -109,11 +114,15 @@ def derive() -> DeriveReport:  # pragma: no cover - the database
 
 
 def results_as_of(
-    session: Session, instrument_id: uuid.UUID, ts: datetime
+    session: Session,
+    instrument_id: uuid.UUID,
+    ts: datetime,
+    rule: str = BASIS_CONSOLIDATED_FIRST,
 ) -> list[HatFinancialResult]:
     """The instrument's results known at `ts`: only rows with `public_at <= ts`, the latest
     version of each (period_end, basis), a secondary-source row only where no NSE row of that
-    key is public by `ts`, insurers' metadata rows left out; by period end, then basis."""
+    key is public by `ts`, insurers' metadata rows left out, a standalone row only where the
+    basis rule `rule` keeps it (`growth.known_at`); by period end, then basis."""
     rows = list(
         session.scalars(
             select(HatFinancialResult).where(
@@ -123,5 +132,5 @@ def results_as_of(
         )
     )
     by_id = {str(r.id): r for r in rows}
-    known = known_at((result_row(r) for r in rows), ts)
+    known = known_at((result_row(r) for r in rows), ts, rule)
     return [by_id[known[key].id] for key in sorted(known)]

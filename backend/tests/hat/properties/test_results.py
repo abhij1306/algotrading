@@ -22,6 +22,7 @@ from app.hat.data.results.ingest import (
     _same,
     document_period,
     figures_key,
+    filed_consolidated,
     secondary_by_rule,
 )
 from app.hat.data.results.raw import RawCache
@@ -401,8 +402,11 @@ def test_results__basis_rule_never_mixes() -> None:
         Decimal(1),
     )
     no_prior_consolidated = [_row(Q), _row(Q, "standalone", "130"), _row(P, "standalone")]
-    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set())
+    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set(), scope.BASIS_BOTH)
     assert (found.basis, found.sales_yoy) == ("standalone", Decimal("0.3"))
+    # consolidated-first (the default): Q's standalone row is hidden, Q has consolidated figures
+    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set())
+    assert (found.basis, found.reason) == (None, "no_common_basis")
     mixed = [_row(Q), _row(P, "standalone")]
     found = growth.growth_as_of(mixed, Q, T0, set())
     assert (found.basis, found.sales_yoy, found.reason) == (None, None, "no_common_basis")
@@ -423,8 +427,11 @@ def test_results__eps_growth_and_turnaround() -> None:
 
 def test_results__unit_suspect_row_is_left_out() -> None:
     rows = [_row(Q, rid="bad"), _row(P), _row(Q, "standalone", "120"), _row(P, "standalone")]
-    found = growth.growth_as_of(rows, Q, T0, {"bad"})
+    found = growth.growth_as_of(rows, Q, T0, {"bad"}, scope.BASIS_BOTH)
     assert (found.basis, found.sales_yoy) == ("standalone", Decimal("0.2"))
+    # consolidated-first: Q has consolidated results (suspect), so standalone does not stand in
+    found = growth.growth_as_of(rows, Q, T0, {"bad"})
+    assert (found.basis, found.reason) == (None, "no_common_basis")
     history = [
         _row(date(2024, m, d), revenue="100", at=T0 - timedelta(days=400))
         for m, d in ((6, 30), (9, 30), (12, 31))
@@ -682,3 +689,39 @@ def test_results__nifty500_history_must_cover_the_start() -> None:
     assert scope.coverage_gap(since, since) is None
     assert "after 2021-01-01" in (scope.coverage_gap(date(2022, 4, 1), since) or "")
     assert "not loaded" in (scope.coverage_gap(None, since) or "")
+
+
+def test_results__stored_standalone_hidden_where_consolidated_known() -> None:
+    """Rows stored under `both` are read consolidated-first: a quarter's standalone row is known
+    only while no consolidated row of that quarter is public."""
+    t1, t2 = T0, T0 + timedelta(days=2)
+    rows = [
+        _row(Q, "standalone", at=t1, rid="sa"),
+        _row(Q, at=t2, rid="co"),
+        _row(P, "standalone", at=t1, rid="sa-only"),
+    ]
+    assert {k: r.id for k, r in growth.known_at(rows, t1).items()} == {
+        (Q, "standalone"): "sa",
+        (P, "standalone"): "sa-only",
+    }
+    assert {k: r.id for k, r in growth.known_at(rows, t2).items()} == {
+        (Q, "consolidated"): "co",
+        (P, "standalone"): "sa-only",
+    }
+    assert len(growth.known_at(rows, t2, scope.BASIS_BOTH)) == 3
+
+
+def test_results__listed_consolidated_blocks_secondary_standalone() -> None:
+    """A consolidated filing NSE lists counts as consolidated results even when its XBRL was not
+    stored: the secondary source's standalone quarter is then left out."""
+    listed = [
+        nse.Filing("reg33", "X", "", "1", Q, "consolidated", None, None, "u1", False, ""),
+        nse.Filing("reg33", "X", "", "2", P, "standalone", None, None, "u2", False, ""),
+    ]
+    assert filed_consolidated(listed) == {Q}
+    quarters = [
+        (Quarter(end, "standalone", Decimal(1), Decimal(1), Decimal(1)), "u", "s", T0)
+        for end in (Q, P)
+    ]
+    kept = secondary_by_rule(quarters, scope.BASIS_CONSOLIDATED_FIRST, filed_consolidated(listed))
+    assert [t[0].period_end for t in kept] == [P]

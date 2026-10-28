@@ -327,7 +327,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   March, at 23:59 IST) with `public_at_estimated`; a later change to its figures is a new version
   public from when the page was fetched (`observed`). The secondary source shows only the latest 13
   quarters, so older gaps stay gaps. Growth compares like with like: consolidated when both
-  quarters have it, else standalone, never mixed (`data/results/growth.py`).
+  quarters have it, else standalone, never mixed (`data/results/growth.py`); under the default
+  consolidated-first scope a quarter's standalone row is read only where that quarter has no
+  consolidated row, so a quarter with consolidated results never falls back to standalone.
 
 ## Operations
 

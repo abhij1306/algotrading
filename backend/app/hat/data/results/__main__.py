@@ -13,8 +13,9 @@ reads only the cache and appends what is new to `hat_financial_result` (`ingest.
 rebuilds `hat_financial_growth` from it (`derive.py`). Every step is incremental and can be
 stopped and rerun. `--offline` makes `fetch` read the cache only.
 
-`--universe nifty500|ep` and `--basis consolidated-first|both` (fetch, fetch-secondary and parse;
-defaults nifty500 and consolidated-first) set the scope (`scope.py`).
+`--universe nifty500|ep` (fetch, fetch-secondary and parse) and `--basis consolidated-first|both`
+(all steps; derive applies it to what is stored) set the scope (`scope.py`); defaults nifty500
+and consolidated-first.
 """
 
 from __future__ import annotations
@@ -62,7 +63,7 @@ def main(argv: Sequence[str] | None = None) -> None:
     if args.step == "derive":
         from .derive import derive
 
-        _out(derive())
+        _out(derive(args.basis))
         return
     from .raw import RawCache
 

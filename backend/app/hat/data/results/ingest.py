@@ -50,7 +50,7 @@ from .nse import (
     parse_announcements,
 )
 from .raw import RawCache
-from .scope import BASIS_CONSOLIDATED_FIRST, by_rule
+from .scope import BASIS_CONSOLIDATED_FIRST, CONSOLIDATED, by_rule
 from .secondary import Quarter, page_url, parse_page
 from .timing import (
     FiledAt,
@@ -217,7 +217,9 @@ def parse(
             outcomes += stored
             if not is_insurer(member, insurance, stored):  # insurers: metadata rows only
                 quarters = secondary_by_rule(
-                    _secondary_quarters(secondary, member), basis, ingest.nse_consolidated()
+                    _secondary_quarters(secondary, member),
+                    basis,
+                    ingest.nse_consolidated() | filed_consolidated(filings),
                 )
                 outcomes += ingest.secondary(quarters, start, end)
         report.members = n
@@ -243,6 +245,13 @@ def _secondary_quarters(cache: RawCache, member: Member) -> list[PageQuarter]:
         if entry is not None and entry.status == 200:
             out += [(q, url, entry.sha256, entry.fetched_at) for q in parse_page(cache.body(entry))]
     return out
+
+
+def filed_consolidated(filings: Iterable[Filing]) -> set[date]:
+    """The period ends NSE lists a consolidated filing for, stored or not: a quarter whose
+    consolidated XBRL is unreadable or excluded still has consolidated results, so the secondary
+    source's standalone figures must not stand in for it."""
+    return {f.period_end for f in filings if f.basis == CONSOLIDATED}
 
 
 def secondary_by_rule(
