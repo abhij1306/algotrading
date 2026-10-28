@@ -498,6 +498,9 @@ class Playbook(Model):
         if self.universe is not None:
             if any(i.stage != "universe" for i in self.universe):
                 raise ValueError("wrong_stage")
+            # the eligible rank is the percentile among the bot's universe stage passers
+            if any(i.params.get("basis") == "eligible" for i in self.setup.criteria):
+                raise ValueError("eligible_rank_needs_bot_universe")
             object.__setattr__(self, "universe", _sorted_unique(self.universe))
         if self.exits is not None:
             _one_hard_stop(self.exits)

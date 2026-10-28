@@ -29,7 +29,7 @@ from app.hat.engine.criteria.live import (
     earnings_catalyst,
 )
 from app.hat.engine.criteria.setup import NeglectParams, neglect, range_pct
-from app.hat.engine.live_entry import ep_gate, ep_stock_log
+from app.hat.engine.live_entry import ep_gate, ep_stock_log, reads_results
 from app.hat.engine.strategy.config import parse_config
 from app.hat.engine.strategy.registry import STRATEGIES
 from app.hat.engine.trigger import minutes_since_open
@@ -359,3 +359,28 @@ def test_ep_stock_log_reads_to_the_previous_session() -> None:
     assert log["ret_63d_pct"] == pytest.approx(20.0)
     assert log["range_126d_pct"] is None
     assert log["adr20_pre_gap_pct"] is not None
+
+
+def test_playbook_universe_refuses_an_eligible_rank() -> None:
+    """The eligible RS rank is the percentile among the bot's universe passers, so a playbook
+    with its own universe may not read it."""
+    raw = _with_ep_exits(10)
+    ep = next(p for p in raw["playbooks"] if p["name"] == "episodic_pivot")
+    ep["setup"]["criteria"].append(
+        {"type": "rs_rank", "mode": "hard", "params": {"basis": "eligible"}}
+    )
+    with pytest.raises(Exception, match="invalid strategy config"):
+        parse_config(raw)
+    del ep["universe"]
+    assert parse_config(raw).playbook("episodic_pivot").universe is None
+
+
+def test_reads_results() -> None:
+    raw = _seed()
+    base = parse_config(raw).playbook("episodic_pivot")
+    ep = next(p for p in raw["playbooks"] if p["name"] == "episodic_pivot")
+    ep["trigger"].append({"type": "earnings_catalyst"})
+    assert reads_results(parse_config(raw).playbook("episodic_pivot"))
+    assert not reads_results(base)
+    ep["trigger"][-1]["enabled"] = False
+    assert not reads_results(parse_config(raw).playbook("episodic_pivot"))

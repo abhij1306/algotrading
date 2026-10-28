@@ -90,6 +90,7 @@ __all__ = [
     "ep_gate",
     "ep_stock_log",
     "ep_results",
+    "reads_results",
     "result_event",
     "session_open",
     "ep_setup_passes",
@@ -358,6 +359,11 @@ def ep_results(
     rows = [r for r in results_as_of(session, instrument_id, at) if as_utc(r.public_at) > since]
     growth = growth_by_result(session, [r.id for r in rows])
     return tuple(result_event(r.public_at, r.period_end, growth.get(r.id)) for r in rows)
+
+
+def reads_results(playbook: Playbook) -> bool:
+    """Whether `playbook` enables `earnings_catalyst` (its candidates read results filings)."""
+    return any(i.enabled and i.type == "earnings_catalyst" for i in playbook.trigger)
 
 
 def result_event(public_at: datetime, period_end: date, growth: object) -> ResultEvent:
