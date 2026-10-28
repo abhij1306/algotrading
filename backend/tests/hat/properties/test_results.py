@@ -249,6 +249,13 @@ def test_results__listings() -> None:
     assert (insurer.period_end, insurer.listing) == (date(2024, 12, 31), "insurance")
 
 
+def test_results__listing_without_results() -> None:
+    """NSE answers a symbol with no results as an object (recorded for FORCEMOT, 2026-10-28)."""
+    assert nse.parse_results_listing(b'{"data": [], "msg": "no data found"}') == []
+    with pytest.raises(ValueError, match="unexpected results listing"):
+        nse.parse_results_listing(b'{"msg": "Resource not found"}')
+
+
 def test_results__results_announcement_rules() -> None:
     items = nse.parse_announcements((FIXTURES / "announcements.json").read_bytes())
     found = timing.results_announcements(items)

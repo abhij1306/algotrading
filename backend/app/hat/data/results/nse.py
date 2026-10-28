@@ -127,10 +127,15 @@ def _xbrl(raw: str | None) -> str | None:
 
 
 def parse_results_listing(body: bytes, listing: str = LISTING_REG33) -> list[Filing]:
-    """The `corporates-financial-results` answer (a JSON list; the insurance index names its
-    period end `periodEnd`, the others `toDate`); rows without a period end are skipped."""
+    """The `corporates-financial-results` answer (a JSON list, or `{"data": [...], "msg": ...}`
+    as NSE answers a symbol it has no results for; the insurance index names its period end
+    `periodEnd`, the others `toDate`); rows without a period end are skipped."""
+    answer = json.loads(body or b"[]")
+    rows = answer.get("data") if isinstance(answer, dict) else answer
+    if not isinstance(rows, list):
+        raise ValueError(f"unexpected results listing: {str(answer)[:200]}")
     filings = []
-    for row in json.loads(body or b"[]"):
+    for row in rows:
         end = nse_time(row.get("toDate") or row.get("periodEnd"))
         if end is None:
             continue
