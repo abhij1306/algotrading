@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:in-capmkt="http://www.sebi.gov.in/xbrl/2025-01-31/in-capmkt" xmlns:in-capmkt-ent="http://www.sebi.gov.in/xbrl/IntegratedFinance_LI/2025-01-31/in-capmkt/in-capmkt-ent" xmlns:in-capmkt-roles="http://www.sebi.gov.in/xbrl/IntegratedFinance_LI/2025-01-31/in-capmkt-roles" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:xl="http://www.xbrl.org/2003/XLink" xmlns:xlink="http://www.w3.org/1999/xlink">
+<link:schemaRef xlink:href="in-capmkt-ent-2025-01-31.xsd" xlink:type="simple"/>
+<xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+<xbrli:unit id="pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit>
+<xbrli:unit id="INRPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+<in-capmkt:DateOfStartOfFinancialYear contextRef="OneD">2025-04-01</in-capmkt:DateOfStartOfFinancialYear>
+<in-capmkt:DateOfEndOfFinancialYear contextRef="OneD">2026-03-31</in-capmkt:DateOfEndOfFinancialYear>
+<in-capmkt:LevelOfRounding contextRef="OneD">Lakhs</in-capmkt:LevelOfRounding>
+<in-capmkt:ReportingQuarter contextRef="OneD">Third quarter</in-capmkt:ReportingQuarter>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="OneD">2025-10-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="OneD">2025-12-31</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="OneD">Standalone</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:Income contextRef="OneD" decimals="-5" unitRef="INR">290379900000</in-capmkt:Income>
+<in-capmkt:ProfitLossAfterTaxAndExtraordinaryItems contextRef="OneD" decimals="-5" unitRef="INR">4207300000</in-capmkt:ProfitLossAfterTaxAndExtraordinaryItems>
+<in-capmkt:DateOfStartOfReportingPeriod contextRef="FourD">2025-04-01</in-capmkt:DateOfStartOfReportingPeriod>
+<in-capmkt:DateOfEndOfReportingPeriod contextRef="FourD">2025-12-31</in-capmkt:DateOfEndOfReportingPeriod>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="FourD">Standalone</in-capmkt:NatureOfReportStandaloneConsolidated>
+<in-capmkt:Income contextRef="FourD" decimals="-5" unitRef="INR">785547800000</in-capmkt:Income>
+<in-capmkt:ProfitLossAfterTaxAndExtraordinaryItems contextRef="FourD" decimals="-5" unitRef="INR">14143400000</in-capmkt:ProfitLossAfterTaxAndExtraordinaryItems>
+</xbrli:xbrl>

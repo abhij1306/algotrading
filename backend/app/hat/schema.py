@@ -249,6 +249,14 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
+# A financial result is never changed or removed: a revision is a new row (`data/results/`).
+_FINANCIAL_RESULT_APPEND_ONLY_FN = """
+CREATE OR REPLACE FUNCTION hat_financial_result_is_append_only() RETURNS trigger AS $$
+BEGIN
+  RAISE EXCEPTION 'hat_financial_result is append-only';
+END $$ LANGUAGE plpgsql
+"""
+
 # hat_live's DDL: the stock-data tables' guards, checks and late columns.
 LIVE_DDL: tuple[str, ...] = (
     _UNIVERSE_IMMUTABLE_FN,
@@ -280,6 +288,12 @@ CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
 CREATE OR REPLACE TRIGGER hat_corporate_action_version_no_update
   BEFORE UPDATE OR DELETE ON hat_corporate_action_version
   FOR EACH ROW EXECUTE FUNCTION hat_corporate_action_version_is_append_only()
+""",
+    _FINANCIAL_RESULT_APPEND_ONLY_FN,
+    """
+CREATE OR REPLACE TRIGGER hat_financial_result_no_update
+  BEFORE UPDATE OR DELETE ON hat_financial_result
+  FOR EACH ROW EXECUTE FUNCTION hat_financial_result_is_append_only()
 """,
 )
 

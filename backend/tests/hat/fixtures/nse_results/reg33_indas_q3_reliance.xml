@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2020-03-31/in-bse-fin" xmlns:in-bse-fin-roles="http://www.bseindia.com/xbrl/fin/2020-03-31/in-bse-fin-roles" xmlns:in-bse-fin-ent="http://www.bseindia.com/xbrl/fin/2020-03-31/in-bse-fin/in-bse-fin-ent" xmlns:in-bse-fin-type="http://www.bseindia.com/xbrl/fin/2020-03-31/in-bse-fin-types" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xl="http://www.xbrl.org/2003/XLink">
+<link:schemaRef xlink:type="simple" xlink:href="Ind-AS_entry_point_2020-03-31.xsd"/>
+<xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+<xbrli:unit id="pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit>
+<xbrli:unit id="shares"><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unit>
+<xbrli:unit id="INRPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+<in-bse-fin:DateOfStartOfFinancialYear contextRef="OneD">2020-04-01</in-bse-fin:DateOfStartOfFinancialYear>
+<in-bse-fin:DateOfEndOfFinancialYear contextRef="OneD">2021-03-31</in-bse-fin:DateOfEndOfFinancialYear>
+<in-bse-fin:LevelOfRoundingUsedInFinancialStatements contextRef="OneD">Crores</in-bse-fin:LevelOfRoundingUsedInFinancialStatements>
+<in-bse-fin:ReportingQuarter contextRef="OneD">Third quarter</in-bse-fin:ReportingQuarter>
+<in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2020-10-01</in-bse-fin:DateOfStartOfReportingPeriod>
+<in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2020-12-31</in-bse-fin:DateOfEndOfReportingPeriod>
+<in-bse-fin:NatureOfReportStandaloneConsolidated contextRef="OneD">Consolidated</in-bse-fin:NatureOfReportStandaloneConsolidated>
+<in-bse-fin:RevenueFromOperations contextRef="OneD" unitRef="INR" decimals="-7">1239970000000.00</in-bse-fin:RevenueFromOperations>
+<in-bse-fin:Income contextRef="OneD" unitRef="INR" decimals="-7">1284500000000.00</in-bse-fin:Income>
+<in-bse-fin:ProfitLossForPeriod contextRef="OneD" unitRef="INR" decimals="-7">148940000000.00</in-bse-fin:ProfitLossForPeriod>
+<in-bse-fin:ProfitOrLossAttributableToOwnersOfParent contextRef="OneD" unitRef="INR" decimals="-7">131010000000.00</in-bse-fin:ProfitOrLossAttributableToOwnersOfParent>
+<in-bse-fin:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="OneD" unitRef="INRPerShare" decimals="INF">20.33</in-bse-fin:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-bse-fin:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="OneD" unitRef="INRPerShare" decimals="INF">19.93</in-bse-fin:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-bse-fin:DateOfStartOfReportingPeriod contextRef="FourD">2020-04-01</in-bse-fin:DateOfStartOfReportingPeriod>
+<in-bse-fin:DateOfEndOfReportingPeriod contextRef="FourD">2020-12-31</in-bse-fin:DateOfEndOfReportingPeriod>
+<in-bse-fin:NatureOfReportStandaloneConsolidated contextRef="FourD">Consolidated</in-bse-fin:NatureOfReportStandaloneConsolidated>
+<in-bse-fin:RevenueFromOperations contextRef="FourD" unitRef="INR" decimals="-7">3314300000000.00</in-bse-fin:RevenueFromOperations>
+<in-bse-fin:Income contextRef="FourD" unitRef="INR" decimals="-7">3445200000000.00</in-bse-fin:Income>
+<in-bse-fin:ProfitLossForPeriod contextRef="FourD" unitRef="INR" decimals="-7">387440000000.00</in-bse-fin:ProfitLossForPeriod>
+<in-bse-fin:ProfitOrLossAttributableToOwnersOfParent contextRef="FourD" unitRef="INR" decimals="-7">359010000000.00</in-bse-fin:ProfitOrLossAttributableToOwnersOfParent>
+<in-bse-fin:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="FourD" unitRef="INRPerShare" decimals="INF">55.65</in-bse-fin:BasicEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+<in-bse-fin:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations contextRef="FourD" unitRef="INRPerShare" decimals="INF">54.86</in-bse-fin:DilutedEarningsLossPerShareFromContinuingAndDiscontinuedOperations>
+</xbrli:xbrl>

@@ -34,24 +34,29 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
-from app.hat.data.bhavcopy import BROWSER_HEADERS, DEFAULT_INTERVAL_SECONDS  # noqa: E402
+from app.hat.data.bhavcopy import DEFAULT_INTERVAL_SECONDS  # noqa: E402
 from app.hat.data.pacing import Pacer  # noqa: E402
+from app.hat.data.results.nse import (  # noqa: E402
+    ANNOUNCEMENTS_API,
+    ANNOUNCEMENTS_PAGE,
+    API_HEADERS,
+    BACKOFF_SECONDS,
+    BOARD_OUTCOME,
+    INTEGRATED_API,
+    RESULT_DESCS,
+    RESULTS_API,
+    RESULTS_PAGE,
+    RETRY_STATUSES,
+    api_url,
+    nse_time,
+)
+from app.hat.data.results.nse import basis_of as _basis  # noqa: E402
 from app.hat.time import IST, trade_date_of, utc_now  # noqa: E402
 from app.paths import PROJECT_ROOT  # noqa: E402
 
-BASE = "https://www.nseindia.com"
-RESULTS_PAGE = BASE + "/companies-listing/corporate-filings-financial-results"
-ANNOUNCEMENTS_PAGE = BASE + "/companies-listing/corporate-filings-announcements"
-RESULTS_API = BASE + "/api/corporates-financial-results"
-INTEGRATED_API = BASE + "/api/integrated-filing-results"
-ANNOUNCEMENTS_API = BASE + "/api/corporate-announcements"
-API_HEADERS = {**BROWSER_HEADERS, "Accept": "application/json, text/plain, */*"}
-RETRY_STATUSES = frozenset({401, 403, 429})
-BACKOFF_SECONDS = (5.0, 20.0, 60.0)
 YEARS = range(2016, 2027)
 REPORT_DIR = PROJECT_ROOT / "reports" / "s2-ep" / "a0"
 
@@ -147,10 +152,6 @@ class Client:
         return response.status_code, response.content
 
 
-def api_url(base: str, params: Mapping[str, str]) -> str:
-    return f"{base}?{urlencode(params)}"
-
-
 # --- pure helpers: listings, taxonomy, announcements, timestamps ---------------------------------
 
 
@@ -174,27 +175,6 @@ class Filing:
     xbrl_url: str | None
     detail_url: str | None  # the pre-XBRL HTML results page, when listed
     listing_format: str  # the listing's own format markers, joined
-
-
-def nse_time(raw: str | None) -> datetime | None:
-    """`16-Jan-2025 20:20:21` (or without seconds, or a bare date) as an IST datetime."""
-    if not raw or raw.strip() in {"-", ""}:
-        return None
-    for pattern in ("%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%d-%b-%Y"):
-        try:
-            return datetime.strptime(raw.strip().title(), pattern).replace(tzinfo=IST)
-        except ValueError:
-            continue
-    return None
-
-
-def _basis(raw: str | None) -> str:
-    text = (raw or "").strip().lower()
-    if text in {"consolidated"}:
-        return "consolidated"
-    if text in {"non-consolidated", "standalone"}:
-        return "standalone"
-    return ""
 
 
 def _xbrl(raw: str | None) -> str | None:
@@ -324,10 +304,6 @@ def parse_announcements(body: bytes) -> list[Announcement]:
                 Announcement(at, row.get("desc") or "", text, row.get("attchmntFile") or "")
             )
     return items
-
-
-RESULT_DESCS = frozenset({"financial result updates", "financial results"})
-BOARD_OUTCOME = "outcome of board meeting"
 
 
 def results_announcement(items: Iterable[Announcement]) -> tuple[Announcement | None, str]:

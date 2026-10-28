@@ -241,6 +241,31 @@ wrote later stay) and prints the old-label mapping it used and the NIFTY 500 cov
 (member chains classified, unknown member-days before and after, the names left unknown).
 Loading the same files again changes nothing.
 
+### Financial results
+
+`hat_financial_result` holds NSE's quarterly results from the quarter ending 2020-03-31, one row
+per filing version (docs/decisions.md, Financial results store). One command per step, from
+`backend/` with the venv, `HAT_DATA_ROOT` and `DB_NAME=hat_live`:
+
+```bash
+python -m app.hat.data.results fetch             # NSE, about 1 request/s (hours on a first run)
+python -m app.hat.data.results fetch-secondary   # the secondary source, 1 request/3 s
+python -m app.hat.data.results parse             # the cache into hat_financial_result
+python -m app.hat.data.results derive            # hat_financial_growth, rebuilt
+```
+
+`--symbols A,B` limits a step to some instruments, `--from`/`--to` the period ends (default
+2020-03-31 to today); `fetch --offline` reads the cache only. The covered instruments are those
+passing the S2 EP universe on any session from 2021-01-01, NIFTY 500 members first. Every step is
+incremental and can be stopped and rerun: a document is fetched once (raw answers live gzipped by
+sha256 under `raw/nse-results/` and `raw/secondary-results/`, with a `manifest.jsonl`), listings
+and secondary pages again after 20 hours, an announcement day until fetched after it ended, and
+`parse` adds only filings not stored yet. A new quarter is the four commands again once its
+results are out. `parse` writes every filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`.
+Rows are append-only (a trigger refuses UPDATE and DELETE), so try a change on a scratch database
+first. Run `parse` only after `fetch` has finished: a quarter not yet fetched would be backfilled
+from the secondary source.
+
 ### First live session checks (O2 day)
 
 Checks on the first session with a real Fyers account; note each in the Check log. They place

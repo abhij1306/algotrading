@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:in-bse-fin="http://www.bseindia.com/xbrl/fin/2019-09-30/in-bse-fin" xmlns:in-bse-fin-roles="http://www.bseindia.com/xbrl/fin/2019-09-30/in-bse-fin-roles" xmlns:in-bse-fin-ent="http://www.bseindia.com/xbrl/fin/2019-09-30/in-bse-fin/in-bse-fin-ent" xmlns:in-bse-fin-type="http://www.bseindia.com/xbrl/fin/2019-09-30/in-bse-fin-types" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xl="http://www.xbrl.org/2003/XLink">
+<link:schemaRef xlink:type="simple" xlink:href="banking_entry_point_2019-09-30.xsd"/>
+<xbrli:unit id="INR"><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unit>
+<xbrli:unit id="pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit>
+<xbrli:unit id="shares"><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unit>
+<xbrli:unit id="INRPerShare"><xbrli:divide><xbrli:unitNumerator><xbrli:measure>iso4217:INR</xbrli:measure></xbrli:unitNumerator><xbrli:unitDenominator><xbrli:measure>xbrli:shares</xbrli:measure></xbrli:unitDenominator></xbrli:divide></xbrli:unit>
+<in-bse-fin:DateOfStartOfReportingPeriod contextRef="OneD">2023-04-01</in-bse-fin:DateOfStartOfReportingPeriod>
+<in-bse-fin:DateOfEndOfReportingPeriod contextRef="OneD">2024-03-31</in-bse-fin:DateOfEndOfReportingPeriod>
+<in-bse-fin:NatureOfReportStandaloneConsolidated contextRef="OneD">Standalone</in-bse-fin:NatureOfReportStandaloneConsolidated>
+<in-bse-fin:InterestEarned contextRef="OneD" unitRef="INR" decimals="-7">2583405600000.00</in-bse-fin:InterestEarned>
+<in-bse-fin:Income contextRef="OneD" unitRef="INR" decimals="-7">3075815500000.00</in-bse-fin:Income>
+<in-bse-fin:ProfitLossForThePeriod contextRef="OneD" unitRef="INR" decimals="-7">608122700000.00</in-bse-fin:ProfitLossForThePeriod>
+<in-bse-fin:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates contextRef="OneD" unitRef="INR" decimals="-7">608122700000.00</in-bse-fin:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates>
+<in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems contextRef="OneD" unitRef="INRPerShare" decimals="INF">85.83</in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems>
+<in-bse-fin:DilutedEarningsPerShareAfterExtraordinaryItems contextRef="OneD" unitRef="INRPerShare" decimals="INF">85.44</in-bse-fin:DilutedEarningsPerShareAfterExtraordinaryItems>
+<in-bse-fin:DateOfStartOfReportingPeriod contextRef="NineD">2023-04-01</in-bse-fin:DateOfStartOfReportingPeriod>
+<in-bse-fin:DateOfEndOfReportingPeriod contextRef="NineD">2023-12-31</in-bse-fin:DateOfEndOfReportingPeriod>
+<in-bse-fin:NatureOfReportStandaloneConsolidated contextRef="NineD">Standalone</in-bse-fin:NatureOfReportStandaloneConsolidated>
+<in-bse-fin:InterestEarned contextRef="NineD" unitRef="INR" decimals="-7">1868678100000.00</in-bse-fin:InterestEarned>
+<in-bse-fin:Income contextRef="NineD" unitRef="INR" decimals="-7">2179425500000.00</in-bse-fin:Income>
+<in-bse-fin:ProfitLossForThePeriod contextRef="NineD" unitRef="INR" decimals="-7">443004200000.00</in-bse-fin:ProfitLossForThePeriod>
+<in-bse-fin:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates contextRef="NineD" unitRef="INR" decimals="-7">443004200000.00</in-bse-fin:ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates>
+<in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems contextRef="NineD" unitRef="INRPerShare" decimals="INF">64.06</in-bse-fin:BasicEarningsPerShareAfterExtraordinaryItems>
+<in-bse-fin:DilutedEarningsPerShareAfterExtraordinaryItems contextRef="NineD" unitRef="INRPerShare" decimals="INF">63.74</in-bse-fin:DilutedEarningsPerShareAfterExtraordinaryItems>
+</xbrli:xbrl>
