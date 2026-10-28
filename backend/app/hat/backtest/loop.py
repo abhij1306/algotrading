@@ -582,6 +582,10 @@ class _Run:
             for (config, weight, table), bot_id in zip(sleeves, bot_ids, strict=True)
         ]
         self.leg = self.legs[0]  # the strategy the entry phase is deciding (`_use`)
+        # the account's equity each night's allocation read: a portfolio run's global open-risk
+        # cap is of it, as live's (`portfolio.jobs`); a one-strategy run keeps its sleeve's
+        # capital there (the known gap `single_sleeve_caps`)
+        self.account_equity: dict[date, Decimal] = {}
         # the ETF overlay (`overlay`), off unless the run has one
         self.overlay = (
             None
@@ -672,7 +676,9 @@ class _Run:
                 for leg in self.legs:
                     self._use(leg)
                     self._publish(prev, day)
-                allocations = self.sleeve.allocate(prev, self._equity_now()[0])
+                account = self._equity_now()[0]
+                self.account_equity[day] = account
+                allocations = self.sleeve.allocate(prev, account)
                 for n, leg in enumerate(self.legs):
                     leg.allocations[day] = None if allocations is None else allocations[n]
             if self.overlay is not None:
@@ -929,7 +935,11 @@ class _Run:
             health_mult=None if allocation is None else allocation.health_mult,
             free_cash=cash,
             adv20=self.view.feature(prev, instrument_id, "adv20"),
-            total_equity=capital,
+            total_equity=(
+                self.account_equity.get(row.trade_date, capital)
+                if len(self.legs) > 1 and capital is not None
+                else capital
+            ),
             policy_versions=[self.policy_version],
             ladder=self.ladder,
             gate_on=self.gate.get(row.trade_date, False),

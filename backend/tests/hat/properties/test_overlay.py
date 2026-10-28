@@ -257,6 +257,17 @@ def test_debt_gains_at_slab_whatever_the_holding() -> None:
     assert book.settle(2024).tax == D(100) * D("0.3") * D("1.04")
 
 
+def test_a_short_term_loss_sets_off_the_higher_rate_first_below_a_20_pct_slab() -> None:
+    book = tax.TaxBook(D("0.1"))
+    book.buy("GOLDBEES", tax.GOLD, 1, D(1000), date(2024, 5, 1))
+    book.buy("X", tax.EQUITY, 1, D(1000), date(2024, 5, 1))
+    book.buy("Y", tax.EQUITY, 1, D(2000), date(2024, 5, 1))
+    book.sell("GOLDBEES", 1, D(2000), DAY)  # 1000 at the 10% slab
+    book.sell("X", 1, D(2000), DAY)  # 1000 at 20%
+    book.sell("Y", 1, D(1000), DAY)  # a 1000 loss: sets off the 20% gain
+    assert book.settle(2024).tax == D(1000) * D("0.1") * D("1.04")
+
+
 def test_liquidbees_dividend_units_are_income_and_cost_on_receipt() -> None:
     book = tax.TaxBook(D("0.3"))
     book.buy("LIQUIDBEES", tax.DEBT, 10, D(10_000), date(2024, 5, 1))

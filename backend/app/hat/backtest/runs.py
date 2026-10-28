@@ -453,6 +453,11 @@ def _load(
     return _Market(data, snapshot, audit, etf)
 
 
+def _etf_files(snapshot: Mapping[str, Any]) -> object:
+    """The ETF store files' digests a run's data snapshot recorded (None without an overlay)."""
+    return (snapshot.get("etf_store") or {}).get("files")
+
+
 def _cap_refusal(spec: RunSpec, audit: Mapping[str, Any]) -> str | None:
     """The refusal of a run whose per-industry cap binds while the shared data audit found
     member-days with no industry (`data_audit.industry_cap_refused`); None otherwise."""
@@ -1472,6 +1477,10 @@ def rerun(
         check_hold_out(root, old["validates_run_id"], resolved_of(spec), spec.start)
     market = _load(session, store, target.universe_version_id, (spec.start, spec.end), [spec], root)
     if market.snapshot.get("content_digest") != config.get("data_snapshot_id"):
+        raise BacktestError("backtest_rerun_snapshot_differs")
+    if spec.overlay is not None and _etf_files(market.snapshot) != _etf_files(
+        config.get("data_snapshot") or {}
+    ):  # the overlay read other ETF files than the run did
         raise BacktestError("backtest_rerun_snapshot_differs")
     labels = Labels(
         variant=old.get("variant"),

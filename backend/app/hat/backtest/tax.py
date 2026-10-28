@@ -16,8 +16,9 @@ gap of the overlay):
   their cost.
 - Losses: a short-term loss sets off any gain of its year, a long-term loss only long-term
   gains; what is left is carried forward up to 8 years (oldest first) under the same rule. The
-  set-off takes the highest-taxed gains first, and long-term losses the gains without the
-  exemption first. Dividend income is not a capital gain: no loss sets it off.
+  set-off takes the highest-taxed gains first (the slab rate ranked against 20% and 12.5%), and
+  at equal rates the gains without the exemption first. Dividend income is not a capital gain:
+  no loss sets it off.
 - 4% cess on all of it. The year's tax is paid on 31 March (the overlay's simplification).
 
 A holding is long term when it is sold after the same calendar day 12 months on (held more
@@ -157,10 +158,20 @@ def _set_off(gains: dict[str, Decimal], loss: Decimal, order: tuple[str, ...]) -
     return loss
 
 
-# The highest-taxed gains first (the slab rate is at least 20% for any slab the run takes), and
-# for a long-term loss the gains the exemption does not cover first.
-_ST_ORDER = (_ST_SLAB, _ST_EQUITY, _LT_OTHER, _LT_EQUITY)
+# A loss sets off the highest-taxed gains first, so the set-off takes the least tax: by rate (the
+# slab rate against 20% short-term equity, 12.5% long term), at equal rates the gains the
+# exemption does not cover first (Python's sort is stable).
 _LT_ORDER = (_LT_OTHER, _LT_EQUITY)
+
+
+def _st_order(slab_rate: Decimal) -> tuple[str, ...]:
+    rates = {
+        _ST_SLAB: slab_rate,
+        _ST_EQUITY: STCG_EQUITY_RATE,
+        _LT_OTHER: LTCG_RATE,
+        _LT_EQUITY: LTCG_RATE,
+    }
+    return tuple(sorted(rates, key=lambda bucket: -rates[bucket]))
 
 
 class TaxBook:
@@ -244,13 +255,14 @@ class TaxBook:
             return self.settled[fy]
         year = self.years.get(fy, _Year())
         gains = dict(year.gains)
-        st_left = _set_off(gains, year.st_loss, _ST_ORDER)
+        st_order = _st_order(self.slab_rate)
+        st_left = _set_off(gains, year.st_loss, st_order)
         lt_left = _set_off(gains, year.lt_loss, _LT_ORDER)
         carried: list[tuple[int, Decimal, Decimal]] = []
         for origin, st, lt in sorted(self.carried):
             if fy - origin > CARRY_YEARS:
                 continue  # lapsed
-            st = _set_off(gains, st, _ST_ORDER)
+            st = _set_off(gains, st, st_order)
             lt = _set_off(gains, lt, _LT_ORDER)
             if st or lt:
                 carried.append((origin, st, lt))

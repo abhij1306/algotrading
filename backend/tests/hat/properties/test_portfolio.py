@@ -5,9 +5,11 @@ run, no database."""
 
 from __future__ import annotations
 
+import hashlib
 import uuid
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -223,6 +225,18 @@ def test_proxy_ranges_join_across_unchanged_days() -> None:
         (date(2015, 1, 8), date(2015, 1, 8)),
     ]
     assert etf_data.proxy_ranges([(date(2020, 4, 1), "dividend")]) == []
+
+
+def test_check_files_refuses_a_file_its_manifest_does_not_record(tmp_path: Path) -> None:
+    names = ("daily.parquet", "bars_5m.parquet", "liquid_tr.parquet", "indices.parquet")
+    for name in names:
+        (tmp_path / name).write_bytes(name.encode())
+    files = {n: hashlib.sha256(n.encode()).hexdigest() for n in names}
+    etf_data.check_files(tmp_path, {"files": files})
+    (tmp_path / "indices.parquet").write_bytes(b"changed")
+    for found in ({"files": files}, {"files": {}}, {}):
+        with pytest.raises(etf_data.EtfDataError, match="etf_store_digest_mismatch"):
+            etf_data.check_files(tmp_path, found)
 
 
 # --- an overlay read back ----------------------------------------------------------------------

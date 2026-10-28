@@ -39,6 +39,7 @@ __all__ = [
     "REFERENCES",
     "REGIME_INDEX",
     "EtfDataError",
+    "check_files",
     "e4",
     "five_min_rows",
     "load",
@@ -250,6 +251,23 @@ def manifest(root: Path) -> dict[str, Any] | None:
     return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
 
 
+def check_files(base: Path, found: Mapping[str, Any]) -> None:
+    """Each data file under `base` against the sha256 its manifest `found` records:
+    `etf_store_digest_mismatch` for a file missing, changed, or not recorded."""
+    recorded = found.get("files")
+    if not isinstance(recorded, Mapping) or set(recorded) != {
+        _DAILY,
+        _BARS_5M,
+        _LIQUID_TR,
+        _INDICES,
+    }:
+        raise EtfDataError("etf_store_digest_mismatch")
+    for name, digest in recorded.items():
+        path = base / name
+        if not path.is_file() or _digest(path) != digest:
+            raise EtfDataError("etf_store_digest_mismatch")
+
+
 def _decimal(text: str) -> Decimal:
     number = exact(text)
     if number is None:
@@ -260,10 +278,12 @@ def _decimal(text: str) -> Decimal:
 def load(root: Path, start: date, end: date) -> EtfData:
     """The overlay's data from `start` to `end` (the daily series and indices from their
     beginning, the regime rule's SMA reading back past `start`); `etf_store_missing` without
-    the store."""
+    the store, `etf_store_digest_mismatch` when a file is not the one its manifest records."""
     base = root / ETF_DIR
-    if manifest(root) is None:
+    found = manifest(root)
+    if found is None:
         raise EtfDataError("etf_store_missing")
+    check_files(base, found)
     daily: dict[str, dict[date, EtfBar]] = defaultdict(dict)
     for r in pq.read_table(base / _DAILY).to_pylist():
         if r["date"] <= end:
