@@ -40,7 +40,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 from app.hat.data.bhavcopy import BROWSER_HEADERS, DEFAULT_INTERVAL_SECONDS  # noqa: E402
 from app.hat.data.pacing import Pacer  # noqa: E402
-from app.hat.time import IST  # noqa: E402
+from app.hat.time import IST, trade_date_of, utc_now  # noqa: E402
 from app.paths import PROJECT_ROOT  # noqa: E402
 
 BASE = "https://www.nseindia.com"
@@ -699,7 +699,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - networ
     parser.add_argument("--offline", action="store_true", help="read the cache only")
     args = parser.parse_args(argv)
     client = Client(args.cache, offline=args.offline)
-    today = date.today()
+    today = trade_date_of(utc_now())
     found = isins(s for s, _b, _k in SYMBOLS)
     symbols, coverage, documents, listing_info = [], [], [], {}
     by_symbol: dict[str, list[Fetched]] = {}
