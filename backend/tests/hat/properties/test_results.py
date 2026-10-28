@@ -152,6 +152,20 @@ def test_results__owners_tag_holding_comprehensive_income_is_not_used() -> None:
     assert doc.flags == (xbrl.FLAG_OWNERS_TAG_SWAPPED,)
 
 
+def test_results__owners_fallback_tag_holding_comprehensive_income_is_not_used() -> None:
+    """The same swap filed under the fallback owners' tag (older taxonomies) is caught too."""
+    body = (FIXTURES / IREDA).read_bytes()
+    fallback = body.replace(
+        b"ProfitOrLossAttributableToOwnersOfParent",
+        b"ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates",
+    )
+    assert fallback != body
+    doc = xbrl.parse(fallback)
+    assert doc.quarter is not None
+    assert doc.quarter.net_profit == Decimal("549.33") * CR
+    assert doc.flags == (xbrl.FLAG_OWNERS_TAG_SWAPPED,)
+
+
 def test_results__owners_tag_with_minority_interest_is_kept() -> None:
     """With a non-controlling interest tagged (here in both contexts) the owners' figure may
     legitimately differ from the period's profit: it is kept."""

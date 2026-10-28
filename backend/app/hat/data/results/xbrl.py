@@ -272,7 +272,7 @@ def figures(context: dict[str, Fact], kind: str, basis: str) -> Figures:
 
 def owners_tag_swapped(context: dict[str, Fact]) -> bool:
     """Whether the context's owners' profit is the total comprehensive income (rule above)."""
-    owners = _first(context, OWNERS_PROFIT_TAGS[:1], MONEY_UNIT)
+    owners = _first(context, OWNERS_PROFIT_TAGS, MONEY_UNIT)  # the tag `figures` would read
     comprehensive = _first(context, (COMPREHENSIVE_INCOME_TAG,), MONEY_UNIT)
     period_profit = _first(context, PROFIT_TAGS, MONEY_UNIT)
     nci = _first(context, (NCI_PROFIT_TAG,), MONEY_UNIT)
