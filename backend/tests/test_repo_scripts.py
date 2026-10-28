@@ -36,6 +36,7 @@ fyers_login = _script("fyers_login.py")
 results_probe = _script("research/s2_results_probe.py")
 ep_b7 = _script("research/s2_ep_intraday_results.py")
 ep_audit = _script("research/s2_ep_audit.py")
+overlay = _script("data/overlay_etf.py")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -88,6 +89,149 @@ def test_kotak__work_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(SystemExit):
         kotak.parse_args(["summary"])
     assert kotak.parse_args(["--work", "/w", "download", "--limit", "3"]).limit == 3
+
+
+# ---------------------------------------------------------------------------------------------
+# overlay_etf
+
+
+def test_overlay__fixed_windows_are_anchored_and_cover_the_range() -> None:
+    got = overlay.fixed_windows(date(2021, 2, 5), date(2021, 4, 10), 30, date(2021, 1, 1))
+    assert got == [
+        (date(2021, 2, 5), date(2021, 3, 1)),
+        (date(2021, 3, 2), date(2021, 3, 31)),
+        (date(2021, 4, 1), date(2021, 4, 10)),
+    ]
+    later = overlay.fixed_windows(date(2021, 2, 6), date(2021, 4, 30), 30, date(2021, 1, 1))
+    assert later[1] == got[1]  # a rerun a day later asks for the same middle window
+
+
+def _bar(day: date, close: float, volume: float = 100.0) -> object:
+    return overlay.Bar(day, close, close, close, close, volume, "t")
+
+
+def test_overlay__adjust_back_adjusts_before_each_ex_date() -> None:
+    bars = [_bar(date(2019, 12, 18), 1292.54), _bar(date(2019, 12, 19), 130.20, 2000.0)]
+    split = overlay.Split(date(2019, 12, 19), 0.1, "FV 10 to 1")
+    (before, f0), (after, f1) = overlay.adjust(bars, [split])
+    assert (before.close, before.volume, f0) == (pytest.approx(129.254), 1000.0, 0.1)
+    assert (after.close, after.volume, f1) == (130.20, 2000.0, 1.0)
+    two = overlay.adjust(bars[:1], [split, overlay.Split(date(2020, 1, 1), 0.5, "")])
+    assert two[0][1] == pytest.approx(0.05)
+
+
+def test_overlay__jumps_flag_split_sized_moves_only() -> None:
+    closes = [
+        (date(2019, 12, 18), 1292.54),
+        (date(2019, 12, 19), 130.2),
+        (date(2019, 12, 20), 120.0),
+    ]
+    assert [d for d, _ in overlay.jumps(closes)] == [date(2019, 12, 19)]
+
+
+def test_overlay__dividends_land_on_the_next_session() -> None:
+    sessions = [date(2024, 3, 8), date(2024, 3, 11), date(2024, 3, 12)]
+    divs = {
+        date(2024, 3, 8): 0.1,
+        date(2024, 3, 9): 0.1,
+        date(2024, 3, 10): 0.2,
+        date(2024, 3, 13): 9,
+    }
+    assert overlay.dividends_by_session(sessions, divs) == {
+        date(2024, 3, 8): 0.1,
+        date(2024, 3, 11): pytest.approx(0.3),
+    }
+
+
+def test_overlay__total_return_reinvests_dividends() -> None:
+    closes = [(date(2024, 1, 1), 1000.0), (date(2024, 1, 2), 1000.0), (date(2024, 1, 3), 999.0)]
+    tr = overlay.total_return(closes, {date(2024, 1, 2): 0.2})
+    assert [v for _, v in tr] == pytest.approx([100.0, 100.02, 100.02 * 999 / 1000])
+
+
+def test_overlay__rate_proxy_deducts_the_expense_ratio_by_calendar_day() -> None:
+    rate = [(date(2024, 1, 1), 2000.0), (date(2024, 1, 2), 2000.0), (date(2024, 1, 5), 2002.0)]
+    got = overlay.rate_proxy(rate, 0.0073)
+    assert got[1][1] == pytest.approx(100 * (1 - 0.0073) ** (1 / 365))
+    assert got[2][1] == pytest.approx(got[1][1] * 1.001 * (1 - 0.0073) ** (3 / 365))
+    assert overlay.rate_proxy(rate, 0.0)[-1][1] == pytest.approx(100.1)
+
+
+def test_overlay__splice_chains_growth_and_tags_each_day() -> None:
+    days = [date(2020, 3, 30), date(2020, 3, 31), date(2020, 4, 1), date(2020, 4, 2)]
+    tr = overlay.splice(days, {date(2020, 4, 2): 1.002}, {date(2020, 3, 31): 1.001})
+    assert [t for _, _, t in tr] == ["start", "proxy", "none", "dividend"]
+    assert tr[-1][1] == pytest.approx(100 * 1.001 * 1.002)
+    tags = [(d, t) for d, _, t in tr]
+    assert overlay.ranges(tags, "proxy") == [(date(2020, 3, 31), date(2020, 3, 31))]
+    assert overlay.ranges(tags, "dividend") == [(date(2020, 4, 2), date(2020, 4, 2))]
+
+
+def test_overlay__coverage_lists_gaps_against_the_calendar() -> None:
+    sessions = [date(2024, 1, d) for d in (1, 2, 3, 4, 5, 8, 9)]
+    got = overlay.coverage([date(2024, 1, d) for d in (2, 3, 8, 9, 6)], sessions, date(2024, 1, 1))
+    assert got["first"] == "2024-01-02"
+    assert got["gaps"] == [["2024-01-04", "2024-01-05"]]
+    assert got["missing"] == 2
+    assert got["extra"] == ["2024-01-06"]
+
+
+def test_overlay__parse_niftyindices_rows() -> None:
+    tri = json.dumps(
+        [
+            {"Date": "09 Jan 2015", "TotalReturnsIndex": "10,906.56"},
+            {"Date": "08 Jan 2015", "TotalReturnsIndex": "10840.84"},
+            {"Date": "", "TotalReturnsIndex": "1"},
+        ]
+    ).encode()
+    assert overlay.parse_niftyindices(tri, "Date", "TotalReturnsIndex") == [
+        (date(2015, 1, 8), 10840.84),
+        (date(2015, 1, 9), 10906.56),
+    ]
+    rate = json.dumps([{"HistoricalDate": "09 Jan 2015", "OPEN": "-", "CLOSE": "1368.49"}])
+    assert overlay.parse_niftyindices(rate.encode(), "HistoricalDate", "CLOSE") == [
+        (date(2015, 1, 9), 1368.49)
+    ]
+    with pytest.raises(ValueError):
+        overlay.parse_niftyindices(b"<html>", "Date", "CLOSE")
+
+
+def test_overlay__parse_nimf_dividends_and_year_chunks() -> None:
+    row = {"DividendEffectiveDate": "2025-01-01T00:00:00", "DividendRetail": 0.15335083}
+    got = overlay.parse_nimf_dividends(json.dumps({"FetchDividendDetailsResponse": [row]}).encode())
+    assert got == [(date(2025, 1, 1), 0.15335083)]
+    assert overlay.parse_nimf_dividends(b'{"Return_Message": "No data found"}') == []
+    assert overlay.year_chunks(date(2010, 1, 1), date(2026, 10, 27), 5)[-1] == (
+        date(2025, 1, 1),
+        date(2026, 10, 27),
+    )
+
+
+def test_overlay__dividend_sessions_need_every_day_since_the_last_session_covered() -> None:
+    s = [date(2020, 3, 27), date(2020, 3, 31), date(2020, 4, 1), date(2020, 4, 3)]
+    assert overlay.dividend_sessions(s, date(2020, 4, 1), date(2020, 4, 3)) == {
+        date(2020, 4, 1),
+        date(2020, 4, 3),
+    }
+    assert overlay.dividend_sessions(s, date(2020, 4, 2), date(2020, 4, 2)) == set()
+
+
+def test_overlay__index_archive_rows_fill_the_gaps() -> None:
+    lines = [
+        "Index Name,Index Date,Open,High,Low,Closing Index Value,Points Change",
+        "Nifty 1D Rate Index,10-02-2020,-,-,-,1870.84,0.75",
+        "Nifty 50,10-02-2020,1,1,1,12031.5,1",
+        "Nifty 1D Rate Index,11-02-2020,-,-,-,-,0",
+    ]
+    rows = overlay.parse_index_archive(lines, "NIFTY 1D RATE INDEX")
+    assert rows == [(date(2020, 2, 10), 1870.84)]
+    primary = [(date(2020, 2, 7), 1870.0), (date(2020, 2, 11), 1871.6)]
+    other = [*rows, (date(2020, 2, 11), 1871.7)]
+    merged, added, diffs = overlay.fill(primary, other)
+    assert [d for d, _ in merged] == [date(2020, 2, 7), date(2020, 2, 10), date(2020, 2, 11)]
+    assert merged[-1][1] == 1871.6
+    assert added == [date(2020, 2, 10)]
+    assert diffs == [(date(2020, 2, 11), 1871.6, 1871.7)]
 
 
 # ---------------------------------------------------------------------------------------------
