@@ -429,6 +429,32 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   independent review report, the hold-out read once, then paper trading. Every knob is set from
   config or the command line, so a backtest needs a code change only when a strategy changes or is
   added.
+- **A backtest is a portfolio file (owner, 2026-10-28).** `--portfolio FILE`
+  (`backtest/portfolio.py`, examples in `docs/backtests/process.md`) names the strategies, their
+  weights and playbooks, the universe, window, policy overrides, conventions and the ETF overlay.
+  One strategy is the command line's run, hash for hash. Several share one account's cash: one
+  ledger and owner, through live's risk check, so the global open-risk cap sums them all
+  (`owner_slots`) while the per-bot caps, exposure ladder and regime gate stay each strategy's
+  own; each weight is that strategy's share of the account (each within the cluster cap,
+  together at most 1), and its playbooks are reported as `<bot>:<playbook>`. A playbook is switched off by keeping
+  the others (`playbooks`, `--playbooks`). A portfolio is its own trial family (`S1+S2`), and a
+  promotion run is one strategy without an overlay, since evidence is per sleeve.
+- **Idle-cash ETF overlay (owner, 2026-10-28; `docs/plans/idle-cash-etf-overlay.md` Phase 1).**
+  A portfolio's `overlay` block, off by default, parks the cash the strategies do not use in
+  NIFTYBEES, GOLDBEES or LIQUIDBEES under a fixed NIFTY 50 SMA200 band rule (5 confirming
+  closes, ±2%, decided on the close, traded at the next open), keeping a 5% cash buffer and
+  rebalancing past a 2%-of-equity gap. Entries are sized on total equity, the sleeve included, so
+  a run sizes alike with and without it. An entry the cash cannot pay sells the sleeve as it
+  fills, at that 5-minute ETF bar (else the open, counted `sleeve_price_estimated`), with 80% of
+  the proceeds credited the same day before 2024-10-07 and 100% from then; an entry still short
+  is sized down or refused `insufficient_same_day_credit`. ETF fills pay the stock cost model at
+  their own slippage (5 bps NIFTYBEES and GOLDBEES, 1 bp LIQUIDBEES). Tax uses today's rules in
+  every year (`backtest/tax.py`): FIFO lots of every fill, strategy and sleeve; set-off and
+  8-year carry-forward; a slab rate of 30% by default plus 4% cess; paid on 31 March. Rules and
+  defaults: `backtest/overlay.py`. The overlay reads `HAT_DATA_ROOT/etf/`, written by
+  `scripts/data/overlay_etf.py store`. Simplifications, besides the known gaps a run reports:
+  stock cash dividends are slab income; ETFs trade on the split-adjusted series; the first
+  sleeve buy is at the first session's open.
 
 ## Execution safety
 

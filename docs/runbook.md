@@ -430,8 +430,9 @@ current and former members (`members` from hat_live, then `download`, `former-ma
 history (Index membership); `overlay_etf` gathers the idle-cash overlay's research data
 (NIFTYBEES, GOLDBEES, LIQUIDBEES daily and 5-minute bars, the TRIs, the 1D Rate Index and
 LIQUIDBEES' dividends from the AMC) into raw files it never overwrites, and builds the
-split-adjusted bars, the LIQUIDBEES total-return series and a coverage report from them; it
-writes nothing to the database.
+split-adjusted bars, the LIQUIDBEES total-return series and a coverage report from them; its
+`store` step writes the build and the 5-minute bars into `HAT_DATA_ROOT/etf/`, what a backtest's
+overlay reads (rerun it after each `build`). It writes nothing to the database.
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
 factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is

@@ -13,6 +13,9 @@ rule to the stack. A name no item has, or one more than one item has without `#n
 as is a key the config model does not know (a typo'd field or criterion parameter).
 A value that is not JSON is a string. The overridden config is parsed afresh (`parse_config`),
 so an override can only make a config the model accepts, risk keys refused.
+`playbooks` keeps only the playbooks it names (a playbook turned off: the EP playbook alone of a
+version that also holds a breakout one), applied before the sets; a name the config has no
+playbook of is refused (`backtest_override_no_item`).
 The policy overrides are the risk per trade (`risk_pct`), the open-position cap (the account's
 `max_open_positions` and the exposure ladder's top level become N, and its lower levels are capped
 at N: the ladder still starts low and steps up), the per-industry cap
@@ -220,6 +223,7 @@ class Overrides:
     (None: the policy's) and the flat ladder."""
 
     sets: tuple[tuple[str, Any], ...] = ()
+    playbooks: tuple[str, ...] | None = None  # the playbooks kept (None: all of them)
     risk_pct: Decimal | None = None
     max_positions: int | None = None
     max_per_industry: int | None = None
@@ -229,7 +233,7 @@ class Overrides:
 
     @property
     def empty(self) -> bool:
-        return not self.sets and not self.touches_policy
+        return not self.sets and self.playbooks is None and not self.touches_policy
 
     @property
     def touches_policy(self) -> bool:
@@ -252,9 +256,14 @@ class Overrides:
         selector's code) for a path that names nothing, a key the model does not know among
         them, and `backtest_override_invalid` for a value the model refuses (an unknown key
         inside a set's value among them)."""
-        if not self.sets:
+        if not self.sets and self.playbooks is None:
             return config
         doc = config.to_json()
+        if self.playbooks is not None:
+            names = {p["name"] for p in doc["playbooks"]}
+            if not self.playbooks or not set(self.playbooks) <= names:
+                raise OverrideError("backtest_override_no_item")
+            doc["playbooks"] = [p for p in doc["playbooks"] if p["name"] in self.playbooks]
         for path, value in self.sets:
             set_path(doc, path, value)
         try:
@@ -306,6 +315,8 @@ class Overrides:
     def record(self) -> dict[str, Any]:
         """The overrides as the run's conventions record them (only those set)."""
         out: dict[str, Any] = {}
+        if self.playbooks is not None:
+            out["playbooks"] = sorted(self.playbooks)
         if self.sets:
             out["set"] = [{"path": path, "value": value} for path, value in self.sets]
         if self.policy is not None:

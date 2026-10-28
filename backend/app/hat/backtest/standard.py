@@ -15,6 +15,7 @@ from datetime import date
 from decimal import Decimal
 
 from ..risk.decision import Reason
+from .overlay import INSUFFICIENT_CREDIT
 from .spec import BacktestError
 
 __all__ = [
@@ -57,6 +58,7 @@ REFUSAL_CODES = (
     "open_risk_cap",
     "regime_off",
     "kill_switch",
+    INSUFFICIENT_CREDIT,
 )
 # Every reason the engine refuses a signal with, onto its code. `max_positions` splits by
 # which cap bound (`refusal_code`). The table is the spec's (Refusal codes); a reason missing
@@ -89,6 +91,8 @@ REFUSAL_OF: Mapping[str, str] = {
     Reason.INVALID_INPUT: "size_zero_risk",
     Reason.STOP_NOT_BELOW_ENTRY: "size_zero_risk",
     Reason.GLOBAL_OPEN_RISK: "open_risk_cap",
+    # an overlay run's cash refusal while the sleeve held units (`overlay.refusal_reason`)
+    INSUFFICIENT_CREDIT: INSUFFICIENT_CREDIT,
 }
 # An entry filter that judges the setup, not the account (the stop's width in ADTR): a trigger
 # it fails is not a signal, as a stop the playbook's width cap refuses is not.

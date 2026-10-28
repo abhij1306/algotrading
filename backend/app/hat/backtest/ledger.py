@@ -22,6 +22,7 @@ from ..configs.records import Bot, Strategy, StrategyVersion
 from ..configs.store import MemoryConfigStore
 from ..configs.unit import STORE, configs_of
 from ..data.corporate_actions import TYPE_DIVIDEND
+from ..engine.portfolio.allocator import sleeve_key
 from ..governance import VersionStatus
 from ..models import (
     HatCorporateAction,
@@ -39,12 +40,20 @@ from ..models import (
     HatUniverseVersion,
     HatWatchlistEntry,
 )
-from ..time import as_utc, trade_date_of
+from ..time import as_utc, day_bounds, trade_date_of
 from .data import MarketData, classifications, scan_night_members
 from .report import FillRow, LegRow, TradeRow, WatchRow
 from .spec import RunSpec
 
-__all__ = ["exact_flows", "fill_rows", "ledger", "set_series", "trade_rows", "watch_rows"]
+__all__ = [
+    "exact_flows",
+    "fill_rows",
+    "fills_on",
+    "ledger",
+    "set_series",
+    "trade_rows",
+    "watch_rows",
+]
 
 _SANDBOX_USER = uuid.UUID(int=1)
 _ZERO = Decimal(0)
@@ -52,9 +61,10 @@ _ZERO = Decimal(0)
 _NO_SERIES = ""
 
 
-def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
+def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, tuple[uuid.UUID, ...]]:
     """A private in-memory database and config store seeded with the run's bot, version and
-    universe (committed, so the engine's rollbacks keep them)."""
+    universe, and a bot and version per co-sleeve (`RunSpec.co_sleeves`), committed so the
+    engine's rollbacks keep them; the bot ids, the run's first."""
     engine = create_engine(
         "sqlite://", poolclass=StaticPool, connect_args={"check_same_thread": False}
     )
@@ -71,25 +81,34 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
     session.add(market)
     session.flush()
     configs = configs_of(session)
-    strategy = Strategy(
-        user_id=_SANDBOX_USER, market_id=market.id, name=spec.config.bot, persona="trader"
-    )
     universe = HatUniverse(user_id=_SANDBOX_USER, market_id=market.id, name="run", kind="manual")
-    configs.add(strategy)
     session.add(universe)
     session.flush()
-    version = StrategyVersion(
-        id=spec.strategy_version_id,
-        strategy_id=strategy.id,
-        version=1,
-        status=VersionStatus.TRIAL,
-        config=spec.config.to_json(),
-        config_hash=spec.config.hash(),
-    )
+    # the run's strategy, then each co-sleeve's: one bot each, one owner, so the live account
+    # caps (`owner_slots`) count every sleeve's positions
+    sleeves = [(spec.config, spec.strategy_version_id, "run")] + [
+        (c.config, c.strategy_version_id, sleeve_key(c.config.bot)) for c in spec.co_sleeves
+    ]
+    versions: list[tuple[uuid.UUID, uuid.UUID, str]] = []
+    for config, version_id, cluster in sleeves:
+        strategy = Strategy(
+            user_id=_SANDBOX_USER, market_id=market.id, name=config.bot, persona="trader"
+        )
+        configs.add(strategy)
+        session.flush()
+        version = StrategyVersion(
+            id=version_id,
+            strategy_id=strategy.id,
+            version=1,
+            status=VersionStatus.TRIAL,
+            config=config.to_json(),
+            config_hash=config.hash(),
+        )
+        configs.add(version)
+        versions.append((strategy.id, version.id, cluster))
     universe_version = HatUniverseVersion(
         universe_id=universe.id, version=1, status="live", definition={}, config_hash="run"
     )
-    configs.add(version)
     session.add(universe_version)
     session.flush()
     for interval in scan_night_members(data.members, data.days):
@@ -129,21 +148,24 @@ def ledger(spec: RunSpec, data: MarketData) -> tuple[Session, uuid.UUID]:
                 )
             )
     _seed_dividends(session, data)
-    bot = Bot(
-        id=uuid.uuid4(),
-        user_id=_SANDBOX_USER,
-        strategy_id=strategy.id,
-        live_version_id=version.id,
-        broker_account_id=uuid.UUID(int=2),
-        execution_mode="shadow",
-        status="active",
-        universe_version_id=universe_version.id,
-        lifecycle_state="research",
-        risk_cluster="run",
-    )
-    configs.add(bot)
+    bot_ids = []
+    for strategy_id, version_id, cluster in versions:
+        bot = Bot(
+            id=uuid.uuid4(),
+            user_id=_SANDBOX_USER,
+            strategy_id=strategy_id,
+            live_version_id=version_id,
+            broker_account_id=uuid.UUID(int=2),
+            execution_mode="shadow",
+            status="active",
+            universe_version_id=universe_version.id,
+            lifecycle_state="research",
+            risk_cluster=cluster,
+        )
+        configs.add(bot)
+        bot_ids.append(bot.id)
     session.commit()
-    return session, bot.id
+    return session, tuple(bot_ids)
 
 
 def _seed_dividends(session: Session, data: MarketData) -> None:
@@ -326,3 +348,19 @@ def fill_rows(session: Session) -> tuple[FillRow, ...]:
     ]
     rows.sort(key=lambda f: (f.day, f.instrument_id, f.purpose, f.side, f.qty, f.price))
     return tuple(rows)
+
+
+def fills_on(session: Session, day: date) -> list[tuple[str, str, int, Decimal, Decimal]]:
+    """Every fill of trade date `day`, in fill order: (side, instrument id, qty, price, fees),
+    for the overlay's tax book."""
+    start, end = day_bounds(day)
+    return [
+        (side, str(instrument_id), qty, Decimal(price), Decimal(fees))
+        for side, instrument_id, qty, price, fees in session.execute(
+            select(HatOrder.side, HatSignal.instrument_id, HatFill.qty, HatFill.price, HatFill.fees)
+            .join(HatOrder, HatOrder.id == HatFill.order_id)
+            .join(HatSignal, HatSignal.id == HatOrder.signal_id)
+            .where(HatFill.filled_at >= start, HatFill.filled_at < end)
+            .order_by(HatFill.filled_at, HatOrder.placed_at, HatFill.id)
+        )
+    ]

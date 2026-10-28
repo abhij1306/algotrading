@@ -182,7 +182,7 @@ from ..engine.portfolio.health import Health
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.scan import ScanInputs
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
-from ..engine.strategy.config import Playbook, StopLowOfDay
+from ..engine.strategy.config import Playbook, StopLowOfDay, StrategyConfig
 from ..models import (
     HatPosition,
     HatSignal,
@@ -225,9 +225,17 @@ from .intraday import (
     session_bars,
     trace,
 )
-from .ledger import exact_flows, fill_rows, ledger, set_series
+from .ledger import exact_flows, fill_rows, fills_on, ledger, set_series
 from .ledger import trade_rows as ledger_trade_rows
 from .ledger import watch_rows as ledger_watch_rows
+from .overlay import (
+    INSUFFICIENT_CREDIT,
+    EtfData,
+    Overlay,
+    OverlayError,
+    benchmarks,
+    refusal_reason,
+)
 from .report import (
     DELISTED,
     DEMERGER,
@@ -235,6 +243,8 @@ from .report import (
     BacktestResult,
     SessionRow,
     SignalRow,
+    TradeRow,
+    WatchRow,
     auction_risk_summary,
     compute_metrics,
     flag_auction_risk,
@@ -386,6 +396,7 @@ class _Decision:
     bar: Bar
     rank: tuple[int, Decimal]
     at: datetime | None = None
+    leg: int = 0  # the strategy it belongs to (`_Run.legs`)
 
 
 def _estimated_rank(rank: tuple[int, Decimal]) -> tuple[int, Decimal]:
@@ -417,36 +428,70 @@ class _Held:
     playbook: str = ""  # the playbook it entered under: its exit stack (`exits_for`)
     # The day the way up last raised the stop, and the stop before it (PR 64).
     raised: tuple[date, Decimal] | None = None
+    leg: int = 0  # the strategy it entered under (`_Run.legs`)
+
+
+@dataclass
+class _Leg:
+    """One strategy of the run (the run's own first, then each co-sleeve, `RunSpec.co_sleeves`):
+    its config, its bot in the ledger, its weight and regime table, and what the loop keeps per
+    strategy: each playbook's configured max chase, its gate by trade date, its nightly
+    allocations, its exposure ladder (a bot's own, HAT-RISK-040), its scan's memo, its funnel,
+    its EP log and its regime-off nights. `prefix` names its playbooks in a run of more than
+    one strategy (`<bot>:`), so their rows and breakdowns never merge."""
+
+    config: StrategyConfig
+    bot_id: uuid.UUID
+    weight: Decimal
+    regime_table: Mapping[str, Decimal]
+    prefix: str = ""
+    chase: dict[str, Decimal | None] = field(default_factory=dict)
+    gate: dict[date, bool] = field(default_factory=dict)
+    allocations: dict[date, Allocation | None] = field(default_factory=dict)
+    ladder: LadderState = field(default_factory=LadderState)
+    scan_memo: dict[Any, Any] = field(default_factory=dict)
+    funnel: dict[str, dict[str, int]] = field(default_factory=dict)
+    ep_records: dict[tuple[date, str, str], ep_log.EpRecord] = field(default_factory=dict)
+    regime_off_nights: int = 0
 
 
 class _Sleeve:
-    """The run's one sleeve, allocated each night by the live allocator (HAT-BT-014): Live,
-    health 1, base weight the run's weight (`sleeve_weight`), at the regime multiplier 1 or, under
-    `policy`, the live regime engine's, its last multiplier carried for the smoothing."""
+    """The run's sleeves (one per strategy, `_Leg`), allocated each night together by the live
+    allocator (HAT-BT-014): Live, health 1, base weight each strategy's weight (the run's own
+    `sleeve_weight`), each its own cluster, at the regime multiplier 1 or, under `policy`, the
+    live regime engine's from each strategy's table, each last multiplier carried for the
+    smoothing."""
 
-    def __init__(self, spec: RunSpec, data: MarketData, days: tuple[date, ...]) -> None:
+    def __init__(
+        self, spec: RunSpec, data: MarketData, days: tuple[date, ...], legs: Sequence[_Leg]
+    ) -> None:
         self.spec = spec
         self.days = days
         self.index = {d: n for n, d in enumerate(days)}
         self.breadth = data.breadth
-        self.key = sleeve_key(spec.config.bot)
-        self.policy = replace(spec.policy.policy, base_weight={self.key: sleeve_weight(spec)})
+        self.legs = legs
+        self.keys = [sleeve_key(leg.config.bot) for leg in legs]
+        self.policy = replace(
+            spec.policy.policy,
+            base_weight={k: leg.weight for k, leg in zip(self.keys, legs, strict=True)},
+        )
         self.regime_closes = dict(data.index_closes.get(regime_v1.INDEX_NAME, ()))
         self.vix = dict(data.index_closes.get(regime_v1.VIX_NAME, ()))
         # the index days, as the regime job reads the last `HISTORY_DAYS` of them
         self.index_days = sorted({*self.regime_closes, *self.vix})
         self.confirmation: regime_v1.Confirmation | None = None
-        self.regime_mult: Decimal | None = None  # the last allocation's, which smoothing reads
+        # each sleeve's last allocation's multiplier, which smoothing reads
+        self.regime_mult: list[Decimal | None] = [None] * len(legs)
         self.nights = 0  # the sessions the regime has been read for
 
-    def allocate(self, night: date, equity: Decimal) -> Allocation | None:
-        """The sleeve's allocation of `night` over `equity`, the account's equity at the night's
-        close; None when the regime inputs of the night are missing, as the live allocation then
-        fails. Under `policy` the regime engine first reads every earlier session of the run's
-        store (the warm-up of the 3-day rule and the smoothing), each allocated over the initial
-        equity."""
+    def allocate(self, night: date, equity: Decimal) -> list[Allocation] | None:
+        """The sleeves' allocations of `night` over `equity`, the account's equity at the
+        night's close, in leg order; None when the regime inputs of the night are missing, as
+        the live allocation then fails. Under `policy` the regime engine first reads every
+        earlier session of the run's store (the warm-up of the 3-day rule and the smoothing),
+        each allocated over the initial equity."""
         if self.spec.conventions.regime_mult == REGIME_MULT_ONE:
-            return self._allocate(Decimal(1), equity)
+            return self._allocate([Decimal(1)] * len(self.legs), equity)
         allocation = None
         while self.nights <= self.index[night]:
             day = self.days[self.nights]
@@ -456,7 +501,7 @@ class _Sleeve:
             )
         return allocation
 
-    def _regime_night(self, day: date, equity: Decimal) -> Allocation | None:
+    def _regime_night(self, day: date, equity: Decimal) -> list[Allocation] | None:
         """Read `day`'s regime and allocate at its confirmed state's multiplier, or None."""
         end = bisect_right(self.index_days, day)
         window = self.index_days[max(0, end - regime_v1.HISTORY_DAYS) : end]
@@ -469,36 +514,37 @@ class _Sleeve:
         self.confirmation = regime_v1.confirm_step(
             self.confirmation, regime_v1.classify_inputs(inputs)
         )
-        table = self.spec.regime_table
-        return self._allocate(regime_v1.multiplier_for(self.confirmation.confirmed, table), equity)
+        confirmed = self.confirmation.confirmed
+        values = [regime_v1.multiplier_for(confirmed, leg.regime_table) for leg in self.legs]
+        return self._allocate(values, equity)
 
-    def _allocate(self, table_value: Decimal, equity: Decimal) -> Allocation:
-        (allocation,) = allocate(
+    def _allocate(self, table_values: Sequence[Decimal], equity: Decimal) -> list[Allocation]:
+        found = allocate(
             [
                 SleeveInput(
-                    bot_id=_SANDBOX_SLEEVE,
-                    sleeve=self.key,
-                    cluster=self.key,
+                    bot_id=uuid.UUID(int=_SANDBOX_SLEEVE.int + n),
+                    sleeve=key,
+                    cluster=key,
                     lifecycle_state=LIVE,
-                    regime_table_value=table_value,
+                    regime_table_value=value,
                     health=Health(Decimal(1), probation=False),
-                    previous_regime_mult=self.regime_mult,
+                    previous_regime_mult=self.regime_mult[n],
                 )
+                for n, (key, value) in enumerate(zip(self.keys, table_values, strict=True))
             ],
             self.policy,
             equity,
         )
-        self.regime_mult = allocation.regime_mult
-        return allocation
+        self.regime_mult = [a.regime_mult for a in found]  # one per sleeve, in their order
+        return found
 
 
 class _Run:
     """One run of the day loop over `MarketData` (see the module docstring)."""
 
-    def __init__(self, spec: RunSpec, data: MarketData) -> None:
+    def __init__(self, spec: RunSpec, data: MarketData, etf: EtfData | None = None) -> None:
         self.spec = spec
         self.data = data
-        self.config = spec.config
         self.policy = spec.policy.policy
         # The run's policy version is in force over the whole period: the version in force now
         # may have taken effect after the period starts (on a fresh install, `seed-policy` makes
@@ -509,17 +555,41 @@ class _Run:
             effective_from=as_utc(datetime.combine(spec.start, time.min, IST)),
             superseded_at=None,
         )
-        # Each playbook's configured max chase, as the trigger reads it (HAT-CRIT-122).
-        self.chase = {
-            b.name: trigger.last_configured_chase([self.config], b.name)
-            for b in self.config.playbooks
-        }
-        self.view = MarketView(data, self.config.regime.index)
+        self.view = MarketView(data, spec.config.regime.index)
         self.days, self.index = self.view.days, self.view.index
         self.period = tuple(d for d in self.days if spec.start <= d <= spec.end)
         if not self.period:
             raise BacktestError("backtest_empty_period")
-        self.session, self.bot_id = ledger(spec, data)
+        self.session, bot_ids = ledger(spec, data)
+        sleeves = [
+            (spec.config, sleeve_weight(spec), spec.regime_table),
+            *((c.config, c.weight, c.regime_table) for c in spec.co_sleeves),
+        ]
+        many = len(sleeves) > 1
+        self.legs = [
+            _Leg(
+                config,
+                bot_id,
+                weight,
+                table,
+                prefix=f"{config.bot}:" if many else "",
+                # each playbook's configured max chase, as the trigger reads it (HAT-CRIT-122)
+                chase={
+                    b.name: trigger.last_configured_chase([config], b.name)
+                    for b in config.playbooks
+                },
+            )
+            for (config, weight, table), bot_id in zip(sleeves, bot_ids, strict=True)
+        ]
+        self.leg = self.legs[0]  # the strategy the entry phase is deciding (`_use`)
+        # the ETF overlay (`overlay`), off unless the run has one
+        self.overlay = (
+            None
+            if spec.overlay is None
+            else Overlay(spec.overlay, _etf_data(etf), spec.fills.schedule)
+        )
+        if self.overlay is not None:  # the sleeve is bought at the first session's open
+            self.overlay.plan = self.overlay.first_plan(self.period[0], spec.initial_equity)
         self.calendar = SessionCalendar(
             {
                 d: SessionDay(
@@ -528,7 +598,6 @@ class _Run:
                 for d in self.period
             }
         )
-        self.ladder = LadderState()
         self.held: dict[uuid.UUID, _Held] = {}
         self.seen_results: set[uuid.UUID] = set()
         self.closed: date | None = None  # the last session whose close phase has run
@@ -538,12 +607,10 @@ class _Run:
         self.dividend_credits = 0
         self.equity: list[tuple[date, Decimal]] = []
         self.skips: dict[str, int] = {}
-        self.gate: dict[date, bool] = {}
         self.signal_rows: list[SignalRow] = []
         self.invested: list[Decimal] = []
-        # The sleeve's nightly allocation (HAT-BT-014), by the trade date it sizes.
-        self.sleeve = _Sleeve(spec, data, self.days)
-        self.allocations: dict[date, Allocation | None] = {}
+        # The sleeves' nightly allocations (HAT-BT-014), by the trade date they size.
+        self.sleeve = _Sleeve(spec, data, self.days, self.legs)
         # what the result files report (`folder`): each session's book, each signal's features
         self.sessions: list[SessionRow] = []
         self.signal_features = SignalFeatures(data, self.view)
@@ -556,18 +623,60 @@ class _Run:
         # (scan) and watchlist rows (day loop) that passed each gate
         self.benchmark = [(d, float(c)) for d, c in data.index_closes.get(regime_v1.INDEX_NAME, ())]
         self.benchmark_days = [d for d, _ in self.benchmark]
-        self.scan_memo: dict[Any, Any] = {}
-        self.funnel: dict[str, dict[str, int]] = {}
-        self.regime_off_nights = 0
-        # the EP log: each pre-open candidate-day of the gap scan (`ep_log`)
-        self.ep_records: dict[tuple[date, str, str], ep_log.EpRecord] = {}
+
+    # --- the strategy being decided: the active leg's (`_use`) -----------------------------------
+
+    def _use(self, leg: _Leg) -> None:
+        self.leg = leg
+
+    @property
+    def config(self) -> StrategyConfig:
+        return self.leg.config
+
+    @property
+    def bot_id(self) -> uuid.UUID:
+        return self.leg.bot_id
+
+    @property
+    def chase(self) -> dict[str, Decimal | None]:
+        return self.leg.chase
+
+    @property
+    def gate(self) -> dict[date, bool]:
+        return self.leg.gate
+
+    @property
+    def allocations(self) -> dict[date, Allocation | None]:
+        return self.leg.allocations
+
+    @property
+    def ladder(self) -> LadderState:
+        return self.leg.ladder
+
+    @property
+    def funnel(self) -> dict[str, dict[str, int]]:
+        return self.leg.funnel
+
+    @property
+    def ep_records(self) -> dict[tuple[date, str, str], ep_log.EpRecord]:
+        """The EP log: each pre-open candidate-day of the gap scan (`ep_log`)."""
+        return self.leg.ep_records
+
+    def _leg_of(self, position: HatPosition) -> _Leg:
+        return self.legs[self.held[position.id].leg]
 
     def run(self) -> BacktestResult:
         for day in self.period:
             prev = self.view.prev(day)
             if prev is not None:
-                self._publish(prev, day)
-                self.allocations[day] = self.sleeve.allocate(prev, self._equity_now()[0])
+                for leg in self.legs:
+                    self._use(leg)
+                    self._publish(prev, day)
+                allocations = self.sleeve.allocate(prev, self._equity_now()[0])
+                for n, leg in enumerate(self.legs):
+                    leg.allocations[day] = None if allocations is None else allocations[n]
+            if self.overlay is not None:
+                self.overlay.open_session(day, self._free_cash())
             self._morning(day, prev)
             self._sync_ladder()
             if prev is not None:
@@ -579,6 +688,8 @@ class _Run:
             self._delistings(day)
             self._sync_ladder()
             shadow.expire_watchlist(self.session, day)
+            if self.overlay is not None and day != self.period[-1]:
+                self._overlay_close(day, prev)
             self._mark(day)
         self._finish(self.period[-1])
         return self._result()
@@ -596,14 +707,14 @@ class _Run:
             features=self.view.features.get(prev),
             series=series,
             benchmark=self.benchmark[: bisect_right(self.benchmark_days, prev)],
-            memo=self.scan_memo,
+            memo=self.leg.scan_memo,
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)
         )
         self.gate[day] = published.gate_on
         if not published.gate_on and published.skipped is None:
-            self.regime_off_nights += 1
+            self.leg.regime_off_nights += 1
         for playbook, counts in published.funnel.items():
             mine = self.funnel.setdefault(playbook, {})
             for gate, count in counts.items():
@@ -615,10 +726,10 @@ class _Run:
         mine[gate] = mine.get(gate, 0) + 1
 
     def _open_positions(self) -> list[HatPosition]:
+        """Every strategy's open positions, by entry day and instrument."""
+        bots = [leg.bot_id for leg in self.legs]
         rows = self.session.scalars(
-            select(HatPosition).where(
-                HatPosition.bot_id == self.bot_id, HatPosition.closed_at.is_(None)
-            )
+            select(HatPosition).where(HatPosition.bot_id.in_(bots), HatPosition.closed_at.is_(None))
         ).all()
         return sorted(
             rows, key=lambda p: (self.held[p.id].entry_day, self.held[p.id].instrument_id)
@@ -665,7 +776,7 @@ class _Run:
         # A held instrument always has the closes before its entry; the finest NSE tick stands
         # in only if it did not, which keeps the search exact on a finer grid.
         tick = self.view.tick(held.instrument_id, day) or _FINEST_TICK
-        stack = self.config.exits_for(held.playbook)
+        stack = self.legs[held.leg].config.exits_for(held.playbook)
         for step in range(len(stack) + 2 + _STEP_TRAIL_MOVES):
             if position.closed_at is not None:
                 return
@@ -683,16 +794,23 @@ class _Run:
                 held.raised = (day, before)
 
     def _morning(self, day: date, prev: date | None) -> None:
-        regime_off = prev is not None and not regime_allows_longs(
-            self.config.regime, self.view.closes_through(prev), self.view.breadth_through(prev)
-        )
+        regime_off = [
+            prev is not None
+            and not regime_allows_longs(
+                leg.config.regime, self.view.closes_through(prev), self.view.breadth_through(prev)
+            )
+            for leg in self.legs
+        ]
         for position in self._open_positions():
             held = self.held[position.id]
             # Held into the ex-date: the shares earn the dividend, a session or not.
             per_share = self.view.dividends_on(held.instrument_id, day)
             if per_share and position.qty_open > 0:
-                self.dividend_cash += dividend_credit(position.qty_open, per_share)
+                credit = dividend_credit(position.qty_open, per_share)
+                self.dividend_cash += credit
                 self.dividend_credits += 1
+                if self.overlay is not None:
+                    self.overlay.dividend(day, credit)
             bar = self.view.bar(held.instrument_id, day)
             if bar is None:
                 continue  # no session for this instrument today: nothing can fill
@@ -702,7 +820,7 @@ class _Run:
                 # the next open that is not pinned and fills there at min(open, stop).
                 self.lower_circuit_days.add(day)
                 continue
-            nightly = exits.ExitView(bar.open, regime_off=regime_off)
+            nightly = exits.ExitView(bar.open, regime_off=regime_off[held.leg])
             self._evaluate(position, nightly, "nightly", _at(day, _AT_OPEN))
             if position.closed_at is None:
                 self._evaluate(position, exits.ExitView(bar.open), "live", _at(day, _AT_OPEN, 1))
@@ -781,14 +899,18 @@ class _Run:
         equity = self.equity[-1][1] if self.equity else self.spec.initial_equity
         return equity, cash
 
-    def _context(self, row: _Row, plan: _EntryPlan, prev: date) -> SignalContext:
+    def _context(
+        self, row: _Row, plan: _EntryPlan, prev: date, credit: Decimal = _ZERO
+    ) -> SignalContext:
         """The entry's context as live builds it (`daily.entries`): sized from the night's
         allocation, the book being the run's one sleeve; without one, the allocation inputs are
-        missing and the entry is rejected for it."""
+        missing and the entry is rejected for it. Under the overlay the free cash counts what
+        selling the sleeve would credit today (`credit`)."""
         # The free cash net of the entry's slippage and charges: the cash the shares it can
         # afford take at the entry price, so no size the cash term allows overdraws the account
         # (a broker refuses that order); with no cash left the entry is a cash rejection.
-        cash = self.spec.fills.affordable(self._cash(), plan.price, row.trade_date) * plan.price
+        free = self._free_cash() + credit
+        cash = self.spec.fills.affordable(free, plan.price, row.trade_date) * plan.price
         allocation = self.allocations.get(row.trade_date)
         capital = None if allocation is None else allocation.capital
         instrument_id = str(row.instrument_id)
@@ -831,15 +953,45 @@ class _Run:
         intraday breaks and the pre-open playbooks' candidates, each decided on the session's
         5-minute bars when it has them (`_on_bars`) and on the daily estimate otherwise; or with
         `at_close` the close entries of the `daily_close` playbooks, after the close phase (they
-        all trigger at the close, so they keep the score order under `time`)."""
+        all trigger at the close, so they keep the score order under `time`). In a run of more
+        than one strategy each strategy decides its own candidates and they all take the slots
+        in one order, the account's (the strategies in leg order at the close)."""
         if at_close:
-            for n, row in enumerate(self._rows(day, at_close=True)):
-                found = self._decide_daily(row, day, prev, at_close=True)
-                if found is not None:
-                    self._enter(
-                        found.row, found.bar, found.plan, prev, _at(day, _AT_CLOSE_ENTRY, n)
-                    )
+            n = 0
+            for leg in self.legs:
+                self._use(leg)
+                for row in self._rows(day, at_close=True):
+                    found = self._decide_daily(row, day, prev, at_close=True)
+                    if found is not None:
+                        self._enter(
+                            found.row, found.bar, found.plan, prev, _at(day, _AT_CLOSE_ENTRY, n)
+                        )
+                    n += 1
             return
+        decisions: list[_Decision] = []
+        for leg_n, leg in enumerate(self.legs):
+            self._use(leg)
+            decisions.extend(replace(d, leg=leg_n) for d in self._leg_decisions(day, prev))
+        # the watchlist's score order, which the `score` and `random` slot orders keep
+        decisions.sort(
+            key=lambda d: (-d.row.score, d.row.playbook, str(d.row.instrument_id), d.leg)
+        )
+        rule = self.spec.conventions.slot_order
+
+        def strength(d: _Decision) -> Decimal | None:
+            return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted", rounded=False)
+
+        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank, strength)):
+            at = (
+                _at(day, _AT_ENTRY, n) if found.at is None else found.at + timedelta(microseconds=n)
+            )
+            self._use(self.legs[found.leg])
+            self._enter(found.row, found.bar, found.plan, prev, at)
+
+    def _leg_decisions(self, day: date, prev: date) -> list[_Decision]:
+        """The active strategy's triggers of the day: its watchlist rows and pre-open
+        candidates, each on the session's 5-minute bars when it has them, else the daily
+        estimate."""
         rows = [r for r in self._rows(day, at_close=False) if self._open_for(r, day)]
         gappers = self._gappers(day, prev)
         bars = self._session_bars(day, {str(r.instrument_id) for r in (*rows, *gappers)})
@@ -850,18 +1002,7 @@ class _Run:
         for row in gappers:
             if str(row.instrument_id) not in bars:
                 decisions.extend(self._decided(self._decide_ep(row, day, prev)))
-        # the watchlist's score order, which the `score` and `random` slot orders keep
-        decisions.sort(key=lambda d: (-d.row.score, d.row.playbook, str(d.row.instrument_id)))
-        rule = self.spec.conventions.slot_order
-
-        def strength(d: _Decision) -> Decimal | None:
-            return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted", rounded=False)
-
-        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank, strength)):
-            at = (
-                _at(day, _AT_ENTRY, n) if found.at is None else found.at + timedelta(microseconds=n)
-            )
-            self._enter(found.row, found.bar, found.plan, prev, at)
+        return decisions
 
     @staticmethod
     def _decided(found: _Decision | None) -> list[_Decision]:
@@ -1450,6 +1591,8 @@ class _Run:
             if (last := self._last_close(h.instrument_id)) is not None
         }
         open_count, open_risk = self._book()
+        # what selling the sleeve would credit now: the free cash an entry may size on
+        credit = _ZERO if self.overlay is None else self.overlay.credit_for(row.trade_date, at)
         features = self.signal_features.at(
             instrument_id,
             row.trade_date,
@@ -1468,7 +1611,7 @@ class _Run:
             instrument_id=row.instrument_id,
             trade_date=row.trade_date,
             triggered_at=at,
-            context=self._context(row, plan, prev),
+            context=self._context(row, plan, prev, credit),
             last_prices=held_prices,
             skip_reason=plan.skip,
             criteria=plan.filters,
@@ -1477,19 +1620,29 @@ class _Run:
         outcome = entries.open_entry(
             self.session,
             request,
-            fills=self.spec.fills.within(self._cash()),
+            fills=self.spec.fills.within(self._free_cash() + credit),
             confidence=BACKTEST_CONFIDENCE,
         )
         signal = self.session.get(HatSignal, outcome.signal_id)
         if signal is None or outcome.duplicate:
             return
+        reason = signal.risk_decision.get("reason")
+        if self.overlay is not None:
+            if outcome.position_id is not None and self._free_cash() < 0:
+                # the entry took more than the cash: the sleeve sells for the rest as it fills
+                self.overlay.fund(row.trade_date, at, -self._free_cash())
+            elif outcome.position_id is None:
+                found = refusal_reason(reason, self.overlay.held_units())
+                if found == INSUFFICIENT_CREDIT and reason != found:
+                    self.overlay.refused_for_credit()
+                reason = found
         self.signal_rows.append(
             SignalRow(
                 trade_date=row.trade_date,
-                playbook=row.playbook,
+                playbook=self.leg.prefix + row.playbook,
                 instrument_id=instrument_id,
                 state=signal.state,
-                reason=signal.risk_decision.get("reason"),
+                reason=reason,
                 trigger_price=Decimal(signal.trigger_price),
                 stop_price=Decimal(signal.stop_price),
                 qty=signal.qty,
@@ -1521,7 +1674,9 @@ class _Run:
         if position is None:  # pragma: no cover - open_entry returned the id it wrote
             return
         day = row.trade_date
-        self.held[position.id] = _Held(instrument_id, day, price, price, row.playbook)
+        self.held[position.id] = _Held(
+            instrument_id, day, price, price, row.playbook, leg=self.legs.index(self.leg)
+        )
         if plan.at_close:
             return  # entered at the close: the day's path is behind it
         high = bar.high if plan.high is None else plan.high
@@ -1536,7 +1691,7 @@ class _Run:
         """The position's view at the day's close, the stand-in for live's pre-15:15 price
         (`exits.view_from_bars`, as live builds it)."""
         held = self.held[position.id]
-        rules = self.config.exits_for(held.playbook)
+        rules = self.legs[held.leg].config.exits_for(held.playbook)
         before = self.view.bars_through(
             held.instrument_id, day, exits.history_sessions(rules), inclusive=False
         )
@@ -1649,6 +1804,11 @@ class _Run:
             held.low = min(held.low, price)  # a suspension mark below the traded lows is the MAE
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
         self.session.flush()
+        if self.overlay is not None:
+            # full liquidation: the sleeve sells at the close and the open year's tax is paid
+            self._tax_fills(last)
+            self.overlay.finish(last, self._free_cash())
+            self.overlay.final_row(last, self._marked(last)[0])
         if self.equity:
             equity = self._marked(last)[0]
             self.equity[-1] = (last, equity)
@@ -1665,27 +1825,56 @@ class _Run:
                 self.invested[-1] = _ZERO  # and holds no position: `invested_share` agrees
 
     def _sync_ladder(self) -> None:
-        """Step the exposure ladder for each trade closed since the last step, in close order:
-        the backtest counts its trades as real ones."""
-        rows = self.session.execute(
-            select(HatTradeResult.position_id, HatTradeResult.r_multiple, HatPosition.closed_at)
-            .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
-            .where(HatPosition.bot_id == self.bot_id)
-        ).all()
-        fresh = sorted(
-            (r for r in rows if r[0] not in self.seen_results),
-            key=lambda r: (as_utc(r[2]), self.held[r[0]].instrument_id),
-        )
-        for position_id, r_multiple, _ in fresh:
-            self.seen_results.add(position_id)
-            self.ladder = apply_outcome(self.ladder, is_win(Decimal(r_multiple)), self.policy)
+        """Step each strategy's exposure ladder for each of its trades closed since the last
+        step, in close order: the backtest counts its trades as real ones."""
+        for leg in self.legs:
+            rows = self.session.execute(
+                select(HatTradeResult.position_id, HatTradeResult.r_multiple, HatPosition.closed_at)
+                .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
+                .where(HatPosition.bot_id == leg.bot_id)
+            ).all()
+            fresh = sorted(
+                (r for r in rows if r[0] not in self.seen_results),
+                key=lambda r: (as_utc(r[2]), self.held[r[0]].instrument_id),
+            )
+            for position_id, r_multiple, _ in fresh:
+                self.seen_results.add(position_id)
+                leg.ladder = apply_outcome(leg.ladder, is_win(Decimal(r_multiple)), self.policy)
 
     def _cash(self) -> Decimal:
+        """The account's cash: the start, the dividends and every fill's flow, and what the
+        overlay moved (its sales and buys, its tax), pending credits included."""
         cash = self.spec.initial_equity + self.dividend_cash
         for side, value, fees in exact_flows(self.session):
             cash += value if side == "sell" else -value
             cash -= fees
-        return cash
+        return cash if self.overlay is None else cash + self.overlay.cash
+
+    def _free_cash(self) -> Decimal:
+        """The cash an entry or a buy may spend: the cash less the overlay's sale proceeds not
+        credited until the next session."""
+        return self._cash() if self.overlay is None else self._cash() - self.overlay.pending
+
+    def _tax_fills(self, day: date) -> None:
+        """The day's strategy fills into the overlay's tax book: a buy's outlay, a sale's net."""
+        if self.overlay is None:
+            return
+        for side, instrument_id, qty, price, fees in fills_on(self.session, day):
+            amount = qty * price + fees if side == "buy" else qty * price - fees
+            self.overlay.trade(side, instrument_id, qty, amount, day)
+
+    def _overlay_close(self, day: date, prev: date | None) -> None:
+        """The overlay's close: the day's fills taxed, then its distribution, tax, exposure
+        check and the next open's plan, on the account's mark."""
+        if self.overlay is None:
+            return
+        self._tax_fills(day)
+        equity, held_value = self._marked(day)
+        at = self.index[day]
+        next_day = self.days[at + 1] if at + 1 < len(self.days) else None
+        self.overlay.close_session(
+            day, prev, next_day, equity=equity, positions=held_value, free_cash=self._free_cash()
+        )
 
     def _mark_price(self, instrument_id: str, day: date, fallback: Decimal) -> Decimal:
         """The instrument's mark on `day`: its last close, marked down one band per session
@@ -1712,7 +1901,8 @@ class _Run:
             held = self.held[position.id]
             price = self._mark_price(held.instrument_id, day, Decimal(position.avg_entry))
             held_value += position.qty_open * price
-        return self._cash() + held_value, held_value
+        sleeve = _ZERO if self.overlay is None else self.overlay.value(day)
+        return self._cash() + held_value + sleeve, held_value
 
     def _book(self) -> tuple[int, Decimal]:
         """(the open positions, their open risk: (entry - stop) x shares, none below 0)."""
@@ -1731,6 +1921,8 @@ class _Run:
         self.equity.append((day, equity))
         self.invested.append(held_value / equity if equity > 0 else _ZERO)
         count, risk = self._book()
+        if self.overlay is not None:  # the book's held value is the positions and the sleeve
+            held_value += self.overlay.value(day)
         prev = self.view.prev(day)
         self.sessions.append(
             SessionRow(
@@ -1740,8 +1932,9 @@ class _Run:
                 position_value=held_value,
                 open_positions=count,
                 open_risk=risk,
-                ladder_level=self.ladder.level,
-                regime_on=self.gate.get(day),
+                # the run's own strategy's (the first leg's) ladder and gate
+                ladder_level=self.legs[0].ladder.level,
+                regime_on=self.legs[0].gate.get(day),
                 breadth_pct=None if prev is None else self.data.breadth.get(prev),
             )
         )
@@ -1780,33 +1973,62 @@ class _Run:
     # --- the result --------------------------------------------------------------------------
 
     def _funnel(self) -> dict[str, Any]:
-        """The run's funnel (`folder`): the regime-off nights, and per playbook the stock-days
-        that passed each scan gate then the watchlist rows that passed each of the day's."""
-        by_playbook = {
-            name: {
-                **{g: c for g, c in counts.items() if g not in TRIGGER_GATES},
-                **{g: counts.get(g, 0) for g in TRIGGER_GATES},
-            }
-            for name, counts in self.funnel.items()
-        }
-        for playbook in self.config.playbooks:
-            if playbook.preopen:
-                records = [r for r in self.ep_records.values() if r.playbook == playbook.name]
-                by_playbook[playbook.name] = ep_log.funnel(records, ep_log.ep_gates(playbook))
-        return {"regime_off_nights": self.regime_off_nights, "by_playbook": by_playbook}
+        """The run's funnel (`folder`): the regime-off nights (the run's own strategy's), and
+        per playbook (each strategy's, by its prefix) the stock-days that passed each scan gate
+        then the watchlist rows that passed each of the day's."""
+        by_playbook: dict[str, Any] = {}
+        for leg in self.legs:
+            for name, counts in leg.funnel.items():
+                by_playbook[leg.prefix + name] = {
+                    **{g: c for g, c in counts.items() if g not in TRIGGER_GATES},
+                    **{g: counts.get(g, 0) for g in TRIGGER_GATES},
+                }
+            for playbook in leg.config.playbooks:
+                if playbook.preopen:
+                    records = [r for r in leg.ep_records.values() if r.playbook == playbook.name]
+                    by_playbook[leg.prefix + playbook.name] = ep_log.funnel(
+                        records, ep_log.ep_gates(playbook)
+                    )
+        return {"regime_off_nights": self.legs[0].regime_off_nights, "by_playbook": by_playbook}
+
+    def _rows_of(self, leg: _Leg) -> tuple[tuple[WatchRow, ...], tuple[TradeRow, ...]]:
+        """The strategy's watchlist and trade rows, its playbooks named with its prefix."""
+        watched = ledger_watch_rows(self.session, leg.bot_id)
+        trades = ledger_trade_rows(self.session, leg.bot_id, watched)
+        if not leg.prefix:
+            return watched, trades
+        return (
+            tuple(replace(w, playbook=leg.prefix + w.playbook) for w in watched),
+            tuple(replace(t, playbook=leg.prefix + t.playbook) for t in trades),
+        )
 
     def _result(self) -> BacktestResult:
-        watch_rows = ledger_watch_rows(self.session, self.bot_id)
+        rows = [self._rows_of(leg) for leg in self.legs]
+        watch_rows = tuple(w for watched, _ in rows for w in watched)
+        traded = tuple(t for _, trades in rows for t in trades)
+        if len(self.legs) > 1:
+            watch_rows = tuple(
+                sorted(
+                    watch_rows, key=lambda w: (w.trade_date, -w.score, w.playbook, w.instrument_id)
+                )
+            )
+            traded = tuple(
+                sorted(
+                    traded, key=lambda t: (t.exit_date, t.entry_date, t.instrument_id, t.playbook)
+                )
+            )
+        funnel = self._funnel()  # before the EP records take their strategy's prefix
+        for leg in self.legs:
+            for record in leg.ep_records.values() if leg.prefix else ():
+                record.playbook = leg.prefix + record.playbook
+        records = [r for leg in self.legs for r in leg.ep_records.values()]
         trade_rows = tuple(
             replace(
                 t,
                 qty_real=self.view.real_shares(t.instrument_id, t.entry_date, t.qty),
                 mfe_date=self._mfe_date(t.instrument_id, t.entry_date, t.exit_date),
             )
-            for t in flag_auction_risk(
-                ledger_trade_rows(self.session, self.bot_id, watch_rows),
-                auction_risk_days(self.view.days),
-            )
+            for t in flag_auction_risk(traded, auction_risk_days(self.view.days))
         )
         equity = tuple(self.equity)
         skips = dict(sorted(self.skips.items()))
@@ -1826,6 +2048,22 @@ class _Run:
         metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
         metrics["dividend_income"] = str(self.dividend_cash)
         metrics["dividend_credits"] = self.dividend_credits
+        overlay: dict[str, Any] = {}
+        if self.overlay is not None and self.spec.overlay is not None:
+            overlay = {
+                "config": self.spec.overlay.record(),
+                "data": self.overlay.data.record(),
+                **self.overlay.summary(),
+                # the sleeve's sales and buys and the tax, all of it cash after the last session
+                "net_flow": str(self.overlay.cash),
+                "benchmarks": benchmarks(
+                    self.spec.overlay,
+                    self.overlay.data,
+                    self.spec.fills.schedule,
+                    self.spec.initial_equity,
+                    self.period,
+                ),
+            }
         result = BacktestResult(
             trades=trade_rows,
             equity=equity,
@@ -1835,21 +2073,31 @@ class _Run:
             skips=skips,
             metrics=metrics,
             invested=invested,
-            allocations=dict(self.allocations),
+            allocations=dict(self.legs[0].allocations),
             sessions=tuple(self.sessions),
-            funnel=self._funnel(),
-            ep_candidates=tuple(
-                r.row() for r in sorted(self.ep_records.values(), key=lambda r: r.row_key)
-            ),
+            funnel=funnel,
+            ep_candidates=tuple(r.row() for r in sorted(records, key=lambda r: r.row_key)),
+            overlay=overlay,
+            overlay_rows=() if self.overlay is None else tuple(r.csv() for r in self.overlay.rows),
         )
         self.session.close()
         return result
 
 
-def run_backtest(spec: RunSpec, data: MarketData) -> BacktestResult:
-    """Run `spec` over `data` and return its trades, equity curve and metrics."""
+def _etf_data(etf: EtfData | None) -> EtfData:
+    if etf is None:
+        raise BacktestError("backtest_overlay_no_etf_data")
+    return etf
+
+
+def run_backtest(spec: RunSpec, data: MarketData, etf: EtfData | None = None) -> BacktestResult:
+    """Run `spec` over `data` (and, with an overlay, the ETF data `etf`) and return its trades,
+    equity curve and metrics."""
     if spec.start > spec.end:
         raise BacktestError("backtest_bad_period")
     if not spec.initial_equity.is_finite() or spec.initial_equity <= 0:
         raise BacktestError("backtest_bad_equity")
-    return _Run(spec, data).run()
+    try:
+        return _Run(spec, data, etf).run()
+    except OverlayError as exc:
+        raise BacktestError(exc.code) from None

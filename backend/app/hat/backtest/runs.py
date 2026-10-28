@@ -60,7 +60,7 @@ from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
-from . import folder, trials
+from . import etf_data, folder, trials
 from .data import MarketData, load_market
 from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of, resolve_knobs
 from .dsr import MIN_TRIALS, PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
@@ -73,6 +73,7 @@ from .evidence import (
     universe_of,
 )
 from .loop import run_backtest
+from .overlay import EtfData, OverlayConfig, OverlayError, replay_overlay
 from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
 from .run_audit import audit_run
 from .spec import (
@@ -81,6 +82,7 @@ from .spec import (
     REGIME_MULT_POLICY,
     VOLUME_PACE_LIVE,
     BacktestError,
+    CoSleeve,
     RunConventions,
     RunSpec,
     known_gaps,
@@ -92,6 +94,7 @@ __all__ = [
     "HOLD_OUT",
     "IN_SAMPLE",
     "STRATEGY_LABELS",
+    "CoSleeveRequest",
     "Labels",
     "RunOutcome",
     "RunRequest",
@@ -149,14 +152,26 @@ class Labels:
 
 
 @dataclass(frozen=True)
+class CoSleeveRequest:
+    """A strategy run beside the request's own on its account (a portfolio run): its version
+    (one of the same owner's strategies), its weight of the account and its config overrides
+    (the policy is the account's: a co-sleeve sets none of it)."""
+
+    version_id: uuid.UUID
+    weight: Decimal
+    overrides: Overrides = field(default_factory=Overrides)
+
+
+@dataclass(frozen=True)
 class RunRequest:
     """One backtest (`backtest_bot`): of a sleeve (`bot_id`: its strategy version, the live one
     unless `version_id` names another of the same strategy, on its universe), or, in research
     mode, of a strategy version (`version_id`) on a universe (`universe`, its id or its name
     among the strategy owner's universes) with no bot, so no broker account; the period, the
     fills (slippage and cost model), the cooldown replacing the policy's for a sweep, whether
-    the run may evidence a version, its conventions and labels, and the command line's
-    arguments (recorded in `config.json`)."""
+    the run may evidence a version, its conventions and labels, the command line's arguments
+    (recorded in `config.json`) and, for a portfolio run (`portfolio`), the strategies beside
+    it on the same account and the ETF overlay."""
 
     start: date
     end: date
@@ -170,6 +185,8 @@ class RunRequest:
     conventions: RunConventions = field(default_factory=RunConventions)
     labels: Labels = field(default_factory=Labels)
     args: tuple[str, ...] = ()
+    co_sleeves: tuple[CoSleeveRequest, ...] = ()
+    overlay: OverlayConfig | None = None
 
 
 def _sleeve_of(
@@ -231,6 +248,32 @@ class _Target:
     regime_table: Mapping[str, Decimal]
     strategy: str
     universe: str
+    co: tuple[_CoTarget, ...] = ()
+
+
+@dataclass(frozen=True)
+class _CoTarget:
+    """A co-sleeve's strategy version, its parsed config, its stored regime table and its
+    strategy's short name."""
+
+    version_id: uuid.UUID
+    strategy_id: uuid.UUID
+    config: StrategyConfig
+    regime_table: Mapping[str, Decimal]
+    strategy: str
+
+
+def _co_target(session: Session, version_id: uuid.UUID, user_id: uuid.UUID) -> _CoTarget:
+    """A co-sleeve's version, one of `user_id`'s strategies (`backtest_unknown_version`
+    else)."""
+    configs = configs_of(session)
+    version = configs.get(StrategyVersion, version_id)
+    strategy = None if version is None else configs.get(Strategy, version.strategy_id)
+    if version is None or strategy is None or strategy.user_id != user_id:
+        raise BacktestError("backtest_unknown_version")
+    config = parse_config(version.config)
+    table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
+    return _CoTarget(version.id, version.strategy_id, config, table, _strategy_label(strategy.name))
 
 
 def _strategy_label(name: str) -> str:
@@ -258,6 +301,8 @@ def _target(session: Session, request: RunRequest) -> _Target:
     table = stored_regime_table(session, market_id_of(session), regime_profile(config.bot))
     strategy = configs_of(session).get(Strategy, version.strategy_id)
     named = session.get(HatUniverse, universe.universe_id)
+    co = tuple(_co_target(session, c.version_id, user_id) for c in request.co_sleeves)
+    label = _strategy_label("" if strategy is None else strategy.name)
     return _Target(
         version.id,
         version.strategy_id,
@@ -267,8 +312,10 @@ def _target(session: Session, request: RunRequest) -> _Target:
         universe.id,
         fills,
         table,
-        _strategy_label("" if strategy is None else strategy.name),
+        # a portfolio is its own trial family: its strategies' names joined
+        "+".join([label, *(c.strategy for c in co)]),
         _universe_label(universe, "" if named is None else named.name),
+        co,
     )
 
 
@@ -295,6 +342,7 @@ def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> 
         raise BacktestError(exc.code) from None
     if request.cooldown_sessions is not None:  # a candidate policy replaced the one it was set on
         policy = with_cooldown(policy, request.cooldown_sessions)
+    co_sleeves = tuple(_co_sleeve(t, c) for t, c in zip(target.co, request.co_sleeves, strict=True))
     return RunSpec(
         config=config,
         strategy_version_id=target.version_id,
@@ -306,7 +354,29 @@ def _spec(target: _Target, request: RunRequest, conventions: RunConventions) -> 
         for_promotion=request.for_promotion,
         conventions=conventions,
         regime_table=target.regime_table,
+        co_sleeves=co_sleeves,
+        overlay=request.overlay,
     )
+
+
+def _co_sleeve(target: _CoTarget, request: CoSleeveRequest) -> CoSleeve:
+    """A co-sleeve's run: its config under its overrides; one that names the config's identity
+    or sets the policy is refused (`backtest_override_identity`, `backtest_co_sleeve_policy`)."""
+    overrides = request.overrides
+    if overrides.touches_identity():
+        raise BacktestError("backtest_override_identity")
+    if overrides.touches_policy:
+        raise BacktestError("backtest_co_sleeve_policy")
+    try:
+        config = overrides.apply_config(target.config)
+    except OverrideError as exc:
+        raise BacktestError(exc.code) from None
+    return CoSleeve(config, target.version_id, request.weight, target.regime_table, overrides)
+
+
+def _configs(spec: RunSpec) -> list[StrategyConfig]:
+    """Every strategy config a run trades: its own and its co-sleeves'."""
+    return [spec.config, *(c.config for c in spec.co_sleeves)]
 
 
 @dataclass(frozen=True)
@@ -317,6 +387,7 @@ class _Market:
     data: MarketData
     snapshot: dict[str, Any]
     audit: dict[str, Any]
+    etf: EtfData | None = None  # an overlay run's (`etf_data.load`)
 
 
 def _load(
@@ -343,10 +414,16 @@ def _load(
         end=period[1],
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
         # the EP log and `earnings_catalyst` read the stored results filings
-        results=any(p.preopen for s in specs for p in s.config.playbooks),
+        results=any(p.preopen for s in specs for c in _configs(s) for p in c.playbooks),
     )
-    if not data.results and any(uses_results(s.config) for s in specs):
+    if not data.results and any(uses_results(c) for s in specs for c in _configs(s)):
         raise BacktestError("backtest_results_missing")
+    etf = None
+    if any(s.overlay is not None for s in specs):
+        try:
+            etf = etf_data.load(store.root, *period)
+        except etf_data.EtfDataError as exc:
+            raise BacktestError(exc.code) from None
     used_5m = data.intraday is not None and any(
         s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
     )
@@ -371,7 +448,9 @@ def _load(
     if audit.get("status") == data_audit.FAIL:
         logger.error("data audit %s failed: backtests refused", key)
         raise BacktestError("backtest_data_audit_failed")
-    return _Market(data, snapshot, audit)
+    if etf is not None:  # what the overlay read, in config.json's snapshot (not its digest)
+        snapshot = {**snapshot, "etf_store": etf_data.manifest(store.root)}
+    return _Market(data, snapshot, audit, etf)
 
 
 def _cap_refusal(spec: RunSpec, audit: Mapping[str, Any]) -> str | None:
@@ -447,11 +526,17 @@ def resolved_of(spec: RunSpec) -> dict[str, Any]:
     without the overrides that produced them, so `resolved_hash` is equal for two runs that ran
     alike, however they were asked for."""
     conventions = {k: v for k, v in spec.recorded_conventions().items() if k != "overrides"}
-    return {
+    out = {
         "strategy": spec.config.to_json(),
         "risk_policy": spec.policy.policy.to_json(),
         "conventions": conventions,
     }
+    if spec.co_sleeves:  # a portfolio's other strategies, as they ran
+        conventions["co_sleeves"] = [
+            {k: v for k, v in c.record().items() if k != "overrides"} for c in spec.co_sleeves
+        ]
+        out["co_sleeve_strategies"] = [c.config.to_json() for c in spec.co_sleeves]
+    return out
 
 
 def _capital(value: Decimal) -> int | float:
@@ -541,7 +626,30 @@ def _config_doc(
         "data_snapshot_id": snapshot.get("content_digest"),
         "data_snapshot": dict(snapshot),  # what was read: the store, membership and its cover
         "data_audit": _audit_ref(audit),
+        **_portfolio_doc(target, spec),
     }
+
+
+def _portfolio_doc(target: _Target, spec: RunSpec) -> dict[str, Any]:
+    """`config.json`'s co-sleeves (each as `_replayed` reads it back) and overlay, only when
+    the run has them."""
+    out: dict[str, Any] = {}
+    if spec.co_sleeves:
+        out["co_sleeves"] = [
+            {
+                "strategy": t.strategy,
+                "strategy_id": str(t.strategy_id),
+                "strategy_version_id": str(c.strategy_version_id),
+                "strategy_config": c.config.to_json(),
+                "weight": str(c.weight),
+                "regime_table": {k: str(v) for k, v in c.regime_table.items()},
+                "overrides": c.overrides.record(),
+            }
+            for t, c in zip(target.co, spec.co_sleeves, strict=True)
+        ]
+    if spec.overlay is not None:
+        out["overlay"] = spec.overlay.record()
+    return out
 
 
 def _blocks(
@@ -692,7 +800,7 @@ def _execute(
         return RunOutcome(label, run_id, status, code, doc)
 
     try:
-        result = run_backtest(spec, data)
+        result = run_backtest(spec, data, market.etf)
         # what the run took for estimates, known only now (`spec.known_gaps`)
         config_doc = {**config_doc, "known_gaps": result.metrics["known_gaps"]}
         resolved_hash = config_hash(resolved_of(spec))
@@ -844,6 +952,7 @@ VARIANT_KEYS = frozenset(
         "bundle",
         "reason",
         "set",
+        "playbooks",
         "risk_pct",
         "max_positions",
         "max_per_industry",
@@ -1003,6 +1112,7 @@ def _conventions(
             raise BacktestError(exc.code) from None
     overrides = Overrides(
         sets=(*base.overrides.sets, *parsed),
+        playbooks=_names(item, "playbooks", base.overrides.playbooks),
         policy=policy,
         policy_sets=(*base.overrides.policy_sets, *policy_sets),
         risk_pct=_number(item, "risk_pct", base.overrides.risk_pct),
@@ -1046,6 +1156,17 @@ def _number(item: Mapping[str, object], key: str, default: Decimal | None) -> De
     if found is None:
         raise BacktestError("backtest_sweep_bad_variants")
     return found
+
+
+def _names(
+    item: Mapping[str, object], key: str, default: tuple[str, ...] | None
+) -> tuple[str, ...] | None:
+    if key not in item:
+        return default
+    found = item[key]
+    if not isinstance(found, list) or not found or not all(isinstance(n, str) for n in found):
+        raise BacktestError("backtest_sweep_bad_variants")
+    return tuple(found)
 
 
 def _flag(item: Mapping[str, object], key: str, default: bool) -> bool:
@@ -1271,6 +1392,7 @@ def _replayed(
             volume_pace=c.get("volume_pace", VOLUME_PACE_LIVE),
         )
         universe = config["universe"]
+        co = tuple(_replayed_co(item) for item in config.get("co_sleeves", ()))
         target = _Target(
             uuid.UUID(config["strategy_version_id"]),
             uuid.UUID(config["strategy_id"]),
@@ -1282,7 +1404,9 @@ def _replayed(
             {k: v for k, v in table.items() if v is not None},
             str(config["strategy"]),
             str(universe["label"]),
+            tuple(t for t, _ in co),
         )
+        overlay = None if "overlay" not in config else replay_overlay(config["overlay"])
         spec = RunSpec(
             config=strategy_config,
             strategy_version_id=target.version_id,
@@ -1294,10 +1418,39 @@ def _replayed(
             for_promotion=bool(config["for_promotion"]),
             conventions=conventions,
             regime_table=target.regime_table,
+            co_sleeves=tuple(c for _, c in co),
+            overlay=overlay,
         )
-    except (KeyError, TypeError, ValueError, ConfigError, PolicyError):
+    except (KeyError, TypeError, ValueError, ConfigError, PolicyError, OverlayError):
         raise BacktestError("backtest_rerun_bad_config") from None
     return target, spec
+
+
+def _replayed_co(item: Mapping[str, Any]) -> tuple[_CoTarget, CoSleeve]:
+    """A co-sleeve as `config.json` records it (`_portfolio_doc`): its config as it ran, so no
+    override is applied again (the record keeps them for the knobs and the digest)."""
+    config = parse_config(item["strategy_config"])
+    table = {k: exact(v) for k, v in item["regime_table"].items()}
+    weight = exact(item["weight"])
+    if weight is None or any(v is None for v in table.values()):
+        raise BacktestError("backtest_rerun_bad_config")
+    found = {k: v for k, v in table.items() if v is not None}
+    version_id = uuid.UUID(item["strategy_version_id"])
+    target = _CoTarget(
+        version_id, uuid.UUID(item["strategy_id"]), config, found, str(item["strategy"])
+    )
+    overrides = _recorded_overrides(item.get("overrides") or {})
+    return target, CoSleeve(config, version_id, weight, found, overrides)
+
+
+def _recorded_overrides(record: Mapping[str, Any]) -> Overrides:
+    """The config overrides a co-sleeve's record names (`Overrides.record`: its sets and kept
+    playbooks; a co-sleeve sets no policy)."""
+    playbooks = record.get("playbooks")
+    return Overrides(
+        sets=tuple((s["path"], s["value"]) for s in record.get("set", ())),
+        playbooks=None if playbooks is None else tuple(playbooks),
+    )
 
 
 def rerun(

@@ -15,6 +15,7 @@ runs/<run_id>/
   signals.csv     # every setup that fired, taken or not
   stocks.csv      # one row per symbol: how S1 did on that stock
   ep_candidates.csv  # pre-open playbook runs only: each gap-scan candidate-day
+  overlay.csv     # ETF overlay runs only: one row per session of the sleeve
 ```
 
 Why four files: headline metrics say *whether* a variant is better. Trades, equity and refusals say *why*, and that is what tweak suggestions are built from.
@@ -384,6 +385,15 @@ same-day round trip, at its entry value) as held that session.
 ---
 
 ## v1.5 changes
+
+**Portfolio and overlay runs.** A run of several strategies (`process.md`, How to define a
+backtest) names each playbook `<bot>:<playbook>` in every file; `config.json` adds `co_sleeves`,
+and the conventions and `config.resolved` add them only when set, so a one-strategy run keeps its
+hashes. An overlay run adds `run.json` `overlay` (its config, data proxy ranges, counts,
+`net_flow` = the sleeve's trades less all tax, tax by financial year, by-year costs, turnover and
+switches, events, and the B1/B2/TRI benchmarks), `overlay.csv` (`overlay.OVERLAY_CSV_HEADER`) and
+the refusal code `insufficient_same_day_credit` (a cash refusal while the sleeve held units);
+`equity.csv` `position_value` includes the sleeve, and the run audit's P&L check adds `net_flow`.
 
 **by_year.** `trades` and `expectancy_r` (the trades exiting that year, beside a mark-to-market
 return, with no label) are replaced by fields named by their basis: `trades_entered` and

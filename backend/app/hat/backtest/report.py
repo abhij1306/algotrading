@@ -175,6 +175,10 @@ class BacktestResult:
     # the EP log's rows (`ep_log.EpRecord.row`), one per pre-open candidate-day of the gap scan:
     # ep_candidates.csv; empty without a pre-open playbook
     ep_candidates: tuple[Mapping[str, Any], ...] = ()
+    # the ETF overlay's block (run.json `overlay`) and its sessions (overlay.csv, its columns
+    # `overlay.OVERLAY_CSV_HEADER`); empty without an overlay
+    overlay: Mapping[str, Any] = field(default_factory=dict)
+    overlay_rows: tuple[Sequence[str], ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:
