@@ -4,7 +4,8 @@ point-in-time read `results_as_of`.
 One growth row per result row: the growth of the row's (instrument, period_end) as known when the
 row became public (`growth.growth_as_of`), and whether the row itself is unit-suspect as known
 then (`growth.suspect_row`). A suspect row is left out of every comparison made at or after the
-time it became public. The table is derived: each run replaces it whole, in one transaction.
+time it became public. The table is derived: each run replaces it whole, in one transaction that
+locks both tables first.
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session
 
 from ...models import HatFinancialGrowth, HatFinancialResult
@@ -43,7 +44,7 @@ def growth_rows(instrument_id: uuid.UUID, rows: Sequence[ResultRow]) -> list[Hat
     suspect: set[str] = set()
     out = []
     for row in ordered:
-        flagged = suspect_row(row, ordered)
+        flagged = suspect_row(row, ordered, suspect)
         if flagged:
             suspect.add(row.id)
         found = growth_as_of(ordered, row.period_end, row.public_at, suspect)
@@ -80,6 +81,17 @@ def derive() -> DeriveReport:  # pragma: no cover - the database
 
     report = DeriveReport()
     with db_session_scope(writes_data=True) as session:
+        # one snapshot: no parse commits rows between this read and the replacement (SHARE
+        # blocks inserts until commit), and no second derive replaces the table alongside
+        on_live = {"mapper": HatFinancialResult}
+        session.execute(
+            text(f"LOCK TABLE {HatFinancialGrowth.__tablename__} IN EXCLUSIVE MODE"),
+            bind_arguments=on_live,
+        )
+        session.execute(
+            text(f"LOCK TABLE {HatFinancialResult.__tablename__} IN SHARE MODE"),
+            bind_arguments=on_live,
+        )
         by_instrument: dict[uuid.UUID, list[ResultRow]] = defaultdict(list)
         for row in session.scalars(select(HatFinancialResult)):
             by_instrument[row.instrument_id].append(result_row(row))

@@ -10,14 +10,15 @@ Q4 derivation (A2 rule 4). Pure: plain rows in, values out; `derive.py` and `sto
   prior eps - 1 when both are > 0; turnaround = prior eps <= 0 and eps > 0. A row flagged
   unit_suspect is treated as absent.
 - unit_suspect: quarterly revenue more than 20x above or below the median of the same company's
-  previous 4 quarters on the same basis (as known when the row became public).
+  previous 4 quarters on the same basis (as known when the row became public), leaving out
+  quarters already flagged.
 """
 
 from __future__ import annotations
 
 import calendar
 import statistics
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -96,12 +97,15 @@ def unit_suspect(revenue: Decimal | None, previous: Sequence[Decimal | None]) ->
     return revenue > median * UNIT_SUSPECT_MULTIPLE or revenue * UNIT_SUSPECT_MULTIPLE < median
 
 
-def suspect_row(row: ResultRow, rows: Iterable[ResultRow]) -> bool:
+def suspect_row(
+    row: ResultRow, rows: Iterable[ResultRow], suspect: Collection[str] = frozenset()
+) -> bool:
     """`unit_suspect` for `row` against its company's previous 4 quarters on its basis, as known
-    when it became public."""
+    when it became public; rows already flagged (ids in `suspect`) are left out of the median."""
     known = known_at(rows, row.public_at)
     previous = [known.get((end, row.basis)) for end in quarter_ends_before(row.period_end, 4)]
-    return unit_suspect(row.revenue, [p.revenue if p else None for p in previous])
+    usable = [p.revenue if p is not None and p.id not in suspect else None for p in previous]
+    return unit_suspect(row.revenue, usable)
 
 
 @dataclass(frozen=True)

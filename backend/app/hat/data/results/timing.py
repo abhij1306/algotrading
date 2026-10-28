@@ -18,6 +18,7 @@ Pure. Why each rule (A0 probe report, sections 5 and 6):
 
 from __future__ import annotations
 
+import calendar
 import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -100,17 +101,61 @@ def results_announcements(items: Iterable[Announcement]) -> dict[str, list[Annou
     return found
 
 
+_MONTHS = ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec")
+_MONTH = r"\b(" + "|".join(_MONTHS) + r")[a-z]*\.?"
+_DAY = r"(\d{1,2})(?:st|nd|rd|th)?"
+_MONTH_DAY_YEAR = re.compile(_MONTH + r"\s+" + _DAY + r",?\s+(\d{4})", re.IGNORECASE)
+_DAY_MONTH_YEAR = re.compile(_DAY + r"\s+(?:of\s+)?" + _MONTH + r",?\s+(\d{4})", re.IGNORECASE)
+_NUMERIC = re.compile(r"\b(\d{1,2})[./-](\d{1,2})[./-](\d{4})\b")
+
+
+def _quarter_end(year: int, month: int, day: int) -> date | None:
+    try:
+        named = date(year, month, day)
+    except ValueError:
+        return None
+    is_end = month in (3, 6, 9, 12) and day == calendar.monthrange(year, month)[1]
+    return named if is_end else None
+
+
+def named_quarter_ends(text: str) -> set[date]:
+    """The quarter ends (31 March, 30 June, 30 September, 31 December) an announcement's text
+    names as full dates ('the period ended March 31, 2021', '31st December, 2020', '30.06.2021');
+    other dates, such as the board meeting's, are left out."""
+    found = set()
+    for m in _MONTH_DAY_YEAR.finditer(text):
+        found.add(_quarter_end(int(m[3]), _MONTHS.index(m[1].lower()) + 1, int(m[2])))
+    for m in _DAY_MONTH_YEAR.finditer(text):
+        found.add(_quarter_end(int(m[3]), _MONTHS.index(m[2].lower()) + 1, int(m[1])))
+    for m in _NUMERIC.finditer(text):
+        found.add(_quarter_end(int(m[3]), int(m[2]), int(m[1])))
+    found.discard(None)
+    return found  # type: ignore[return-value]
+
+
 def match_announcement(
     items: Sequence[Announcement], anchor: date, period_end: date
 ) -> Announcement | None:
-    """The results announcement of a filing made on `anchor`: among `items` (one company's
-    results announcements) broadcast after the period end and from two days before to a day
-    after `anchor`, the earliest 'Financial Result Updates' item, else the earliest board
-    outcome naming the results."""
+    """The results announcement of a filing for `period_end` made on `anchor`: among `items` (one
+    company's results announcements, earliest first) broadcast after the period end and from two
+    days before to a day after `anchor`, leaving out any that names only other quarters, the
+    earliest that names `period_end`; else the earliest 'Financial Result Updates' item, else the
+    earliest board outcome naming the results (texts that name no quarter)."""
     lo, hi = anchor - WINDOW_BEFORE, anchor + WINDOW_AFTER
-    window = [i for i in items if lo <= i.at.date() <= hi and i.at.date() > period_end]
+    named: list[Announcement] = []
+    unnamed: list[Announcement] = []
+    for item in items:
+        if not (lo <= item.at.date() <= hi and item.at.date() > period_end):
+            continue
+        quarters = named_quarter_ends(item.text)
+        if period_end in quarters:
+            named.append(item)
+        elif not quarters:
+            unnamed.append(item)
+    if named:
+        return named[0]
     for rule in ("result_updates", "board_outcome"):
-        for item in window:
+        for item in unnamed:
             if is_results_announcement(item) == rule:
                 return item
     return None
@@ -163,11 +208,18 @@ def deadline(period_end: date) -> datetime:
 def quarter_announcement(
     items: Sequence[Announcement], period_end: date, used: set[datetime]
 ) -> Announcement | None:
-    """The results announcement of a quarter no filing dates (a secondary-source row): the first
-    results announcement after the quarter end and by its deadline plus 30 days that no other
-    quarter's filing already took (`used`)."""
+    """The results announcement of a quarter no filing dates (a secondary-source row): among the
+    results announcements after the quarter end and by its deadline plus 30 days that no other
+    quarter's filing already took (`used`), the first that names the quarter, else the first that
+    names no quarter."""
     hi = deadline(period_end) + timedelta(days=30)
+    fallback = None
     for item in items:
-        if period_end < item.at.date() and item.at <= hi and item.at not in used:
+        if not (period_end < item.at.date() and item.at <= hi and item.at not in used):
+            continue
+        quarters = named_quarter_ends(item.text)
+        if period_end in quarters:
             return item
-    return None
+        if not quarters and fallback is None:
+            fallback = item
+    return fallback

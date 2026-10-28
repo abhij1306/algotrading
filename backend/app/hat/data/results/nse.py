@@ -247,6 +247,12 @@ def always(_entry: Entry) -> bool:
     return True
 
 
+def transient(status: int) -> bool:
+    """A failure worth asking again on the next run (no answer, or a server error): never cached
+    and never reused."""
+    return status == 0 or status >= 500
+
+
 class Client:
     """GETs through one browser-like session, paced, every final answer kept in `cache`.
 
@@ -275,13 +281,13 @@ class Client:
 
     def get(self, url: str, referer: str | None = RESULTS_PAGE, reuse: Reuse = always) -> Answer:
         entry = self.cache.entry(url)
-        if entry is not None and (self.offline or reuse(entry)):
+        if entry is not None and (self.offline or (reuse(entry) and not transient(entry.status))):
             return Answer(url, entry.status, self.cache.body(entry), entry)
         if self.offline:
             return Answer(url, 0, b"", None)
         status, body = self._attempts(url, referer)
-        if status in RETRY_STATUSES or status == 0:
-            return Answer(url, status, body, None)
+        if status in RETRY_STATUSES or transient(status):
+            return Answer(url, status, body, None)  # not cached: the next run asks again
         entry = self.cache.put(url, status, body)
         return Answer(url, status, body, entry)
 

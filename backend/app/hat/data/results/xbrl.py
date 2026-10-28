@@ -137,13 +137,21 @@ class XbrlError(ValueError):
     """A document that cannot be read; the message is the exclusion reason."""
 
 
+class _NoDoctype(ET.TreeBuilder):
+    """A tree builder that refuses a doctype where the parser meets it: anywhere in the
+    document and in any encoding, before any entity it declares is expanded."""
+
+    def doctype(self, name: str, pubid: str | None, system: str | None) -> None:
+        raise XbrlError("xbrl_doctype")
+
+
 def read_facts(body: bytes) -> tuple[Facts, dict[str, tuple[date | None, date | None]]]:
     """Every fact by context, and each defined context's period (start, end; an instant has
     only the end)."""
-    if _UNSAFE.search(body[:4096]):
+    if _UNSAFE.search(body):
         raise XbrlError("xbrl_doctype")
     try:
-        root = ET.fromstring(body)  # noqa: S314 - refused above if it declares a doctype
+        root = ET.fromstring(body, parser=ET.XMLParser(target=_NoDoctype()))  # noqa: S314
     except ET.ParseError as exc:
         raise XbrlError("xbrl_malformed") from exc
     units: dict[str, str] = {}
@@ -181,7 +189,7 @@ def _date(text: str | None) -> date | None:
 def _number(fact: Fact | None, unit: str) -> Decimal | None:
     if fact is None or not fact.text:
         return None
-    if not (fact.unit == unit or (unit == EPS_UNIT and fact.unit.startswith(MONEY_UNIT))):
+    if fact.unit != unit:
         raise XbrlError("unit_not_inr" if unit == MONEY_UNIT else "unit_not_inr_per_share")
     value = exact(fact.text)
     if value is None:

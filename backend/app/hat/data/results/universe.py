@@ -22,6 +22,15 @@ from ..store import DATASET_BARS, DataStore, latest_rows
 SERIES = ("EQ", "BE")
 TURNOVER_DAYS = 20
 TURNOVER_INR = 10 * 10**7  # 10 crore
+BAR_SCHEMA = {
+    "instrument_id": pl.String,
+    "series": pl.String,
+    "close": pl.Decimal(18, 4),
+    "volume": pl.Int64,
+    "traded_value": pl.Decimal(18, 4),
+    "ingest_run_id": pl.String,
+    "date": pl.Date,
+}
 NIFTY_500 = "NIFTY 500"
 LOOKBACK_DAYS = 45  # calendar days before `since` that hold 20 sessions
 
@@ -63,12 +72,14 @@ def read_bars(store: DataStore, start: date, end: date) -> pl.DataFrame:
         if start <= day <= end:
             for path in store.partition_files(DATASET_BARS, day):
                 frames.append(pl.read_parquet(path, columns=columns).with_columns(date=pl.lit(day)))
-    return pl.concat(frames, how="vertical_relaxed") if frames else pl.DataFrame()
+    if not frames:
+        return pl.DataFrame(schema=BAR_SCHEMA)
+    return pl.concat(frames, how="vertical_relaxed")
 
 
 def members(session: Session, store: DataStore, since: date, until: date) -> list[Member]:
-    """The covered instruments, NIFTY 500 point-in-time members (any membership on or after
-    `since`) first, then by first passing session."""
+    """The covered instruments, NIFTY 500 point-in-time members (a membership in force on some
+    day from `since` to `until`) first, then by first passing session."""
     found = passing(read_bars(store, since - timedelta(days=LOOKBACK_DAYS), until), since)
     first = {row["instrument_id"]: row["first_pass"] for row in found.iter_rows(named=True)}
     if not first:
@@ -83,6 +94,7 @@ def members(session: Session, store: DataStore, since: date, until: date) -> lis
         for i in session.scalars(
             select(HatIndexMember.instrument_id).where(
                 HatIndexMember.index_name == NIFTY_500,
+                HatIndexMember.effective_from <= until,
                 or_(HatIndexMember.effective_to.is_(None), HatIndexMember.effective_to > since),
             )
         )

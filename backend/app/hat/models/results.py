@@ -33,7 +33,7 @@ FORMATS = (
     "secondary",
 )
 SOURCES = ("nse", "secondary")
-PUBLIC_AT_SOURCES = ("announcement", "xbrl", "xbrl_date", "deadline")
+PUBLIC_AT_SOURCES = ("announcement", "xbrl", "xbrl_date", "deadline", "observed")
 
 
 class HatFinancialResult(Base):

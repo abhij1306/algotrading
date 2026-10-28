@@ -68,6 +68,9 @@ from .xbrl import parse as parse_xbrl
 
 logger = logging.getLogger(__name__)
 
+# a secondary-source quarter: (figures, page URL, page sha256, when the page was fetched)
+PageQuarter = tuple[Quarter, str, str, datetime]
+
 SOURCE_NSE = "nse"
 SOURCE_SECONDARY = "secondary"
 FORMAT_INSURANCE = "insurance_skipped"
@@ -207,8 +210,10 @@ def parse(
         ]
         with db_session_scope(writes_data=True) as session:
             ingest = MemberIngest(session, nse, member, announced)
-            outcomes += ingest.nse(filings)
-            outcomes += ingest.secondary(_secondary_quarters(secondary, member), start, end)
+            stored = ingest.nse(filings)
+            outcomes += stored
+            if not is_insurer(member, insurance, stored):  # insurers: metadata rows only
+                outcomes += ingest.secondary(_secondary_quarters(secondary, member), start, end)
         report.members = n
         if n % 50 == 0:
             logger.info("parse %d/%d members, %d outcomes", n, len(members), len(outcomes))
@@ -224,14 +229,22 @@ def parse(
     return report
 
 
-def _secondary_quarters(cache: RawCache, member: Member) -> list[tuple[Quarter, str, str]]:
+def _secondary_quarters(cache: RawCache, member: Member) -> list[PageQuarter]:
     out = []
     for basis in ("consolidated", "standalone"):
         url = page_url(member.symbols[0], basis)
         entry = cache.entry(url)
         if entry is not None and entry.status == 200:
-            out += [(q, url, entry.sha256) for q in parse_page(cache.body(entry))]
+            out += [(q, url, entry.sha256, entry.fetched_at) for q in parse_page(cache.body(entry))]
     return out
+
+
+def is_insurer(member: Member, insurance: Sequence[Filing], outcomes: Sequence[Outcome]) -> bool:
+    """Whether the member files as an insurer: it is in the insurance listing, or a filing of its
+    reads as an insurer's."""
+    return any(f.symbol in member.symbols for f in insurance) or any(
+        o.format == FORMAT_INSURANCE for o in outcomes
+    )
 
 
 def document_period(document_end: date | None, listing_end: date) -> tuple[date, bool]:
@@ -395,7 +408,7 @@ class MemberIngest:  # pragma: no cover - the database
             )
         key = (c.period_end, c.basis, SOURCE_NSE)
         held = self.latest.get(key)
-        if held is not None and figures_key(_normal(quarter)) == held.figures and not insurer:
+        if held is not None and not insurer and _same(held, quarter, _ytd_of(c.parsed, q4)):
             return self._outcome(c.filing, result="same_figures", **base)
         version = 1 if held is None else held.version + 1
         announced = self._announced(c) if version == 1 else None
@@ -453,9 +466,7 @@ class MemberIngest:  # pragma: no cover - the database
         held: Held | None,
     ) -> HatFinancialResult:
         parsed = c.parsed
-        ytd = None
-        if parsed is not None:
-            ytd = parsed.annual if q4 else parsed.ytd
+        ytd = _ytd_of(parsed, q4)
         return HatFinancialResult(
             instrument_id=uuid.UUID(self.member.instrument_id),
             symbol=c.filing.symbol or self.member.symbols[0],
@@ -485,9 +496,7 @@ class MemberIngest:  # pragma: no cover - the database
 
     # --- the secondary source -----------------------------------------------------------
 
-    def secondary(
-        self, quarters: Sequence[tuple[Quarter, str, str]], start: date, end: date
-    ) -> list[Outcome]:
+    def secondary(self, quarters: Sequence[PageQuarter], start: date, end: date) -> list[Outcome]:
         outcomes = []
         used = {
             h.public_at
@@ -495,7 +504,7 @@ class MemberIngest:  # pragma: no cover - the database
             if source == SOURCE_NSE and h.public_at_source == "announcement"
         }
         seen: set[tuple[date, str]] = set()
-        for quarter, url, sha in quarters:
+        for quarter, url, sha, fetched_at in quarters:
             key = (quarter.period_end, quarter.basis)
             if not start <= quarter.period_end <= end or key in seen:
                 continue
@@ -506,8 +515,12 @@ class MemberIngest:  # pragma: no cover - the database
             held = self.latest.get((quarter.period_end, quarter.basis, SOURCE_SECONDARY))
             if held is not None and held.figures == figures_key(_normal(figures)):
                 continue
-            when = _secondary_public_at(self.items, quarter.period_end, used)
             version = 1 if held is None else held.version + 1
+            when = (
+                _secondary_public_at(self.items, quarter.period_end, used)
+                if version == 1
+                else PublicAt(fetched_at, "observed", True)  # first seen in this page
+            )
             row = self._secondary_row(quarter, url, sha, when, version, held)
             self.session.add(row)
             self.session.flush()
@@ -564,6 +577,25 @@ class MemberIngest:  # pragma: no cover - the database
             sha256=sha,
             raw_path=str(self.cache.blob_path(sha)),
         )
+
+
+def _ytd_of(parsed: Parsed | None, q4: bool) -> Figures | None:
+    """The year-to-date figures a row stores: the year for a derived Q4, else the document's."""
+    if parsed is None:
+        return None
+    return parsed.annual if q4 else parsed.ytd
+
+
+def _ytd_key(ytd: Figures | None) -> tuple[Any, ...]:
+    if ytd is None:
+        return (None,) * 3
+    return (_dec(ytd.revenue), _dec(ytd.net_profit), _dec(ytd.eps_basic))
+
+
+def _same(held: Held, quarter: Figures | None, ytd: Figures | None) -> bool:
+    """Whether a new document repeats the held version: the same quarter and the same year to
+    date (a revision of the year to date alone is a new version: Q4 derivation reads it)."""
+    return figures_key(_normal(quarter)) == held.figures and _ytd_key(ytd) == _ytd_key(held.ytd)
 
 
 def _quarter_columns(quarter: Figures | None) -> dict[str, Decimal | None]:

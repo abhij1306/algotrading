@@ -4,6 +4,7 @@ point-in-time growth and `results_as_of`. No network, no pipeline run."""
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -16,10 +17,10 @@ from hat_support import memory_engine, memory_session
 from app.hat.data.results import growth, nse, timing, xbrl
 from app.hat.data.results.derive import results_as_of
 from app.hat.data.results.growth import ResultRow
-from app.hat.data.results.ingest import document_period
+from app.hat.data.results.ingest import Held, _same, document_period, figures_key
 from app.hat.data.results.raw import RawCache
 from app.hat.data.results.secondary import page_url, parse_page
-from app.hat.data.results.universe import passing
+from app.hat.data.results.universe import BAR_SCHEMA, passing
 from app.hat.models import HatFinancialResult
 from app.hat.time import IST
 
@@ -113,8 +114,14 @@ def test_results__q4_with_only_the_year_is_derived() -> None:
 def test_results__q1_equal_to_ytd_is_not_annual() -> None:
     """In Q1 the quarter equals the year to date legitimately; only a period ending the year is
     read as annual."""
-    doc = _doc("reg33_indas_q3_reliance.xml")
-    assert doc.annual is None
+    body = (FIXTURES / "reg33_indas_q1_reliance.xml").read_bytes()
+    no_start = re.sub(rb"<[\w-]+:DateOfStartOfReportingPeriod [^>]*>[^<]*</[^>]*>", b"", body)
+    for doc in (xbrl.parse(body), xbrl.parse(no_start)):  # the second: span unknown
+        assert doc.annual is None
+        assert doc.period_end == date(2021, 6, 30)
+        assert doc.quarter is not None
+        assert doc.quarter == doc.ytd  # Q1: the quarter is the year to date
+        assert doc.quarter.revenue == Decimal("90570") * CR
 
 
 # --- A2 rule 5: units -----------------------------------------------------------------------
@@ -127,6 +134,14 @@ def test_results__unit_suspect_20x_either_way() -> None:
     assert not growth.unit_suspect(Decimal(1500), prev)  # 15x
     assert not growth.unit_suspect(Decimal(2500), [Decimal(100)])  # too little history
     assert not growth.unit_suspect(None, prev)
+
+
+def test_results__eps_must_be_inr_per_share() -> None:
+    """EPS in an amount unit (rupees, not rupees a share) is refused, never stored as EPS."""
+    body = (FIXTURES / "reg33_banking_q3_federalbnk.xml").read_bytes()
+    amount = body.replace(b'unitRef="INRPerShare"', b'unitRef="INR"')
+    with pytest.raises(xbrl.XbrlError, match="unit_not_inr_per_share"):
+        xbrl.parse(amount)
 
 
 def test_results__money_must_be_inr() -> None:
@@ -190,6 +205,16 @@ def test_results__store_format(raw: str, stored: str) -> None:
 def test_results__doctype_refused() -> None:
     with pytest.raises(xbrl.XbrlError, match="xbrl_doctype"):
         xbrl.read_facts(b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "b">]><x/>')
+
+
+def test_results__doctype_refused_anywhere() -> None:
+    """A doctype after kilobytes of legal prolog, or in UTF-16, is refused all the same."""
+    late = b'<?xml version="1.0"?>' + b"<!--" + b" " * 5000 + b"-->"
+    late += b'<!DOCTYPE x [<!ENTITY a "b">]><x>&a;</x>'
+    utf16 = '<?xml version="1.0" encoding="UTF-16"?><!DOCTYPE x [<!ENTITY a "b">]><x/>'
+    for body in (late, utf16.encode("utf-16")):
+        with pytest.raises(xbrl.XbrlError, match="xbrl_doctype"):
+            xbrl.read_facts(body)
 
 
 # --- listings and announcements -------------------------------------------------------------
@@ -272,6 +297,41 @@ def test_results__public_at() -> None:
     late = timing.FiledAt(_ist(2026, 7, 18, 23, 59, 59), True)
     assert timing.public_at(1, None, late) == timing.PublicAt(late.at, "xbrl_date", True)
     assert timing.public_at(1, None, None) is None
+
+
+SUBMITTED = "X Limited has submitted to the Exchange, the financial results for the period ended "
+
+
+def test_results__announcement_matches_the_quarter_it_names() -> None:
+    """A nearby quarter's results announcement in the window (here a late September filing a
+    day before the December one) is never attached: the earliest item naming the filing's quarter
+    wins, an item naming only other quarters is left out, and an item naming none is the
+    fallback. Texts as NSE words them."""
+    end = date(2020, 12, 31)
+    late_q2 = nse.Announcement(
+        "X", _ist(2021, 2, 11, 17, 0), "Financial Result Updates", SUBMITTED + "September 30, 2020."
+    )
+    q3 = nse.Announcement(
+        "X", _ist(2021, 2, 12, 16, 0), "Financial Result Updates", SUBMITTED + "December 31, 2020."
+    )
+    board_q3 = nse.Announcement(
+        "X",
+        _ist(2021, 2, 12, 15, 30),
+        "Outcome of Board Meeting",
+        "X Limited has informed the Exchange regarding Board meeting held on February 12, 2021 "
+        "in which it approved the Unaudited Financial Results for the Third Quarter ended 31st "
+        "Dec. 2020",
+    )
+    unnamed = nse.Announcement(
+        "X", _ist(2021, 2, 12, 18, 0), "Outcome of Board Meeting", "Financial Results enclosed"
+    )
+    anchor = date(2021, 2, 12)
+    assert timing.match_announcement([late_q2, q3], anchor, end) == q3
+    assert timing.match_announcement([late_q2, board_q3, q3], anchor, end) == board_q3
+    assert timing.match_announcement([late_q2], anchor, end) is None
+    assert timing.match_announcement([late_q2, unnamed], anchor, end) == unnamed
+    assert timing.quarter_announcement([late_q2, q3], end, set()) == q3
+    assert timing.named_quarter_ends(board_q3.text) == {end}  # not the meeting date
 
 
 def test_results__announcement_read_12_hours_early() -> None:
@@ -366,6 +426,36 @@ def test_results__unit_suspect_row_is_left_out() -> None:
     history.append(_row(date(2025, 3, 31), revenue="100", at=T0 - timedelta(days=100)))
     assert growth.suspect_row(_row(Q, revenue="2500"), history)
     assert not growth.suspect_row(_row(Q, revenue="250"), history)
+
+
+def test_results__flagged_quarters_leave_the_median() -> None:
+    """Two earlier quarters flagged unit-suspect (50x) do not drag the median up and flag a
+    normal quarter after them."""
+    ends = growth.quarter_ends_before(Q, 4)
+    at = T0 - timedelta(days=30)
+    history = [
+        _row(ends[0], revenue="5000", at=at, rid="bad1"),
+        _row(ends[1], revenue="5000", at=at, rid="bad2"),
+        _row(ends[2], revenue="100", at=at),
+        _row(ends[3], revenue="100", at=at),
+    ]
+    current = _row(Q, revenue="100")
+    assert growth.suspect_row(current, history)  # median 2,550: 100 reads 25x low
+    assert not growth.suspect_row(current, history, {"bad1", "bad2"})
+
+
+def test_results__a_ytd_only_revision_is_a_new_version() -> None:
+    q = xbrl.Figures(Decimal(100), None, Decimal(10), Decimal(1), None)
+    ytd = xbrl.Figures(Decimal(300), None, Decimal(30), Decimal(3), None)
+    held = Held(uuid.uuid4(), 1, figures_key(q), date(2025, 4, 1), ytd, T0, "xbrl")
+    revised = xbrl.Figures(Decimal(310), None, Decimal(30), Decimal(3), None)
+    assert _same(held, q, ytd)
+    assert not _same(held, q, revised)
+
+
+def test_results__transient_answers() -> None:
+    assert all(nse.transient(s) for s in (0, 500, 503))
+    assert not any(nse.transient(s) for s in (200, 404, 401, 403, 429))
 
 
 def test_results__known_at_uses_only_what_was_public() -> None:
@@ -476,6 +566,10 @@ def test_results__raw_cache_keeps_bodies_by_sha(tmp_path: Path) -> None:
     assert again.body(entry) == b"<xbrl/>"
     assert again.entry("https://x/b.xml").status == 404  # type: ignore[union-attr]
     assert again.entry("https://x/torn") is None
+
+
+def test_results__universe_without_bars_is_empty() -> None:
+    assert passing(pl.DataFrame(schema=BAR_SCHEMA), date(2021, 1, 1)).is_empty()
 
 
 def test_results__universe_turnover_and_series() -> None:

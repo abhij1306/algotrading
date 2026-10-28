@@ -22,6 +22,7 @@ from datetime import time as dtime
 from ...time import IST
 from .nse import (
     ANNOUNCEMENTS_PAGE,
+    LISTING_INSURANCE,
     LISTING_INTEGRATED,
     LISTING_REG33,
     Client,
@@ -31,6 +32,7 @@ from .nse import (
     insurance_url,
     integrated_url,
     results_url,
+    transient,
 )
 from .raw import Entry
 from .universe import Member
@@ -87,7 +89,8 @@ def fetch_nse(
     report = FetchReport()
     now = datetime.now(UTC)
     listing_fresh = fresh(LISTING_MAX_AGE, now)
-    client.get(insurance_url(start, today), reuse=listing_fresh)
+    insurance = client.get(insurance_url(start, today), reuse=listing_fresh)
+    insurers = filings_of([(LISTING_INSURANCE, insurance.body)]) if insurance.status == 200 else []
     if announcements:
         _announcements(client, start, today, report)
     started = time.monotonic()
@@ -95,6 +98,7 @@ def fetch_nse(
     for n, member in enumerate(members, 1):
         before = client.requests
         filings = _listings(client, member.symbols, listing_fresh, report)
+        filings += [f for f in insurers if f.symbol in member.symbols]  # metadata rows need them
         _documents(client, [f for f in filings if in_scope(f, start, end)], seen, report)
         report.members = n
         elapsed = time.monotonic() - started
@@ -134,7 +138,8 @@ def _documents(
             continue
         seen.add(url)
         report.documents += 1
-        if client.cache.entry(url) is None:
+        cached = client.cache.entry(url)
+        if cached is None or transient(cached.status):
             client.get(url)
             report.documents_fetched += 1
 

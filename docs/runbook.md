@@ -254,10 +254,12 @@ python -m app.hat.data.results parse             # the cache into hat_financial_
 python -m app.hat.data.results derive            # hat_financial_growth, rebuilt
 ```
 
-`--symbols A,B` limits a step to some instruments, `--from`/`--to` the period ends (default
-2020-03-31 to today); `fetch --offline` reads the cache only. The covered instruments are those
+`--symbols A,B` limits `fetch`, `fetch-secondary` and `parse` to some instruments; `--from`/`--to`
+limit the period ends `fetch` and `parse` take (default 2020-03-31 to today; `fetch-secondary`
+reads whole pages); `fetch --offline` reads the cache only. `derive` takes no option: it rebuilds
+the whole table. The covered instruments are those
 passing the S2 EP universe on any session from 2021-01-01, NIFTY 500 members first. Every step is
-incremental and can be stopped and rerun: a document is fetched once (raw answers live gzipped by
+incremental and can be stopped and rerun: a document is fetched once, a server error or no answer again on the next run (raw answers live gzipped by
 sha256 under `raw/nse-results/` and `raw/secondary-results/`, with a `manifest.jsonl`), listings
 and secondary pages again after 20 hours, an announcement day until fetched after it ended, and
 `parse` adds only filings not stored yet. A new quarter is the four commands again once its
