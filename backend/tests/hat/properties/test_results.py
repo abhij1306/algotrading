@@ -674,3 +674,11 @@ def test_results__nifty500_members_in_the_window() -> None:
         "a": date(2021, 1, 1),
         "c": date(2023, 3, 31),
     }
+
+
+def test_results__nifty500_history_must_cover_the_start() -> None:
+    since = date(2021, 1, 1)
+    assert scope.coverage_gap(date(2016, 1, 1), since) is None
+    assert scope.coverage_gap(since, since) is None
+    assert "after 2021-01-01" in (scope.coverage_gap(date(2022, 4, 1), since) or "")
+    assert "not loaded" in (scope.coverage_gap(None, since) or "")

@@ -10,6 +10,7 @@ the day's own.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -18,9 +19,14 @@ import polars as pl
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ...models import HatIndexMember, HatInstrument, HatInstrumentSymbolHistory
+from ...models import (
+    HatIndexMember,
+    HatIndexMembership,
+    HatInstrument,
+    HatInstrumentSymbolHistory,
+)
 from ..store import DATASET_BARS, DataStore, latest_rows
-from .scope import UNIVERSE_NIFTY500, nifty500_first
+from .scope import UNIVERSE_NIFTY500, coverage_gap, nifty500_first
 
 SERIES = ("EQ", "BE")
 TURNOVER_DAYS = 20
@@ -35,6 +41,7 @@ BAR_SCHEMA = {
     "date": pl.Date,
 }
 NIFTY_500 = "NIFTY 500"
+logger = logging.getLogger(__name__)
 LOOKBACK_DAYS = 45  # calendar days before `since` that hold 20 sessions
 
 
@@ -96,6 +103,15 @@ def members(
     )
     nifty_first = nifty500_first(((str(r[0]), r[1], r[2]) for r in rows), since, until)
     if universe == UNIVERSE_NIFTY500:
+        record = session.get(HatIndexMembership, NIFTY_500)
+        gap = coverage_gap(record.covered_from if record else None, since)
+        if gap:
+            raise ValueError(gap)
+        if record is not None and record.covered_to < until:
+            logger.warning(
+                "NIFTY 500 membership history ends %s: later joiners are not covered",
+                record.covered_to,
+            )
         first = nifty_first
     else:
         found = passing(read_bars(store, since - timedelta(days=LOOKBACK_DAYS), until), since)

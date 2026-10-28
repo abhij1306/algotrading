@@ -60,6 +60,17 @@ def read_standalone(rule: str, consolidated_quarters: int | None) -> bool:
     return rule == BASIS_BOTH or not consolidated_quarters
 
 
+def coverage_gap(covered_from: date | None, since: date) -> str | None:
+    """Why the NIFTY 500 membership history cannot give the members from `since`: not loaded, or
+    starting after it (members of the uncovered days would be silently missing); None when it
+    can."""
+    if covered_from is None:
+        return "NIFTY 500 membership history not loaded"
+    if covered_from > since:
+        return f"NIFTY 500 membership history starts {covered_from}, after {since}"
+    return None
+
+
 def nifty500_first(
     memberships: Iterable[tuple[str, date, date | None]], since: date, until: date
 ) -> dict[str, date]:
