@@ -18,11 +18,16 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from html.parser import HTMLParser
+from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from ...money import exact
 from .raw import RawCache
+from .scope import BASIS_CONSOLIDATED_FIRST, read_standalone
 from .universe import Member
+
+if TYPE_CHECKING:
+    from .nse import Answer
 
 logger = logging.getLogger(__name__)
 
@@ -182,21 +187,30 @@ class SecondaryReport:
     statuses: dict[int, int] | None = None
 
 
-def fetch_secondary(cache: RawCache, members: list[Member]) -> SecondaryReport:  # pragma: no cover
-    """Both pages of every covered instrument's current symbol, one request every 3 s; a page
+def fetch_secondary(
+    cache: RawCache, members: list[Member], basis: str = BASIS_CONSOLIDATED_FIRST
+) -> SecondaryReport:  # pragma: no cover - the network
+    """The consolidated page of every covered instrument's current symbol, and its standalone
+    page when the basis rule asks for it (`scope.read_standalone`), one request every 3 s; a page
     cached in the last `PAGE_MAX_AGE` is not asked again."""
     from .nse import Client
 
     client = Client(cache, interval=INTERVAL_SECONDS, headers=HEADERS)
     now = datetime.now(UTC)
     report = SecondaryReport()
+
+    def read(url: str) -> Answer:
+        before = client.requests
+        answer = client.get(url, referer=None, reuse=lambda e: e.fetched_at >= now - PAGE_MAX_AGE)
+        report.pages += 1
+        report.fetched += client.requests > before
+        return answer
+
     for n, member in enumerate(members, 1):
-        for basis in ("consolidated", "standalone"):
-            url = page_url(member.symbols[0], basis)
-            before = client.requests
-            client.get(url, referer=None, reuse=lambda e: e.fetched_at >= now - PAGE_MAX_AGE)
-            report.pages += 1
-            report.fetched += client.requests > before
+        consolidated = read(page_url(member.symbols[0], "consolidated"))
+        found = len(parse_page(consolidated.body)) if consolidated.status == 200 else None
+        if read_standalone(basis, found):
+            read(page_url(member.symbols[0], "standalone"))
         report.members = n
         if n % 50 == 0:
             logger.info("secondary %d/%d, %d requests", n, len(members), client.requests)

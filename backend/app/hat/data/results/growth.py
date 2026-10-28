@@ -3,7 +3,9 @@ Q4 derivation (A2 rule 4). Pure: plain rows in, values out; `derive.py` and `sto
 
 - What is known at `ts` (`known_at`): for each (period_end, basis), the latest version among rows
   public at or before `ts`; a secondary-source row only where no NSE row of that key is public
-  by then; insurers' metadata rows never.
+  by then; insurers' metadata rows never. Under the basis rule `consolidated-first` (`scope.py`,
+  the default) a quarter's standalone row is known only when no consolidated row of that quarter
+  is, whatever `parse` stored earlier (for example under `both`).
 - Growth of a quarter (`growth`): against the same quarter a year earlier on one basis:
   consolidated when both quarters have it, else standalone when both have it, else undefined;
   never mixed. sales_yoy = revenue / prior revenue - 1 (prior revenue > 0); eps_yoy = eps /
@@ -23,6 +25,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from .scope import BASIS_CONSOLIDATED_FIRST, by_rule
 from .xbrl import Figures
 
 CONSOLIDATED = "consolidated"
@@ -52,8 +55,11 @@ class ResultRow:
 Key = tuple[date, str]  # (period_end, basis)
 
 
-def known_at(rows: Iterable[ResultRow], ts: datetime) -> dict[Key, ResultRow]:
-    """The row of each (period_end, basis) known at `ts` (rules above)."""
+def known_at(
+    rows: Iterable[ResultRow], ts: datetime, rule: str = BASIS_CONSOLIDATED_FIRST
+) -> dict[Key, ResultRow]:
+    """The row of each (period_end, basis) known at `ts` under the basis rule `rule` (rules
+    above)."""
     nse: dict[Key, ResultRow] = {}
     secondary: dict[Key, ResultRow] = {}
     for row in rows:
@@ -64,7 +70,8 @@ def known_at(rows: Iterable[ResultRow], ts: datetime) -> dict[Key, ResultRow]:
         held = bucket.get(key)
         if held is None or (row.version, row.public_at) > (held.version, held.public_at):
             bucket[key] = row
-    return {**{k: v for k, v in secondary.items() if k not in nse}, **nse}
+    known = {**{k: v for k, v in secondary.items() if k not in nse}, **nse}
+    return {(r.period_end, r.basis): r for r in by_rule(known.values(), rule)}
 
 
 def quarter_ends_before(period_end: date, count: int) -> list[date]:
@@ -98,11 +105,14 @@ def unit_suspect(revenue: Decimal | None, previous: Sequence[Decimal | None]) ->
 
 
 def suspect_row(
-    row: ResultRow, rows: Iterable[ResultRow], suspect: Collection[str] = frozenset()
+    row: ResultRow,
+    rows: Iterable[ResultRow],
+    suspect: Collection[str] = frozenset(),
+    rule: str = BASIS_CONSOLIDATED_FIRST,
 ) -> bool:
     """`unit_suspect` for `row` against its company's previous 4 quarters on its basis, as known
     when it became public; rows already flagged (ids in `suspect`) are left out of the median."""
-    known = known_at(rows, row.public_at)
+    known = known_at(rows, row.public_at, rule)
     previous = [known.get((end, row.basis)) for end in quarter_ends_before(row.period_end, 4)]
     usable = [p.revenue if p is not None and p.id not in suspect else None for p in previous]
     return unit_suspect(row.revenue, usable)
@@ -158,10 +168,14 @@ def compare(basis: str, current: ResultRow, prior: ResultRow) -> Growth:
 
 
 def growth_as_of(
-    rows: Sequence[ResultRow], period_end: date, ts: datetime, suspect: set[str]
+    rows: Sequence[ResultRow],
+    period_end: date,
+    ts: datetime,
+    suspect: set[str],
+    rule: str = BASIS_CONSOLIDATED_FIRST,
 ) -> Growth:
-    """The growth of one company's `period_end` as known at `ts`."""
-    return growth(known_at(rows, ts), period_end, suspect)
+    """The growth of one company's `period_end` as known at `ts` under the basis rule `rule`."""
+    return growth(known_at(rows, ts, rule), period_end, suspect)
 
 
 def derive_q4(annual: Figures, nine_month: Figures) -> Figures:

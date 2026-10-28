@@ -309,23 +309,27 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 - **Financial results store (owner 2026-10-28).** NSE's quarterly results from the quarter ending
   2020-03-31, parsed from the XBRL filings only (the pre-XBRL HTML pages are not parsed; XBRL is
-  complete from 2020, A0 probe), for the instruments passing the S2 EP universe on any session from
-  2021-01-01. One row per filing version, never updated: a revision is a new row with the next
-  version superseding the last (`hat_financial_result`, created like every table, no migration
-  tool). `public_at` is the results announcement's broadcast time ('Financial Result Updates', or
-  the board-meeting outcome naming the results in the Integrated Filing era; the one naming the
-  filing's quarter end, never one naming only another quarter), or the XBRL filing time when that
-  is earlier or no announcement matches; never the listing's broadcast time, a later re-broadcast
-  for many filings before 2022, and never the XBRL file name's clock (12-hour, no AM/PM: only its
-  date is read). A quarter NSE does not list, or whose XBRL fails, is filled from the secondary
-  source's public company pages (no login, robots.txt honoured, one request every 3 s, pages
-  cached), `source=secondary`, used only where no NSE row of the same (instrument, period end,
-  basis) is public; its `public_at` is NSE's results announcement for the quarter, else the
-  regulatory deadline (45 days after the quarter end, 60 for March, at 23:59 IST) with
-  `public_at_estimated`; a later change to its figures is a new version public from when the page
-  was fetched (`observed`). The secondary source shows only the latest 13 quarters, so older gaps
-  stay gaps. Growth compares like with like: consolidated when both quarters have it, else
-  standalone, never mixed (`data/results/growth.py`).
+  complete from 2020, A0 probe), for the NIFTY 500 point-in-time members (any membership on a day
+  from 2021-01-01), on the consolidated basis; standalone only for a quarter a company filed no
+  consolidated results for (no subsidiaries), so it still has data (owner scope cut 2026-10-28: the
+  EP turnover universe and both bases stay CLI options). One row per filing version, never updated:
+  a revision is a new row with the next version superseding the last (`hat_financial_result`,
+  created like every table, no migration tool). `public_at` is the results announcement's broadcast
+  time ('Financial Result Updates', or the board-meeting outcome naming the results in the
+  Integrated Filing era; the one naming the filing's quarter end, never one naming only another
+  quarter), or the XBRL filing time when that is earlier or no announcement matches; never the
+  listing's broadcast time, a later re-broadcast for many filings before 2022, and never the XBRL
+  file name's clock (12-hour, no AM/PM: only its date is read). A quarter NSE does not list, or
+  whose XBRL fails, is filled from the secondary source's public company pages (no login,
+  robots.txt honoured, one request every 3 s, pages cached), `source=secondary`, used only where no
+  NSE row of the same (instrument, period end, basis) is public; its `public_at` is NSE's results
+  announcement for the quarter, else the regulatory deadline (45 days after the quarter end, 60 for
+  March, at 23:59 IST) with `public_at_estimated`; a later change to its figures is a new version
+  public from when the page was fetched (`observed`). The secondary source shows only the latest 13
+  quarters, so older gaps stay gaps. Growth compares like with like: consolidated when both
+  quarters have it, else standalone, never mixed (`data/results/growth.py`); under the default
+  consolidated-first scope a quarter's standalone row is read only where that quarter has no
+  consolidated row, so a quarter with consolidated results never falls back to standalone.
 
 ## Operations
 

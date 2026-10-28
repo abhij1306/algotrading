@@ -14,12 +14,19 @@ import polars as pl
 import pytest
 from hat_support import memory_engine, memory_session
 
-from app.hat.data.results import growth, nse, timing, xbrl
+from app.hat.data.results import growth, nse, scope, timing, xbrl
 from app.hat.data.results.derive import results_as_of
 from app.hat.data.results.growth import ResultRow
-from app.hat.data.results.ingest import Held, _same, document_period, figures_key
+from app.hat.data.results.ingest import (
+    Held,
+    _same,
+    document_period,
+    figures_key,
+    filed_consolidated,
+    secondary_by_rule,
+)
 from app.hat.data.results.raw import RawCache
-from app.hat.data.results.secondary import page_url, parse_page
+from app.hat.data.results.secondary import Quarter, page_url, parse_page
 from app.hat.data.results.universe import BAR_SCHEMA, passing
 from app.hat.models import HatFinancialResult
 from app.hat.time import IST
@@ -395,8 +402,11 @@ def test_results__basis_rule_never_mixes() -> None:
         Decimal(1),
     )
     no_prior_consolidated = [_row(Q), _row(Q, "standalone", "130"), _row(P, "standalone")]
-    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set())
+    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set(), scope.BASIS_BOTH)
     assert (found.basis, found.sales_yoy) == ("standalone", Decimal("0.3"))
+    # consolidated-first (the default): Q's standalone row is hidden, Q has consolidated figures
+    found = growth.growth_as_of(no_prior_consolidated, Q, T0, set())
+    assert (found.basis, found.reason) == (None, "no_common_basis")
     mixed = [_row(Q), _row(P, "standalone")]
     found = growth.growth_as_of(mixed, Q, T0, set())
     assert (found.basis, found.sales_yoy, found.reason) == (None, None, "no_common_basis")
@@ -417,8 +427,11 @@ def test_results__eps_growth_and_turnaround() -> None:
 
 def test_results__unit_suspect_row_is_left_out() -> None:
     rows = [_row(Q, rid="bad"), _row(P), _row(Q, "standalone", "120"), _row(P, "standalone")]
-    found = growth.growth_as_of(rows, Q, T0, {"bad"})
+    found = growth.growth_as_of(rows, Q, T0, {"bad"}, scope.BASIS_BOTH)
     assert (found.basis, found.sales_yoy) == ("standalone", Decimal("0.2"))
+    # consolidated-first: Q has consolidated results (suspect), so standalone does not stand in
+    found = growth.growth_as_of(rows, Q, T0, {"bad"})
+    assert (found.basis, found.reason) == (None, "no_common_basis")
     history = [
         _row(date(2024, m, d), revenue="100", at=T0 - timedelta(days=400))
         for m, d in ((6, 30), (9, 30), (12, 31))
@@ -599,3 +612,116 @@ def test_results__universe_turnover_and_series() -> None:
     found = passing(frame, date(2021, 1, 1))
     first = dict(zip(found["instrument_id"], found["first_pass"], strict=True))
     assert first == {"A": days[19], "B": days[19]}
+
+
+# --- scope (owner 2026-10-28): NIFTY 500 members, consolidated first ------------------------
+
+
+def test_results__consolidated_first_on_the_recorded_listings() -> None:
+    """RELIANCE's recorded listings: June 2026 has both bases (Integrated), so only the
+    consolidated filing is kept; the Reg 33 quarters listed standalone only keep it (the company
+    would otherwise have no data). `both` keeps everything."""
+    filings = nse.filings_of(
+        [
+            (nse.LISTING_REG33, (FIXTURES / "results_listing.json").read_bytes()),
+            (nse.LISTING_INTEGRATED, (FIXTURES / "integrated_listing.json").read_bytes()),
+        ]
+    )
+    kept = scope.by_rule(filings, scope.BASIS_CONSOLIDATED_FIRST)
+    june = [f for f in kept if f.period_end == date(2026, 6, 30)]
+    assert [f.basis for f in june] == ["consolidated"]
+    older = [f for f in filings if f.period_end < date(2026, 6, 30)]
+    assert older
+    assert all(f in kept for f in older)  # standalone, no consolidated filed for those quarters
+    assert scope.by_rule(filings, scope.BASIS_BOTH) == filings
+
+
+def test_results__consolidated_elsewhere_drops_the_standalone_quarter() -> None:
+    q1 = Quarter(date(2025, 6, 30), "standalone", Decimal(1), Decimal(1), Decimal(1))
+    q2 = Quarter(date(2025, 9, 30), "standalone", Decimal(1), Decimal(1), Decimal(1))
+    assert scope.consolidated_first([q1, q2], {date(2025, 6, 30)}) == [q2]
+    assert scope.consolidated_first([q1, q2]) == [q1, q2]
+
+
+def test_results__secondary_standalone_page_only_without_consolidated_quarters() -> None:
+    assert not scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, 13)
+    assert scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, 0)
+    assert scope.read_standalone(scope.BASIS_CONSOLIDATED_FIRST, None)
+    assert scope.read_standalone(scope.BASIS_BOTH, 13)
+
+
+def test_results__secondary_quarters_by_rule() -> None:
+    """The recorded RELIANCE pages: the standalone quarters go where NSE or the consolidated page
+    has the quarter consolidated."""
+    when = datetime(2026, 10, 28, tzinfo=UTC)
+    pages = []
+    for basis in ("consolidated", "standalone"):
+        body = (FIXTURES / f"secondary_quarters_reliance_{basis}.html").read_bytes()
+        pages += [(q, basis, "sha", when) for q in parse_page(body)]
+    kept = secondary_by_rule(pages, scope.BASIS_CONSOLIDATED_FIRST, set())
+    assert {q.basis for q, *_ in kept} == {"consolidated"}
+    assert len(kept) == 13
+    only_standalone = [t for t in pages if t[0].basis == "standalone"]
+    nse_has = {date(2026, 6, 30)}
+    kept = secondary_by_rule(only_standalone, scope.BASIS_CONSOLIDATED_FIRST, nse_has)
+    assert len(kept) == 12
+    assert date(2026, 6, 30) not in {q.period_end for q, *_ in kept}
+
+
+def test_results__nifty500_members_in_the_window() -> None:
+    since, until = date(2021, 1, 1), date(2026, 10, 28)
+    memberships = [
+        ("a", date(2015, 1, 1), None),  # open since before: from `since`
+        ("b", date(2019, 1, 1), date(2021, 1, 1)),  # left the day the window starts: out
+        ("c", date(2023, 3, 31), date(2024, 9, 30)),  # in and out inside the window
+        ("c", date(2025, 3, 28), None),
+        ("d", date(2027, 1, 1), None),  # after `until`: out
+    ]
+    assert scope.nifty500_first(memberships, since, until) == {
+        "a": date(2021, 1, 1),
+        "c": date(2023, 3, 31),
+    }
+
+
+def test_results__nifty500_history_must_cover_the_start() -> None:
+    since = date(2021, 1, 1)
+    assert scope.coverage_gap(date(2016, 1, 1), since) is None
+    assert scope.coverage_gap(since, since) is None
+    assert "after 2021-01-01" in (scope.coverage_gap(date(2022, 4, 1), since) or "")
+    assert "not loaded" in (scope.coverage_gap(None, since) or "")
+
+
+def test_results__stored_standalone_hidden_where_consolidated_known() -> None:
+    """Rows stored under `both` are read consolidated-first: a quarter's standalone row is known
+    only while no consolidated row of that quarter is public."""
+    t1, t2 = T0, T0 + timedelta(days=2)
+    rows = [
+        _row(Q, "standalone", at=t1, rid="sa"),
+        _row(Q, at=t2, rid="co"),
+        _row(P, "standalone", at=t1, rid="sa-only"),
+    ]
+    assert {k: r.id for k, r in growth.known_at(rows, t1).items()} == {
+        (Q, "standalone"): "sa",
+        (P, "standalone"): "sa-only",
+    }
+    assert {k: r.id for k, r in growth.known_at(rows, t2).items()} == {
+        (Q, "consolidated"): "co",
+        (P, "standalone"): "sa-only",
+    }
+    assert len(growth.known_at(rows, t2, scope.BASIS_BOTH)) == 3
+
+
+def test_results__listed_consolidated_blocks_secondary_standalone() -> None:
+    """A consolidated filing NSE lists counts as consolidated results even when its XBRL was not
+    stored: the secondary source's standalone quarter is then left out."""
+    listed = [
+        nse.Filing("reg33", "X", "", "1", Q, "consolidated", None, None, "u1", False, ""),
+        nse.Filing("reg33", "X", "", "2", P, "standalone", None, None, "u2", False, ""),
+    ]
+    assert filed_consolidated(listed) == {Q}
+    quarters = [
+        (Quarter(end, "standalone", Decimal(1), Decimal(1), Decimal(1)), "u", "s", T0)
+        for end in (Q, P)
+    ]
+    kept = secondary_by_rule(quarters, scope.BASIS_CONSOLIDATED_FIRST, filed_consolidated(listed))
+    assert [t[0].period_end for t in kept] == [P]

@@ -256,17 +256,23 @@ python -m app.hat.data.results derive            # hat_financial_growth, rebuilt
 
 `--symbols A,B` limits `fetch`, `fetch-secondary` and `parse` to some instruments; `--from`/`--to`
 limit the period ends `fetch` and `parse` take (default 2020-03-31 to today; `fetch-secondary`
-reads whole pages); `fetch --offline` reads the cache only. `derive` takes no option: it rebuilds
-the whole table. The covered instruments are those
-passing the S2 EP universe on any session from 2021-01-01, NIFTY 500 members first. Every step is
-incremental and can be stopped and rerun: a document is fetched once, a server error or no answer again on the next run (raw answers live gzipped by
-sha256 under `raw/nse-results/` and `raw/secondary-results/`, with a `manifest.jsonl`), listings
-and secondary pages again after 20 hours, an announcement day until fetched after it ended, and
-`parse` adds only filings not stored yet. A new quarter is the four commands again once its
-results are out. `parse` writes every filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`.
-Rows are append-only (a trigger refuses UPDATE and DELETE), so try a change on a scratch database
-first. Run `parse` only after `fetch` has finished: a quarter not yet fetched would be backfilled
-from the secondary source.
+reads whole pages); `fetch --offline` reads the cache only. `derive` rebuilds the whole table and
+takes only `--basis`. The scope (`scope.py`): `--universe nifty500` (default) covers the NIFTY 500
+point-in-time members with a membership on any day from 2021-01-01, `--universe ep` the instruments
+passing the S2 EP universe on any session since; `--basis consolidated-first` (default) takes each
+company's consolidated results, and its standalone results only for a quarter it filed no
+consolidated results for (`both` takes every filing); a consolidated filing NSE lists counts even
+when its XBRL is unreadable, and `derive` and `results_as_of` apply the same rule to rows already
+stored. Both NSE listings are read: Reg 33 holds the
+quarters to December 2024, the Integrated Filing listing those from March 2025. Every step is
+incremental and can be stopped and rerun: a document is fetched once, a server error or no answer
+again on the next run (raw answers live gzipped by sha256 under `raw/nse-results/` and
+`raw/secondary-results/`, with a `manifest.jsonl`), listings and secondary pages again after 20
+hours, an announcement day until fetched after it ended, and `parse` adds only filings not stored
+yet. A new quarter is the four commands again once its results are out. `parse` writes every
+filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`. Rows are append-only (a trigger refuses
+UPDATE and DELETE), so try a change on a scratch database first. Run `parse` only after `fetch` has
+finished: a quarter not yet fetched would be backfilled from the secondary source.
 
 ### First live session checks (O2 day)
 

@@ -1,13 +1,16 @@
-"""Which instruments the results store covers: those that pass the S2 EP universe
-(`momentum-breakout-ep.yaml`: series EQ or BE, HAT-CRIT-100, and a 20-session mean traded value
-of at least 10 crore, HAT-CRIT-101) on any session from `since`, NIFTY 500 members first.
+"""Which instruments the results store covers (`scope.py`): by default the NIFTY 500
+point-in-time members; or those that pass the S2 EP universe (`momentum-breakout-ep.yaml`: series
+EQ or BE, HAT-CRIT-100, and a 20-session mean traded value of at least 10 crore, HAT-CRIT-101) on
+any session from `since`, NIFTY 500 members first.
 
-Read from the raw daily bars (the latest ingest run's row per instrument and day, traded value or
-close x volume where it is null, as `min_turnover` reads it); the series is the day's own.
+The EP universe is read from the raw daily bars (the latest ingest run's row per instrument and
+day, traded value or close x volume where it is null, as `min_turnover` reads it); the series is
+the day's own.
 """
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -16,8 +19,14 @@ import polars as pl
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from ...models import HatIndexMember, HatInstrument, HatInstrumentSymbolHistory
+from ...models import (
+    HatIndexMember,
+    HatIndexMembership,
+    HatInstrument,
+    HatInstrumentSymbolHistory,
+)
 from ..store import DATASET_BARS, DataStore, latest_rows
+from .scope import UNIVERSE_NIFTY500, coverage_gap, nifty500_first
 
 SERIES = ("EQ", "BE")
 TURNOVER_DAYS = 20
@@ -32,6 +41,7 @@ BAR_SCHEMA = {
     "date": pl.Date,
 }
 NIFTY_500 = "NIFTY 500"
+logger = logging.getLogger(__name__)
 LOOKBACK_DAYS = 45  # calendar days before `since` that hold 20 sessions
 
 
@@ -77,11 +87,35 @@ def read_bars(store: DataStore, start: date, end: date) -> pl.DataFrame:
     return pl.concat(frames, how="vertical_relaxed")
 
 
-def members(session: Session, store: DataStore, since: date, until: date) -> list[Member]:
-    """The covered instruments, NIFTY 500 point-in-time members (a membership in force on some
-    day from `since` to `until`) first, then by first passing session."""
-    found = passing(read_bars(store, since - timedelta(days=LOOKBACK_DAYS), until), since)
-    first = {row["instrument_id"]: row["first_pass"] for row in found.iter_rows(named=True)}
+def members(
+    session: Session, store: DataStore, since: date, until: date, universe: str = UNIVERSE_NIFTY500
+) -> list[Member]:
+    """The covered instruments (`scope.py`): the NIFTY 500 point-in-time members with a
+    membership in force on some day from `since` to `until` (`nifty500`), or the instruments
+    passing the S2 EP universe on some session from `since` (`ep`, members first); then by first
+    day."""
+    rows = session.execute(
+        select(
+            HatIndexMember.instrument_id,
+            HatIndexMember.effective_from,
+            HatIndexMember.effective_to,
+        ).where(HatIndexMember.index_name == NIFTY_500)
+    )
+    nifty_first = nifty500_first(((str(r[0]), r[1], r[2]) for r in rows), since, until)
+    if universe == UNIVERSE_NIFTY500:
+        record = session.get(HatIndexMembership, NIFTY_500)
+        gap = coverage_gap(record.covered_from if record else None, since)
+        if gap:
+            raise ValueError(gap)
+        if record is not None and record.covered_to < until:
+            logger.warning(
+                "NIFTY 500 membership history ends %s: later joiners are not covered",
+                record.covered_to,
+            )
+        first = nifty_first
+    else:
+        found = passing(read_bars(store, since - timedelta(days=LOOKBACK_DAYS), until), since)
+        first = {row["instrument_id"]: row["first_pass"] for row in found.iter_rows(named=True)}
     if not first:
         return []
     ids = list(first)
@@ -89,16 +123,7 @@ def members(session: Session, store: DataStore, since: date, until: date) -> lis
         str(i.id): i
         for i in session.scalars(select(HatInstrument).where(HatInstrument.id.in_(ids)))
     }
-    nifty = {
-        str(i)
-        for i in session.scalars(
-            select(HatIndexMember.instrument_id).where(
-                HatIndexMember.index_name == NIFTY_500,
-                HatIndexMember.effective_from <= until,
-                or_(HatIndexMember.effective_to.is_(None), HatIndexMember.effective_to > since),
-            )
-        )
-    }
+    nifty = set(nifty_first)
     history: dict[str, list[tuple[date, str]]] = {}
     for row in session.execute(
         select(

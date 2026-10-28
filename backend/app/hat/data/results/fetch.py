@@ -35,6 +35,7 @@ from .nse import (
     transient,
 )
 from .raw import Entry
+from .scope import BASIS_CONSOLIDATED_FIRST, by_rule
 from .universe import Member
 
 logger = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ def fetch_nse(
     today: date,
     *,
     announcements: bool = True,
+    basis: str = BASIS_CONSOLIDATED_FIRST,
 ) -> FetchReport:
     report = FetchReport()
     now = datetime.now(UTC)
@@ -99,7 +101,8 @@ def fetch_nse(
         before = client.requests
         filings = _listings(client, member.symbols, listing_fresh, report)
         filings += [f for f in insurers if f.symbol in member.symbols]  # metadata rows need them
-        _documents(client, [f for f in filings if in_scope(f, start, end)], seen, report)
+        wanted = by_rule([f for f in filings if in_scope(f, start, end)], basis)
+        _documents(client, wanted, seen, report)
         report.members = n
         elapsed = time.monotonic() - started
         logger.info(
