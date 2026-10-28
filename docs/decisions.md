@@ -358,6 +358,14 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   quarters have it, else standalone, never mixed (`data/results/growth.py`); under the default
   consolidated-first scope a quarter's standalone row is read only where that quarter has no
   consolidated row, so a quarter with consolidated results never falls back to standalone.
+  Parsing guards (A4 audit, owner 2026-10-28): a quarter context longer than 100 days is read as
+  the quarter only when the year-to-date context is twelve months with different figures (a
+  mislabelled start; the row carries `quality_flags` `quarter_start_mislabelled`), else the filing is
+  excluded `quarter_context_not_a_quarter`; Q4 is derived from the year only when the quarter
+  context itself spans the year. A filing whose period ends exactly a year before its listing's is
+  excluded `period_year_before_listing`, never stored as a revision. An owners' profit equal (0.1%)
+  to total comprehensive income, unequal to the period's profit, with no non-controlling interest,
+  is replaced by the period's profit (`owners_profit_tag_swapped`).
 
 - **Fundamentals store (owner 2026-10-28).** The full financial statements are built from the
   results data already downloaded: the NSE results XBRL and the secondary source's company pages,

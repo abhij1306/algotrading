@@ -24,6 +24,7 @@ from app.hat.data.results.ingest import (
     figures_key,
     filed_consolidated,
     secondary_by_rule,
+    year_before_listing,
 )
 from app.hat.data.results.raw import RawCache
 from app.hat.data.results.secondary import Quarter, page_url, parse_page
@@ -95,6 +96,90 @@ def test_results__period_from_the_document_mismatch_flagged() -> None:
     assert document_period(date(2024, 12, 31), date(2024, 12, 31)) == (date(2024, 12, 31), False)
     assert document_period(date(2024, 9, 30), date(2024, 12, 31)) == (date(2024, 9, 30), True)
     assert document_period(None, date(2024, 12, 31)) == (date(2024, 12, 31), False)
+
+
+def test_results__document_a_year_before_the_listing_is_excluded() -> None:
+    """A4 D2: AARTIDRUGS's and MMTC's Jun-2025 filings are dated 2024-06-30 in the document."""
+    assert year_before_listing(date(2024, 6, 30), date(2025, 6, 30))
+    assert not year_before_listing(date(2024, 9, 30), date(2025, 3, 31))  # kept, flagged
+    assert not year_before_listing(date(2025, 6, 30), date(2025, 6, 30))
+    assert not year_before_listing(None, date(2025, 6, 30))
+
+
+# --- the quarter context: a mislabelled start, a half year (A4 D1) ---------------------------
+
+
+def test_results__quarter_with_a_mislabelled_start_is_the_quarter() -> None:
+    """Trimmed from COFORGE's Mar-2025 consolidated filing: OneD runs 2024-10-01 to 2025-03-31
+    (181 days) beside a twelve-month FourD. OneD holds the quarter (revenue 3,409.90 crore, the
+    secondary source shows 3,422), not the year: read as the quarter, flagged, nothing derived."""
+    doc = _doc("integrated_indas_q4_mislabelled_start_coforge.xml")
+    assert doc.annual is None
+    assert doc.quarter is not None
+    assert doc.ytd is not None
+    assert (doc.period_start, doc.period_end) == (date(2025, 1, 1), date(2025, 3, 31))
+    assert doc.quarter.revenue == Decimal("3409.9") * CR
+    assert doc.ytd.revenue == Decimal("12050.7") * CR
+    assert doc.flags == (xbrl.FLAG_QUARTER_START_MISLABELLED,)
+
+
+def test_results__half_year_quarter_context_is_not_read() -> None:
+    """Trimmed from ADANIGREEN's Sep-2025 consolidated filing: OneD spans the half year
+    (2025-04-01 to 2025-09-30) and there is no FourD; neither a quarter nor the year."""
+    with pytest.raises(xbrl.XbrlError, match="quarter_context_not_a_quarter"):
+        _doc("integrated_indas_q2_half_year_adanigreen.xml")
+
+
+def test_results__only_a_twelve_month_quarter_context_is_annual() -> None:
+    assert _doc("reg33_banking_q4_annual_only_hdfcbank.xml").flags == ()
+    assert _doc("integrated_indas_q3_reliance.xml").flags == ()
+
+
+# --- the owners' profit tag (A4 D3) ----------------------------------------------------------
+
+IREDA = "integrated_nbfc_q2_owners_tag_swap_ireda.xml"
+
+
+def test_results__owners_tag_holding_comprehensive_income_is_not_used() -> None:
+    """Trimmed from IREDA's Sep-2025 consolidated filing: its owners' profit tag holds the total
+    comprehensive income (614.76 crore) while the period's profit is 549.33, as the results PDF
+    states; no non-controlling interest. The period's profit is used, flagged."""
+    doc = _doc(IREDA)
+    assert doc.quarter is not None
+    assert doc.quarter.net_profit == Decimal("549.33") * CR
+    assert doc.quarter.revenue == Decimal("2057.28") * CR
+    assert doc.quarter.eps_basic == Decimal("1.97")
+    assert doc.flags == (xbrl.FLAG_OWNERS_TAG_SWAPPED,)
+
+
+def test_results__owners_fallback_tag_holding_comprehensive_income_is_not_used() -> None:
+    """The same swap filed under the fallback owners' tag (older taxonomies) is caught too."""
+    body = (FIXTURES / IREDA).read_bytes()
+    fallback = body.replace(
+        b"ProfitOrLossAttributableToOwnersOfParent",
+        b"ProfitLossAfterTaxesMinorityInterestAndShareOfProfitLossOfAssociates",
+    )
+    assert fallback != body
+    doc = xbrl.parse(fallback)
+    assert doc.quarter is not None
+    assert doc.quarter.net_profit == Decimal("549.33") * CR
+    assert doc.flags == (xbrl.FLAG_OWNERS_TAG_SWAPPED,)
+
+
+def test_results__owners_tag_with_minority_interest_is_kept() -> None:
+    """With a non-controlling interest tagged (here in both contexts) the owners' figure may
+    legitimately differ from the period's profit: it is kept."""
+    body = (FIXTURES / IREDA).read_bytes()
+    with_nci = re.sub(
+        rb"(ProfitOrLossAttributableToNonControllingInterests contextRef=[^>]*>)0<",
+        rb"\g<1>10000000<",
+        body,
+    )
+    assert with_nci != body
+    doc = xbrl.parse(with_nci)
+    assert doc.quarter is not None
+    assert doc.quarter.net_profit == Decimal("614.76") * CR
+    assert xbrl.FLAG_OWNERS_TAG_SWAPPED not in doc.flags
 
 
 # --- A2 rule 4: Q4 from the year and nine months --------------------------------------------

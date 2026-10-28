@@ -12,9 +12,19 @@ Tags (rule 2): revenue is `RevenueFromOperations`, or `InterestEarned` where the
 NBFC templates carry both and the first wins). Net profit is the profit attributable to the
 owners of the parent where a consolidated document tags it, else the period's profit. EPS is
 basic and diluted from continuing and discontinued operations (banks: after extraordinary items).
-Every Reg 33 and Integrated variant maps into these same fields (rule 6). Units (rule 5): money
-facts must be in INR and EPS in INR a share, as declared by the fact's unit; the values are in
-rupees whatever the stated rounding level.
+Every Reg 33 and Integrated variant maps into these same fields (rule 6). A filer's owners'
+profit that is in fact the total comprehensive income (it equals `ComprehensiveIncomeForThePeriod`
+to within rounding, 0.1%, differs from the period's profit by more, and no non-controlling
+interest is tagged) is not the owners'
+share: the period's profit is used and the document is flagged (`FLAG_OWNERS_TAG_SWAPPED`).
+
+The quarter context spans a quarter. One spanning more than that is the quarter with a
+mislabelled start when the year to date beside it spans twelve months with other figures (flagged,
+`FLAG_QUARTER_START_MISLABELLED`); the year itself when it spans twelve months (a Q4 document with
+only annual figures, Q4 derived downstream); anything else (a half year) is not read.
+
+Units (rule 5): money facts must be in INR and EPS in INR a share, as declared by the fact's
+unit; the values are in rupees whatever the stated rounding level.
 """
 
 from __future__ import annotations
@@ -67,6 +77,13 @@ DILUTED_EPS_TAGS = (
     "DilutedEarningsPerShareAfterExtraordinaryItems",
     "DilutedEarningsPerShareBeforeExtraordinaryItems",
 )
+COMPREHENSIVE_INCOME_TAG = "ComprehensiveIncomeForThePeriod"
+NCI_PROFIT_TAG = "ProfitOrLossAttributableToNonControllingInterests"
+QUARTER_MAX_DAYS = 100  # a quarter spans 89-91 days (end - start)
+YEAR_MIN_DAYS = 350  # a financial year spans 364-365
+SAME_WITHIN = Decimal("0.001")  # two filed figures this close (relative) are one, rounded
+FLAG_QUARTER_START_MISLABELLED = "quarter_start_mislabelled"
+FLAG_OWNERS_TAG_SWAPPED = "owners_profit_tag_swapped"
 MONEY_UNIT = "iso4217:inr"
 EPS_UNIT = "iso4217:inr/xbrli:shares"
 
@@ -239,7 +256,7 @@ def figures(context: dict[str, Fact], kind: str, basis: str) -> Figures:
     revenue = _first(context, BANK_REVENUE_TAGS if banking else REVENUE_TAGS, MONEY_UNIT)
     period_profit = _first(context, PROFIT_TAGS, MONEY_UNIT)
     profit = period_profit
-    if basis == "consolidated":
+    if basis == "consolidated" and not owners_tag_swapped(context):
         owners = _first(context, OWNERS_PROFIT_TAGS, MONEY_UNIT)
         # a template field left at 0 while the period shows a profit is not the owners' share
         if owners is not None and (owners != 0 or not period_profit):
@@ -251,6 +268,21 @@ def figures(context: dict[str, Fact], kind: str, basis: str) -> Figures:
         _first(context, BASIC_EPS_TAGS, EPS_UNIT),
         _first(context, DILUTED_EPS_TAGS, EPS_UNIT),
     )
+
+
+def owners_tag_swapped(context: dict[str, Fact]) -> bool:
+    """Whether the context's owners' profit is the total comprehensive income (rule above)."""
+    owners = _first(context, OWNERS_PROFIT_TAGS, MONEY_UNIT)  # the tag `figures` would read
+    comprehensive = _first(context, (COMPREHENSIVE_INCOME_TAG,), MONEY_UNIT)
+    period_profit = _first(context, PROFIT_TAGS, MONEY_UNIT)
+    nci = _first(context, (NCI_PROFIT_TAG,), MONEY_UNIT)
+    if owners is None or comprehensive is None or period_profit is None or nci:
+        return False
+    return _same_figure(owners, comprehensive) and not _same_figure(owners, period_profit)
+
+
+def _same_figure(a: Decimal, b: Decimal) -> bool:
+    return abs(a - b) <= SAME_WITHIN * max(abs(a), abs(b))
 
 
 # --- the document ---------------------------------------------------------------------------
@@ -268,6 +300,7 @@ class Parsed:
     annual: Figures | None  # a Q4 document with only the year: the year's figures
     nine_month: Figures | None  # ... and nine months, when the document carries them
     fy_start: date | None
+    flags: tuple[str, ...] = ()  # FLAG_* the document's figures were read under
 
 
 def quarter_start(end: date) -> date:
@@ -333,14 +366,53 @@ def parse(body: bytes) -> Parsed:
         raise XbrlError("quarter_context_missing")
     quarter = figures(one, kind.format, basis)
     ytd = figures(four, kind.format, basis) if four else None
+    swapped = basis == "consolidated" and any(owners_tag_swapped(c) for c in (one, four) if c)
+    flags = (FLAG_OWNERS_TAG_SWAPPED,) if swapped else ()
+    span = _span_days(start, end)
+    if span is not None and QUARTER_MAX_DAYS < span < YEAR_MIN_DAYS:
+        if not _mislabelled_start(ytd_start, ytd_end, quarter, ytd):
+            raise XbrlError("quarter_context_not_a_quarter")
+        flags = (FLAG_QUARTER_START_MISLABELLED, *flags)
+        return Parsed(
+            kind,
+            basis,
+            quarter_start(end),
+            end,
+            quarter,
+            ytd_start,
+            ytd,
+            None,
+            None,
+            fy_start,
+            flags,
+        )
     if _annual_only(start, end, fy_start, ytd_start, quarter, ytd):
         nine = _nine_month(facts, periods, kind.format, basis, end)
         q_start = quarter_start(end)
         return Parsed(
-            kind, basis, q_start, end, None, fy_start or start, quarter, quarter, nine, fy_start
+            kind,
+            basis,
+            q_start,
+            end,
+            None,
+            fy_start or start,
+            quarter,
+            quarter,
+            nine,
+            fy_start,
+            flags,
         )
     q_start = start or quarter_start(end)
-    return Parsed(kind, basis, q_start, end, quarter, ytd_start, ytd, None, None, fy_start)
+    return Parsed(kind, basis, q_start, end, quarter, ytd_start, ytd, None, None, fy_start, flags)
+
+
+def _mislabelled_start(
+    ytd_start: date | None, ytd_end: date | None, quarter: Figures, ytd: Figures | None
+) -> bool:
+    """Whether a quarter context longer than a quarter is the quarter with a mislabelled start:
+    the year to date beside it spans twelve months and holds other figures."""
+    span = _span_days(ytd_start, ytd_end)
+    return span is not None and span >= YEAR_MIN_DAYS and ytd is not None and ytd != quarter
 
 
 def _annual_only(
@@ -352,11 +424,11 @@ def _annual_only(
     ytd: Figures | None,
 ) -> bool:
     """Whether the quarter context holds the whole year (a Q4 document with only annual
-    figures): it spans more than a quarter, or it starts the financial year, ends the year and
-    equals the year to date (in Q1 the two are equal legitimately, but Q1 does not end a year)."""
+    figures): it spans twelve months, or it starts the financial year, ends the year and equals
+    the year to date (in Q1 the two are equal legitimately, but Q1 does not end a year)."""
     span = _span_days(start, end)
     if span is not None:
-        return span > 100
+        return span >= YEAR_MIN_DAYS
     year_start = fy_start or ytd_start
     if year_start is None or (end - year_start).days < 300 or ytd is None:
         return False
