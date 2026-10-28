@@ -16,6 +16,7 @@ level; a fact in an unknown unit is kept with the unit's own name.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -32,6 +33,7 @@ from ..results.xbrl import (
     read_facts,
     reporting_period,
 )
+from ..results.xbrl import Fact as XbrlFact
 from .items import ANNUAL, INSTANT, QUARTER, XBRL_UNITS, YTD, nse_items, nse_statement
 
 QUARTER_INSTANT = "OneI"
@@ -92,9 +94,36 @@ def _main_of(context: str) -> str | None:
     """The main context a dimensional context is named after (`One...D` takes `OneD`)."""
     for prefix in ("One", "Four"):
         if context.startswith(prefix) and context not in MAIN_CONTEXTS:
-            suffix = "D" if context.endswith("D") else "I" if context.endswith("I") else ""
-            return f"{prefix}{suffix}" if suffix else None
+            suffix = context[-1]
+            return f"{prefix}{suffix}" if suffix in ("D", "I") else None
     return None
+
+
+def _context_facts(
+    context: str, values: Mapping[str, XbrlFact], start: date | None, end: date
+) -> list[Fact]:
+    dimensional = context not in MAIN_CONTEXTS
+    mapped = {} if dimensional else nse_items(set(values))
+    out = []
+    for element, fact in values.items():
+        value = _value(fact.text) if fact.unit else None
+        if value is None:
+            continue
+        unit = XBRL_UNITS.get(fact.unit, fact.unit)
+        out.append(
+            Fact(
+                nse_statement(element, unit, start is None, dimensional),
+                period_kind(start, end),
+                start,
+                end,
+                element,
+                context,
+                mapped.get(element),
+                value,
+                unit,
+            )
+        )
+    return out
 
 
 def parse_document(body: bytes) -> Document:
@@ -128,27 +157,7 @@ def parse_document(body: bytes) -> Document:
             if p_end != end:
                 continue  # another period's figures (a comparative), or undated
         assert p_end is not None
-        dimensional = context not in MAIN_CONTEXTS
-        mapped = {} if dimensional else nse_items(set(values))
-        for element, fact in values.items():
-            value = _value(fact.text) if fact.unit else None
-            if value is None:
-                continue
-            unit = XBRL_UNITS.get(fact.unit, fact.unit)
-            instant = p_start is None
-            out.append(
-                Fact(
-                    nse_statement(element, unit, instant, dimensional),
-                    period_kind(p_start, p_end),
-                    p_start,
-                    p_end,
-                    element,
-                    context,
-                    mapped.get(element),
-                    value,
-                    unit,
-                )
-            )
+        out += _context_facts(context, values, p_start, p_end)
     return Document(
         kind,
         family(kind.raw_format),

@@ -165,6 +165,12 @@ def _filed_order(c: _Candidate) -> tuple[Any, ...]:
     )
 
 
+def _announced_at(c: _Candidate, announcements: Sequence[Announcement]) -> datetime | None:
+    anchor = anchor_date(c.filing)
+    match = match_announcement(announcements, anchor, c.document.period_end) if anchor else None
+    return match.at if match else None
+
+
 def nse_versions(
     candidates: Sequence[_Candidate],
     announcements: Sequence[Announcement],
@@ -183,11 +189,7 @@ def nse_versions(
             continue
         version = 1 if held is None else held[0] + 1
         filed = xbrl_at(c.filing)
-        announced = None
-        if version == 1:
-            anchor = anchor_date(c.filing)
-            match = match_announcement(announcements, anchor, key[0]) if anchor else None
-            announced = match.at if match else None
+        announced = _announced_at(c, announcements) if version == 1 else None
         when = public_at(version, announced, filed)
         if when is None:
             outcomes["nse_no_time"] += 1
@@ -263,7 +265,7 @@ def screener_filings(
     nse_by_end: dict[date, list[FilingOut]] = defaultdict(list)
     for filing in nse:
         nse_by_end[filing.period_end].append(filing)
-    kept = by_rule([_Key(e, b) for b, e in groups], rule, nse_consolidated)
+    kept = by_rule([_Key(end, basis) for basis, end in groups.keys()], rule, nse_consolidated)
     out = []
     for key in sorted(kept, key=lambda k: (k.period_end, k.basis)):
         url, sha, fetched_at, found = groups[(key.basis, key.period_end)]

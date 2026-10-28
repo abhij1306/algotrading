@@ -123,13 +123,16 @@ class _PageParser(HTMLParser):
             elif values.get("id") in SECTIONS:
                 self.current = self.sections.setdefault(values["id"] or "", _Section())
                 self.depth = 1
-            return
-        if self.current is None:
-            return
-        if tag == "p" and "sub" in classes and not self.current.sub:
+        elif self.current is not None:
+            self._section_start(self.current, tag, values, classes)
+
+    def _section_start(
+        self, current: _Section, tag: str, values: dict[str, str | None], classes: list[str]
+    ) -> None:
+        if tag == "p" and "sub" in classes and not current.sub:
             self.in_sub = True
         elif tag == "table":
-            self.current.tables.append(_Table())
+            current.tables.append(_Table())
         elif tag == "thead":
             self.in_head = True
         elif tag == "tr":
@@ -148,14 +151,7 @@ class _PageParser(HTMLParser):
 
     def handle_endtag(self, tag: str) -> None:
         if self.in_top:
-            if tag == "span":
-                self.top_part = None
-            elif tag == "li":
-                self.top.append(
-                    (" ".join("".join(self.top_name).split()), "".join(self.top_number))
-                )
-            elif tag == "ul":
-                self.in_top = False
+            self._top_end(tag)
         if self.current is None:
             return
         if tag == "section":
@@ -165,18 +161,29 @@ class _PageParser(HTMLParser):
         elif tag == "p":
             self.in_sub = False
         elif tag in ("th", "td") and self.cell is not None and self.row is not None:
-            text = " ".join("".join(self.cell).split())
-            if self.in_head and self.current.tables:
-                self.current.tables[-1].header.append((text, self.cell_key))
-            else:
-                self.row.append(text)
-            self.cell = None
+            self._cell_end(self.current, self.cell, self.row)
         elif tag == "tr" and self.row is not None:
             if not self.in_head and self.row and self.current.tables:
                 self.current.tables[-1].rows.append(self.row)
             self.row = None
         elif tag == "thead":
             self.in_head = False
+
+    def _top_end(self, tag: str) -> None:
+        if tag == "span":
+            self.top_part = None
+        elif tag == "li":
+            self.top.append((" ".join("".join(self.top_name).split()), "".join(self.top_number)))
+        elif tag == "ul":
+            self.in_top = False
+
+    def _cell_end(self, current: _Section, cell: list[str], row: list[str]) -> None:
+        text = " ".join("".join(cell).split())
+        if self.in_head and current.tables:
+            current.tables[-1].header.append((text, self.cell_key))
+        else:
+            row.append(text)
+        self.cell = None
 
     def handle_data(self, data: str) -> None:
         if self.in_top and self.top_part == "name":
@@ -267,16 +274,27 @@ def parse_page(body: bytes, fetched_on: date) -> list[Figure]:
         found = parser.sections.get(section)
         if found is None or not found.tables:
             continue
-        basis = named_basis(found.sub) or page_basis
-        tables = found.tables if section == "shareholding" else found.tables[:1]
-        seen: set[tuple[str, date]] = set()
-        for table in tables:
-            for figure in _table_figures(section, table, basis):
-                key = (figure.label, figure.period_end)
-                if key not in seen:
-                    seen.add(key)
-                    out.append(figure)
-    for name, number in parser.top:
+        out += _section_figures(section, found, named_basis(found.sub) or page_basis)
+    out += _top_figures(parser.top, fetched_on, page_basis)
+    return out
+
+
+def _section_figures(section: str, found: _Section, basis: str) -> list[Figure]:
+    tables = found.tables if section == "shareholding" else found.tables[:1]
+    seen: set[tuple[str, date]] = set()
+    out = []
+    for table in tables:
+        for figure in _table_figures(section, table, basis):
+            key = (figure.label, figure.period_end)
+            if key not in seen:
+                seen.add(key)
+                out.append(figure)
+    return out
+
+
+def _top_figures(top: list[tuple[str, str]], fetched_on: date, basis: str) -> list[Figure]:
+    out = []
+    for name, number in top:
         label = screener_label(name)
         unit = TOP_UNITS.get(label)
         value = exact(number, grouped=True)
@@ -296,7 +314,7 @@ def parse_page(body: bytes, fetched_on: date) -> list[Figure]:
                 SCREENER_ITEMS.get((TOP_RATIOS, label)),
                 value,
                 unit,
-                page_basis,
+                basis,
             )
         )
     return out
