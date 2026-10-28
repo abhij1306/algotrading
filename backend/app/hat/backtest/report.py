@@ -172,6 +172,9 @@ class BacktestResult:
     sessions: tuple[SessionRow, ...] = ()
     # the gates' pass counts (`loop._Run._funnel`), written to run.json's `funnel`
     funnel: Mapping[str, Any] = field(default_factory=dict)
+    # the EP log's rows (`ep_log.EpRecord.row`), one per pre-open candidate-day of the gap scan:
+    # ep_candidates.csv; empty without a pre-open playbook
+    ep_candidates: tuple[Mapping[str, Any], ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:

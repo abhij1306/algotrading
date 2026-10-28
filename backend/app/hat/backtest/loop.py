@@ -12,7 +12,8 @@ code live trading runs, in the same order:
    5-minute bars (`intraday.replay`) or, without them, on the daily estimate below; the stop comes
    from `trigger.entry_stop`, and `entries.open_entry` decides each trigger, in the order they
    fired, with `evaluate_signal` (caps, max chase, sizing) and fills it with the shadow engine's
-   virtual fills;
+   virtual fills; each pre-open candidate's path through the EP funnel is logged (`ep_log`,
+   `ep_candidates.csv` and the `episodic_pivot` breakdowns of run.json);
 4. the 15:05-15:10 close rules at the day's official close, then the session-end expiry of the
    watchlist
    (`shadow.expire_watchlist`).
@@ -161,6 +162,7 @@ from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from fractions import Fraction
 from typing import Any
 
 import polars as pl
@@ -173,7 +175,7 @@ from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
 from ..engine import entries, exits, lifecycle, positions, shadow, trigger, watchlist
 from ..engine.confidence import BACKTEST_CONFIDENCE
-from ..engine.live_entry import ep_setup_passes, gap_floor
+from ..engine.live_entry import EP_UNIVERSE, ep_gate, ep_stock_log, gap_floor, session_open
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from ..engine.portfolio.health import Health
@@ -193,8 +195,9 @@ from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import IST, as_utc
+from . import ep_log
 from .auction_days import auction_risk_days
-from .data import Bar, MarketData, MarketView, industry_on
+from .data import Bar, MarketData, MarketView, industry_on, symbol_on
 from .fillrules import (
     breakout_volume_ok,
     first_trigger,
@@ -220,6 +223,7 @@ from .intraday import (
     on_basis,
     replay,
     session_bars,
+    trace,
 )
 from .ledger import exact_flows, fill_rows, ledger, set_series
 from .ledger import trade_rows as ledger_trade_rows
@@ -238,6 +242,7 @@ from .report import (
 from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
 from .spec import (
+    ANALYST_BEAT_NOT_EVALUATED,
     BASIS_5M,
     BASIS_CLOSE,
     BASIS_DAILY,
@@ -284,6 +289,7 @@ _EP_SEPARATE_TYPES = _EP_ESTIMATED_TYPES | {trigger.VOLUME_PACE}
 _GAP_SECONDS = 9 * 3600 + 20 * 60 - 1
 _BREAK_SECONDS = 9 * 3600 + 30 * 60
 _EP_SECONDS = 9 * 3600 + 35 * 60
+_AT_OPEN_SECONDS = 9 * 3600 + 15 * 60
 
 
 # The extra acts a day's way up allows: a step trail acts once per step the rise reaches.
@@ -408,6 +414,7 @@ class _Held:
     entry_day: date
     high: Decimal
     low: Decimal
+    playbook: str = ""  # the playbook it entered under: its exit stack (`exits_for`)
     # The day the way up last raised the stop, and the stop before it (PR 64).
     raised: tuple[date, Decimal] | None = None
 
@@ -552,6 +559,8 @@ class _Run:
         self.scan_memo: dict[Any, Any] = {}
         self.funnel: dict[str, dict[str, int]] = {}
         self.regime_off_nights = 0
+        # the EP log: each pre-open candidate-day of the gap scan (`ep_log`)
+        self.ep_records: dict[tuple[date, str, str], ep_log.EpRecord] = {}
 
     def run(self) -> BacktestResult:
         for day in self.period:
@@ -656,7 +665,8 @@ class _Run:
         # A held instrument always has the closes before its entry; the finest NSE tick stands
         # in only if it did not, which keeps the search exact on a finer grid.
         tick = self.view.tick(held.instrument_id, day) or _FINEST_TICK
-        for step in range(len(self.config.exits) + 2 + _STEP_TRAIL_MOVES):
+        stack = self.config.exits_for(held.playbook)
+        for step in range(len(stack) + 2 + _STEP_TRAIL_MOVES):
             if position.closed_at is not None:
                 return
             rules, state = positions.position_state(self.session, position)
@@ -1004,6 +1014,8 @@ class _Run:
             daily_results=trigger.daily_trigger_results(
                 playbook, self._setup_bars(instrument_id, prev), day
             ),
+            results=tuple(self.data.results.get(instrument_id, ())) if playbook.preopen else (),
+            results_since=session_open(prev) if playbook.preopen else None,
         )
 
     def _on_bars(
@@ -1028,10 +1040,15 @@ class _Run:
             if str(row.instrument_id) in bars and level is not None and bar is not None:
                 if bar.high > level and not self.config.playbook(row.playbook).preopen:
                     self._passed(row.playbook, "trigger")
+        for candidate in candidates:
+            if candidate.playbook.preopen:
+                self._ep_trace(day, candidate, bars[candidate.symbol])
         out: list[_Decision] = []
         for fired in replay(day, candidates, bars):
             candidate, planned = fired.candidate, fired.plan
             row = by_key[(candidate.playbook.name, candidate.symbol)]
+            if candidate.playbook.preopen:
+                self._ep_fired(row, planned.skip, planned.stop is not None)
             if self.spec.conventions.volume_pace == VOLUME_PACE_FULL_DAY and (
                 paced := self._full_day_pace(
                     self.config.playbook(row.playbook), candidate.symbol, day
@@ -1072,27 +1089,79 @@ class _Run:
                 high=high if high is not None else planned.entry,
                 basis=BASIS_5M,
             )
-            if candidate.playbook.preopen and _has(candidate.playbook, trigger.CATALYST):
-                self.estimated.add(CATALYST_NOT_EVALUATED)
+            if candidate.playbook.preopen:
+                self._catalyst_gaps(candidate.playbook)
             local = fired.at.astimezone(IST)
             seconds = local.hour * 3600 + local.minute * 60 + local.second
             out.append(_Decision(row, plan, bar, (seconds, _ZERO), as_utc(fired.at)))
         return out
 
+    def _catalyst_gaps(self, playbook: Playbook) -> None:
+        """The catalyst gaps a pre-open entry records: `catalyst_not_evaluated` for an enabled
+        `catalyst_attached` unless `earnings_catalyst` judges the catalyst, and
+        `analyst_beat_not_evaluated` with `earnings_catalyst` (no estimates to beat)."""
+        if _has(playbook, ep_log.EARNINGS):
+            self.estimated.add(ANALYST_BEAT_NOT_EVALUATED)
+        elif _has(playbook, trigger.CATALYST):
+            self.estimated.add(CATALYST_NOT_EVALUATED)
+
+    def _ep_trace(self, day: date, candidate: trigger.Candidate, bars: Sequence[DataBar]) -> None:
+        """The EP log of a pre-open candidate decided on its 5-minute bars (`intraday.trace`)."""
+        record = self.ep_records.get((day, candidate.symbol, candidate.playbook.name))
+        if record is None:
+            return
+        order = ep_log.trigger_gates(candidate.playbook)
+        found = trace(day, candidate, bars, order)
+        record.basis = BASIS_5M
+        record.through(found.depth, order)
+        if found.depth < len(order):
+            gate = order[found.depth]
+            outcome = found.outcomes.get(gate)
+            record.failed(None if outcome is None else outcome.reason, gate)
+        record.at_trigger(
+            found.at,
+            found.cum_volume,
+            candidate.daily.adv20,
+            candidate.results,
+            candidate.results_since,
+        )
+
+    def _ep_fired(self, row: _Row, skip: str | None, stop_planned: bool) -> None:
+        """A pre-open trigger fired: its stop and entry filters in the EP log (the first filter
+        that failed is `skip`; a stop that could not be planned fails the first filter)."""
+        record = self._ep_of(row)
+        if record is None:
+            return
+        playbook = self.config.playbook(row.playbook)
+        record.through(len(ep_log.trigger_gates(playbook)), ep_log.trigger_gates(playbook))
+        if not stop_planned:
+            record.failed(skip or SKIP_BAD_INPUT)
+            return
+        for gate in record.gates[record.gates.index(record.reached) + 1 :]:
+            if gate == ep_log.FILLED:
+                break
+            if gate == skip:
+                record.failed(skip, gate)
+                return
+            record.passed(gate)
+
     def _gappers(self, day: date, prev: date) -> list[_Row]:
         """The day's candidates of the pre-open playbooks, as live's 09:16 gap scan picks them
-        (HAT-BOT-052): in the bot's universe on `day`, open at least the scan's floor over the
-        previous close (`live_entry.gap_floor` of the run's config; a stock's band caps its
-        gap, so the band rule needs no band table here), and the playbook's setup passing on
-        the bars to the previous session (`live_entry.ep_setup_passes`). The regime gate is
-        not applied here: `evaluate_signal` refuses each of their signals while it is off, as
-        live's gate board does."""
+        (HAT-BOT-052): a member of the bot's universe on `day`, open at least the scan's floor
+        over the previous close (`live_entry.gap_floor` of the run's config; a stock's band caps
+        its gap, so the band rule needs no band table here), passing the playbook's effective
+        universe (its own or the bot's, `StrategyConfig.universe_for`) and its setup on the bars
+        to the previous session (`live_entry.ep_gate`). Each candidate in a playbook's universe
+        gets an EP log record (`ep_log`) with the gate it failed. The regime gate is not applied
+        here: `evaluate_signal` refuses each of their signals while it is off, as live's gate
+        board does."""
         preopen = [p for p in self.config.playbooks if p.preopen]
         floor = gap_floor([self.config])
         if not preopen or floor is None:
             return []
         bot = configs_of(self.session).get(Bot, self.bot_id)
         members = () if bot is None else watchlist.bot_universe_members(self.session, bot, day)
+        series = series_as_of(self.data.series, prev)
         found: list[_Row] = []
         for member in sorted(members, key=str):
             instrument_id = str(member)
@@ -1104,11 +1173,46 @@ class _Run:
                 continue
             history = self._setup_bars(instrument_id, prev)
             for playbook in preopen:
-                if ep_setup_passes(playbook, history, day, prev):
-                    row = _Row(playbook.name, member, day)
-                    if self._open_for(row, day):
-                        found.append(row)
+                universe = self.config.universe_for(playbook.name)
+                failed = ep_gate(playbook, history, day, prev, universe, series.get(instrument_id))
+                if failed == EP_UNIVERSE:
+                    continue  # not in the playbook's universe: not in its gap scan
+                row = _Row(playbook.name, member, day)
+                record = self._ep_record(row, history, prev, 100 * (bar.open / prev_close - 1))
+                gap_min = playbook.gap_min_pct
+                if gap_min is not None and bar.open * 100 < prev_close * (100 + gap_min):
+                    record.failed(ep_log.GAP_TOO_SMALL)
+                    continue
+                record.passed(ep_log.GAP_UP)
+                if failed is not None:
+                    record.failed(failed, failed if failed in record.gates else None)
+                    continue
+                for instance in playbook.setup.criteria:
+                    record.passed(instance.type)
+                if self._open_for(row, day):
+                    found.append(row)
+                else:
+                    record.failed("not_open")
         return found
+
+    def _ep_record(
+        self, row: _Row, history: pl.DataFrame, prev: date, gap: Decimal
+    ) -> ep_log.EpRecord:
+        """A new EP log record of a pre-open candidate in the gap scan (`ep_log`)."""
+        instrument_id = str(row.instrument_id)
+        record = ep_log.EpRecord(
+            row.trade_date,
+            instrument_id,
+            symbol_on(self.data, instrument_id, row.trade_date),
+            row.playbook,
+            ep_log.ep_gates(self.config.playbook(row.playbook)),
+        )
+        record.columns.update(ep_stock_log(history, prev), gap_pct=round(float(gap), 4))
+        self.ep_records[(row.trade_date, instrument_id, row.playbook)] = record
+        return record
+
+    def _ep_of(self, row: _Row) -> ep_log.EpRecord | None:
+        return self.ep_records.get((row.trade_date, str(row.instrument_id), row.playbook))
 
     def _setup_bars(self, instrument_id: str, prev: date) -> pl.DataFrame:
         """The instrument's bars of the night's scan window (`MarketView.window` of `prev`)."""
@@ -1128,22 +1232,30 @@ class _Run:
         playbook = self.config.playbook(row.playbook)
         bar = self.view.bar(instrument_id, day)
         daily = self._daily(playbook, instrument_id, day, prev)
+        record = self._ep_of(row)
         if bar is None or daily.tick is None or daily.prev_close is None:
             self._skip(SKIP_BAD_INPUT)
+            if record is not None:
+                record.failed(SKIP_BAD_INPUT)
             return None
         if not self._ep_fires(playbook, row, bar, daily, day, prev):
             return None
         if paced := self._full_day_pace(playbook, instrument_id, day):
             self._skip(paced)
+            if record is not None:
+                record.failed(paced, trigger.VOLUME_PACE)
             return None
         price = trigger.entry_limit(EP_ESTIMATE.entry(bar.open, bar.high), bar.open, daily.tick)
         if price > bar.high:
+            if record is not None:
+                record.failed("limit_above_high")
             return None  # the LIMIT is above anything the day traded
         level = EP_ESTIMATE.level(price)
         before = EP_ESTIMATE.low_before(bar.open, bar.low)
         planned = trigger.entry_stop(playbook, daily, price, (before,), None)
         if planned.stop is None:
             self._skip(planned.skip or SKIP_BAD_INPUT)
+            self._ep_fired(row, planned.skip, False)
             return None
         at = _at(day, _AT_ENTRY)
         locked = self._locked(instrument_id, price, bar.high, day)
@@ -1151,8 +1263,8 @@ class _Run:
             playbook, row, daily, (price, planned.stop, level, locked), at
         )
         self.estimated.add(EP_TRIGGER_ESTIMATED)
-        if _has(playbook, trigger.CATALYST):
-            self.estimated.add(CATALYST_NOT_EVALUATED)
+        self._catalyst_gaps(playbook)
+        self._ep_fired(row, failed, True)
         dip = bar.low if bar.low < before else None
         plan = _EntryPlan(price, planned.stop, dip, locked, failed, level, filters)
         return _Decision(row, plan, bar, (_EP_SECONDS, _ZERO))
@@ -1167,25 +1279,46 @@ class _Run:
         prev: date,
     ) -> bool:
         """The estimate's trigger: the bar fires `EP_ESTIMATE`, and every enabled `gap_up`,
-        `early_volume` and daily-bar trigger criterion passes on the daily values (`volume_pace`
-        is judged on the full day's volume after, `_full_day_pace`)."""
-        if not EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close):
-            return False
-        volumes = self.view.volumes_through(str(row.instrument_id), day, 1)
+        `early_volume`, `earnings_catalyst` and daily-bar trigger criterion passes on the daily
+        values at the estimate's trigger instant (`volume_pace` is judged on the full day's volume
+        after, `_full_day_pace`); the outcome goes into the EP log."""
+        instrument_id = str(row.instrument_id)
+        volumes = self.view.volumes_through(instrument_id, day, 1)
         volume = int(volumes[-1]) if volumes and math.isfinite(volumes[-1]) else None
+        at = _at(day, time(0), _EP_SECONDS)
+        results = tuple(self.data.results.get(instrument_id, ()))
         ctx = replace(
-            trigger.daily_context(_at(day, _AT_ENTRY), daily, {}),
+            trigger.daily_context(at, daily, {}),
             open_price=bar.open,
             cum_volume=volume,
+            minutes=Fraction(_EP_SECONDS - _AT_OPEN_SECONDS, 60),
+            results=results,
+            results_since=session_open(prev),
         )
         rest = [i for i in playbook.trigger if i.type not in _EP_SEPARATE_TYPES]
-        results = trigger.daily_trigger_results(
-            playbook, self._setup_bars(str(row.instrument_id), prev), day
+        daily_results = trigger.daily_trigger_results(
+            playbook, self._setup_bars(instrument_id, prev), day
         )
         evaluation = trigger.evaluate_trigger(
-            playbook.model_copy(update={"trigger": rest}), ctx, NO_CATALYST_MODE, results
+            playbook.model_copy(update={"trigger": rest}), ctx, NO_CATALYST_MODE, daily_results
         )
-        return all(o.result.passed for o in evaluation.outcomes if o.blocking)
+        fires = EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close)
+        record = self._ep_of(row)
+        if record is not None:
+            outcomes = {o.type: o.result for o in evaluation.outcomes}
+            order = ep_log.trigger_gates(playbook)
+            # the pace is judged on the full day's volume after the estimate fires
+            judged = {ep_log.LEVEL: fires, trigger.VOLUME_PACE: True}
+            passed = {k: v.passed for k, v in outcomes.items()} | judged
+            depth = ep_log.trigger_depth(order, passed)
+            record.basis = BASIS_DAILY
+            record.through(depth, order)
+            if depth < len(order):
+                outcome = outcomes.get(order[depth])
+                reason = "estimate_not_fired" if outcome is None else outcome.reason
+                record.failed(reason, order[depth])
+            record.at_trigger(at, volume, daily.adv20, results, session_open(prev))
+        return fires and all(o.result.passed for o in evaluation.outcomes if o.blocking)
 
     def _level(self, row: _Row) -> Decimal | None:
         """The row's trigger level: its playbook's level expression over the row's setup levels
@@ -1327,6 +1460,8 @@ class _Run:
             pivot=None if row.pivot is None else Decimal(row.pivot),
             criteria_results=row.criteria_results,
         )
+        record = self._ep_of(row)
+        features = {**features, **({} if record is None else record.columns)}
         request = entries.EntryRequest(
             bot_id=self.bot_id,
             playbook=row.playbook,
@@ -1372,6 +1507,12 @@ class _Run:
                 features=features,
             )
         )
+        if record is not None:
+            record.signal_state = signal.state
+            if outcome.position_id is None:
+                record.failed(signal.risk_decision.get("reason") or signal.state, ep_log.FILLED)
+            else:
+                record.passed(ep_log.FILLED)
         if outcome.position_id is None:
             return
         year = self.entry_bars.setdefault(row.trade_date.year, {})
@@ -1380,7 +1521,7 @@ class _Run:
         if position is None:  # pragma: no cover - open_entry returned the id it wrote
             return
         day = row.trade_date
-        self.held[position.id] = _Held(instrument_id, day, price, price)
+        self.held[position.id] = _Held(instrument_id, day, price, price, row.playbook)
         if plan.at_close:
             return  # entered at the close: the day's path is behind it
         high = bar.high if plan.high is None else plan.high
@@ -1395,7 +1536,7 @@ class _Run:
         """The position's view at the day's close, the stand-in for live's pre-15:15 price
         (`exits.view_from_bars`, as live builds it)."""
         held = self.held[position.id]
-        rules = self.config.exits
+        rules = self.config.exits_for(held.playbook)
         before = self.view.bars_through(
             held.instrument_id, day, exits.history_sessions(rules), inclusive=False
         )
@@ -1648,6 +1789,10 @@ class _Run:
             }
             for name, counts in self.funnel.items()
         }
+        for playbook in self.config.playbooks:
+            if playbook.preopen:
+                records = [r for r in self.ep_records.values() if r.playbook == playbook.name]
+                by_playbook[playbook.name] = ep_log.funnel(records, ep_log.ep_gates(playbook))
         return {"regime_off_nights": self.regime_off_nights, "by_playbook": by_playbook}
 
     def _result(self) -> BacktestResult:
@@ -1693,6 +1838,9 @@ class _Run:
             allocations=dict(self.allocations),
             sessions=tuple(self.sessions),
             funnel=self._funnel(),
+            ep_candidates=tuple(
+                r.row() for r in sorted(self.ep_records.values(), key=lambda r: r.row_key)
+            ),
         )
         self.session.close()
         return result

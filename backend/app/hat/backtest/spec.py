@@ -45,6 +45,7 @@ from .overrides import Overrides
 from .slots import SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
 
 __all__ = [
+    "ANALYST_BEAT_NOT_EVALUATED",
     "CATALYST_NOT_EVALUATED",
     "ENTRY_BARS_5M",
     "ENTRY_BARS_DAILY",
@@ -123,9 +124,13 @@ GAP_OVER_AT_OPEN = "gap_over_fills_at_open"  # live fills at the first tick afte
 # a pre-open playbook's trigger (opening-range break, early volume) estimated from the daily
 # bar with the constants calibrated on the 5-minute years (`intraday.EP_ESTIMATE`)
 EP_TRIGGER_ESTIMATED = "episodic_pivot_trigger_estimated"
-# `catalyst_attached` has no announcements to read before the store's (none stored, no results
-# dates): never blocking in a run, the gap and the early volume stand in for it
+# `catalyst_attached` has no announcements to read before the store's (none stored): never
+# blocking in a run, the gap and the early volume stand in for it; not recorded for a playbook
+# whose `earnings_catalyst` judges the catalyst on the stored results filings
 CATALYST_NOT_EVALUATED = "catalyst_not_evaluated"
+# `earnings_catalyst` judges reported growth only: no analyst estimates are stored, so a beat of
+# expectations is not modelled (plan B1)
+ANALYST_BEAT_NOT_EVALUATED = "analyst_beat_not_evaluated"
 ESTIMATE_GAPS = (
     LEVEL_BREAK_ESTIMATED,
     VOLUME_PACE_ESTIMATED,
@@ -133,6 +138,7 @@ ESTIMATE_GAPS = (
     GAP_OVER_AT_OPEN,
     EP_TRIGGER_ESTIMATED,
     CATALYST_NOT_EVALUATED,
+    ANALYST_BEAT_NOT_EVALUATED,
 )
 # How a run decides a session's entries (`RunConventions.entry_bars`).
 ENTRY_BARS_5M = "bars_5m"  # the default: the live trigger on the stored 5-minute bars

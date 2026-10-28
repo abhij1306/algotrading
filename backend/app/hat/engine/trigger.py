@@ -52,7 +52,7 @@ from typing import Protocol
 
 import polars as pl
 
-from ..data.bars import Bar
+from ..data.bars import BAR_WIDTH, Bar
 from ..data.series_break import segment_start
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..money import exact, require_exact
@@ -69,11 +69,14 @@ from .criteria import (
 )
 from .criteria.live import (
     LEVEL_OPENING_RANGE,
+    REASON_GAP_TOO_SMALL,
     REASON_LOW_PACE,
     LiveContext,
+    ResultEvent,
     VolumePaceParams,
     level_names,
     resolve_level,
+    results_filing,
 )
 from .stops import (
     SKIP_BAD_INPUT,
@@ -92,6 +95,10 @@ __all__ = [
     "BarView",
     "Candidate",
     "CriterionOutcome",
+    "CriterionResult",
+    "REASON_GAP_TOO_SMALL",
+    "ResultEvent",
+    "results_filing",
     "DailyInputs",
     "EntryPlan",
     "Trigger",
@@ -112,6 +119,7 @@ __all__ = [
     "locked_lower_circuit",
     "locked_upper_circuit",
     "lower_circuit_price",
+    "minutes_since_open",
     "plan_entry",
     "upper_circuit_price",
     "daily_level",
@@ -225,7 +233,11 @@ class Candidate:
     open from the pre-open capture (EP); `announcements` are the `published_at` instants matched
     to the instrument. `configured_max_chase_pct` is the playbook's last configured max-chase
     percentage across the bot's versions (None when it never had one). `daily_results` holds the
-    results of the playbook's daily-bar trigger criteria by instance order."""
+    results of the playbook's daily-bar trigger criteria by instance order. `results` are the
+    instrument's results filings public after `results_since` (the previous session's open), as
+    `earnings_catalyst` reads them (`LiveContext.results`). `universe` is the playbook's
+    effective universe stage and `series` the instrument's, which a pre-open playbook's setup
+    check judges (`live_entry.ep_setup_passes`)."""
 
     bot_id: uuid.UUID
     strategy_key: str
@@ -241,6 +253,10 @@ class Candidate:
     announcements: tuple[datetime, ...] = ()
     configured_max_chase_pct: Decimal | None = None
     daily_results: Mapping[int, CriterionResult] = field(default_factory=dict)
+    results: tuple[ResultEvent, ...] = ()
+    results_since: datetime | None = None
+    universe: tuple[Instance, ...] = ()
+    series: str | None = None
 
     @property
     def key(self) -> tuple[uuid.UUID, str, uuid.UUID, date]:
@@ -308,6 +324,11 @@ def elapsed_fraction(
         return None
     micro = timedelta(microseconds=1)
     return Fraction((local - opens) // micro, (closes - opens) // micro)
+
+
+def minutes_since_open(bar: Bar, session_start: datetime) -> Fraction:
+    """The minutes from the session open to the close of `bar` (its start plus its width)."""
+    return Fraction(int((bar.start + BAR_WIDTH - session_start).total_seconds()), 60)
 
 
 def upper_circuit_price(daily: DailyInputs) -> Decimal | None:
@@ -676,6 +697,9 @@ class TriggerMonitor:
             ),
             open_price=candidate.open_price,
             announcements=candidate.announcements,
+            minutes=minutes_since_open(bar, self._view.session_start(day)),
+            results=candidate.results,
+            results_since=candidate.results_since,
         )
 
     def on_bar(self, bar: Bar) -> list[Trigger]:

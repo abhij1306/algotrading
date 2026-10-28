@@ -152,6 +152,33 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   charge is a flat Rs 14.75 per instrument per sell day (Rs 12.50 + 18% GST, today's tariff,
   used for the whole window): the first sale of an instrument on a trade date pays it, later
   sales that day do not (shadow: per broker account). NSE's IPFT contribution is not modelled.
+- **Earnings catalyst (S2 EP, owner 2026-10-28).** `earnings_catalyst` (HAT-CRIT-127, trigger
+  stage, mode hard) passes when a results filing became public in (the previous session's 09:15
+  IST, the trigger instant] and its quarter's growth as known then (`hat_financial_growth`) has
+  sales YoY of at least 25% and EPS YoY of at least 25%, or a turnaround, or sales YoY of at
+  least 50%; a filing after the trigger is never read, undefined sales growth fails. Reported
+  growth only: no analyst estimates are stored, so a run using it records
+  `analyst_beat_not_evaluated`, and `catalyst_not_evaluated` stops applying to that playbook. A
+  run whose config enables it is refused `backtest_results_missing` without stored filings. Every
+  EP signal carries `catalyst_type` (`earnings`, `other_announcement`, `none`) and its sales and
+  EPS growth, logged on every evaluation. Off in the stored S2 seed until the plan's Part C runs.
+- **Time-anchored early volume (owner 2026-10-28).** `early_volume` `mode: time_anchored` needs
+  ADV20 x `vs_adv20` x min(1, minutes / 30), the minutes from 09:15 to the close of the trigger
+  bar, so a 09:20 break needs a sixth of the 09:45 volume; `at_trigger` (the default, left out of
+  the canonical form) keeps the flat multiple, so stored configs keep their hash.
+- **Neglect direction (owner 2026-10-28).** `neglect` `direction: up_only` fails only a rise past
+  the 63-session limit, so a stock that fell hard can still be a neglected gapper; `both`, the
+  default, is unchanged. Every EP signal logs the 126-session range (max high / min low - 1).
+- **Per-playbook universe and exits (owner 2026-10-28).** A playbook may carry its own
+  `universe` and `exits`; without them it uses the bot's (`StrategyConfig.universe_for`,
+  `exits_for`), so the breakout playbook's resolved config and exits are unchanged (the stored
+  S2 version's canonical JSON and hash are byte-identical). A playbook's exit stack needs one
+  `hard_stop`. A pre-open candidate must pass its playbook's effective universe at the gap scan,
+  live and in the backtest (before this the scan judged universe membership only, never its
+  criteria). `close_below_sma` `above_stop: true` acts only once the SMA is above the current
+  stop; a close under such an SMA is also under the stop, which the hard stop has already taken,
+  so the activation changes outcomes only where the stop moved above the SMA. Every EP signal
+  logs its pre-gap ADR(20) (the repo's formula).
 
 ## Data
 

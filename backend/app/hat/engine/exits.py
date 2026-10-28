@@ -301,12 +301,14 @@ def _after_days(rule: ExitPartialAfterDays, pos: PositionState, view: ExitView) 
 
 def _below_sma(rule: ExitCloseBelowSma, pos: PositionState, view: ExitView) -> bool:
     """The price under the SMA, once the trail started and past its grace window: none in the
-    first `grace_sessions` sessions after the entry session (`days_held` 0 on that session)."""
+    first `grace_sessions` sessions after the entry session (`days_held` 0 on that session) and,
+    with `above_stop`, none while the SMA is at or below the current stop."""
     level = view.sma.get(rule.sma)
     return (
         view.price is not None
         and level is not None
         and view.price < level
+        and (not rule.above_stop or level > pos.current_stop)
         and _trail_started(rule, pos, view)
         and (rule.grace_sessions is None or view.days_held > rule.grace_sessions)
     )

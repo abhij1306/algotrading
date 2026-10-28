@@ -357,6 +357,10 @@ class ExitCloseBelowSma(ExitVsSma):
     rule: Literal["close_below_sma"]
     start_r: float | None = TrailStart
     grace_sessions: int | None = Field(default=None, ge=1, le=252, exclude_if=lambda v: v is None)
+    # `above_stop`: the rule acts only while the SMA is above the position's current stop (QM:
+    # trail "once they surpass your initial stop"); until then only the stop applies. Left out of
+    # the canonical form when off.
+    above_stop: bool = Field(default=False, exclude_if=lambda v: not v)
 
 
 class ExitCloseAboveSma(ExitVsSma):
@@ -435,7 +439,7 @@ class ExitRegime(Model):
     enabled: bool = False
 
 
-ExitRule = Annotated[
+ExitRuleModel = (
     ExitHardStop
     | ExitBreakeven
     | ExitStepTrail
@@ -450,7 +454,10 @@ ExitRule = Annotated[
     | ExitTimeStop
     | ExitEarlyFailure
     | ExitMaxHold
-    | ExitRegime,
+    | ExitRegime
+)
+ExitRule = Annotated[
+    ExitRuleModel,
     Field(discriminator="rule"),
 ]
 
@@ -458,20 +465,42 @@ ExitRule = Annotated[
 # --- playbooks and the config -----------------------------------------------------------------
 
 
+def _one_hard_stop(rules: Sequence[ExitRuleModel]) -> None:
+    """Every exit stack has exactly one enabled hard stop: the stop fires only through this rule
+    in a backtest and in shadow, while live the broker stop always rests; without it the evidence
+    is of another strategy."""
+    if sum(isinstance(e, ExitHardStop) and e.enabled for e in rules) != 1:
+        raise ValueError("one_enabled_hard_stop")
+
+
 class Playbook(Model):
-    """HAT-BOT-050: a named setup, trigger, entry filters and one stop rule. No regime rule,
-    sizing value or exit stack: those are the bot's."""
+    """HAT-BOT-050: a named setup, trigger, entry filters and one stop rule. No regime rule or
+    sizing value: those are the bot's. `universe` and `exits`, when set, replace the bot's
+    universe stage and exit stack for this playbook (`StrategyConfig.universe_for`,
+    `exits_for`); left out of the canonical form when unset, so stored configs keep their hash."""
 
     name: str
     setup: SetupStage
     trigger: list[Instance] = Field(default_factory=list, max_length=MAX_INSTANCES)
     entry_filters: list[Instance] = Field(default_factory=list, max_length=MAX_INSTANCES)
     stop: StopRule
+    universe: list[Instance] | None = Field(
+        default=None, max_length=MAX_INSTANCES, exclude_if=lambda v: v is None
+    )
+    exits: list[ExitRule] | None = Field(
+        default=None, min_length=1, max_length=20, exclude_if=lambda v: v is None
+    )
 
     @model_validator(mode="after")
     def _check(self) -> Playbook:
         if not NAME.match(self.name):
             raise ValueError("bad_name")
+        if self.universe is not None:
+            if any(i.stage != "universe" for i in self.universe):
+                raise ValueError("wrong_stage")
+            object.__setattr__(self, "universe", _sorted_unique(self.universe))
+        if self.exits is not None:
+            _one_hard_stop(self.exits)
         object.__setattr__(self, "trigger", _sorted_unique(self.trigger))
         object.__setattr__(self, "entry_filters", _sorted_unique(self.entry_filters))
         # A pre-open playbook's candidates come from the gap scan, which has no setup levels:
@@ -568,11 +597,19 @@ class StrategyConfig(Model):
         names = [p.name for p in self.playbooks]
         if len(set(names)) != len(names):
             raise ValueError("duplicate_playbook")
-        if sum(isinstance(e, ExitHardStop) and e.enabled for e in self.exits) != 1:
-            # the stop fires only through this rule in a backtest and in shadow, while live the
-            # broker stop always rests: without it the evidence is of another strategy
-            raise ValueError("one_enabled_hard_stop")
+        _one_hard_stop(self.exits)
         return self
+
+    def universe_for(self, playbook: str) -> list[Instance]:
+        """The universe stage of `playbook`: its own when set, else the bot's."""
+        own = self.playbook(playbook).universe
+        return self.universe if own is None else own
+
+    def exits_for(self, playbook: str) -> list[ExitRule]:
+        """The exit stack of `playbook`: its own when set, else the bot's (the bot's for a name
+        the config does not have, such as a stored signal's playbook since renamed)."""
+        found = next((p for p in self.playbooks if p.name == playbook), None)
+        return self.exits if found is None or found.exits is None else found.exits
 
     def to_json(self) -> dict[str, Any]:
         """The canonical stored form: plain JSON data, every default explicit."""
@@ -633,6 +670,8 @@ def _playbook(raw: Mapping[str, Any]) -> dict[str, Any]:
         out["setup"] = setup
     for key in ("trigger", "entry_filters"):
         out[key] = _instances(out.get(key, []), _SECTION_STAGE[key])
+    if out.get("universe") is not None:
+        out["universe"] = _instances(out["universe"], "universe")
     return out
 
 

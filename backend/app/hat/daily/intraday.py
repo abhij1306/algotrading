@@ -52,7 +52,9 @@ from ..engine.live_entry import (
     TriggerService,
     active_gap_floor,
     ep_bot_candidates,
+    ep_results,
     ep_setup_passes,
+    session_open,
     watchlist_candidates,
 )
 from ..engine.portfolio.allocation_service import policy_at
@@ -285,6 +287,7 @@ class Intraday:
         bars before `day`, the day's open, announcements of the last 24 hours."""
         data = self._book.day(day)
         now = self._now()
+        since = None if data.last_session is None else session_open(data.last_session)
         with self._session_factory() as session:
             items = [
                 EpInputs(
@@ -294,6 +297,9 @@ class Intraday:
                     announcements=tuple(
                         a.published_at for a in attached_announcements(session, iid, now)
                     ),
+                    series=_series(session, iid),
+                    results=() if since is None else ep_results(session, iid, since, now),
+                    results_since=since,
                 )
                 for symbol, iid in found.items()
             ]
@@ -307,7 +313,14 @@ class Intraday:
                     data.bars,
                     calendar=self._calendar(),
                 )
-                if ep_setup_passes(c.playbook, data.bars(c.instrument_id), day, data.last_session)
+                if ep_setup_passes(
+                    c.playbook,
+                    data.bars(c.instrument_id),
+                    day,
+                    data.last_session,
+                    c.universe,
+                    c.series,
+                )
             ]
             self._prices.track_session(session, {c.instrument_id for c in candidates})
         for candidate in candidates:
@@ -495,3 +508,9 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             shift=intraday.close_shift,
         ),
     )
+
+
+def _series(session: Session, instrument_id: uuid.UUID) -> str | None:
+    """The series the instrument trades under now (the universe stage's `series_in` reads it)."""
+    row = session.get(HatInstrument, instrument_id)
+    return None if row is None else row.series

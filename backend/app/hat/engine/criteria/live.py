@@ -1,4 +1,4 @@
-"""The live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122).
+"""The live trigger and entry-filter criteria (HAT-CRIT-115..119, 121, 122, 127).
 
 They read a `LiveContext`: what the trigger monitor knows at the instant a 5-minute bar is final
 (the bar's high, the live price, the cumulative day volume, the opening range, the pre-open gap,
@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, replace
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from typing import Literal
@@ -42,6 +42,9 @@ REASON_GAP_TOO_SMALL = "gap_too_small"
 REASON_LOW_PACE = "volume_pace_low"
 REASON_LOW_EARLY_VOLUME = "early_volume_low"
 REASON_NO_CATALYST = "no_catalyst"
+REASON_NO_RESULTS = "no_results_filing"
+REASON_GROWTH_UNDEFINED = "growth_undefined"
+REASON_GROWTH_LOW = "growth_below_min"
 REASON_STOP_TOO_WIDE = "stop_wider_than_adtr"
 REASON_STOP_NOT_BELOW = "stop_not_below_entry"
 REASON_CHASED = "price_past_max_chase"
@@ -57,8 +60,30 @@ class VolumePaceParams(ParamModel):
     vs_avg50: float = Field(default=1.5, gt=0, le=1000)
 
 
+EARLY_AT_TRIGGER = "at_trigger"
+EARLY_TIME_ANCHORED = "time_anchored"
+# `time_anchored`: the full ADV(20) is due this many minutes after the open, pro rata before.
+ANCHOR_MINUTES = 30
+
+
 class EarlyVolumeParams(ParamModel):
+    """`at_trigger` (the default, left out of the canonical form): the day volume at the trigger
+    is at least `vs_adv20` x ADV(20). `time_anchored`: at least ADV(20) x min(1, minutes /
+    `ANCHOR_MINUTES`), minutes from the open to the trigger bar's close (`vs_adv20` unused)."""
+
     vs_adv20: float = Field(default=0.5, gt=0, le=1000)
+    mode: Literal["at_trigger", "time_anchored"] = Field(
+        default=EARLY_AT_TRIGGER, exclude_if=lambda v: v == EARLY_AT_TRIGGER
+    )
+
+
+class EarningsCatalystParams(ParamModel):
+    """HAT-CRIT-127 (plan B1): sales_yoy >= `sales_yoy_pct` and (eps_yoy >= `eps_yoy_pct`, or a
+    turnaround, or sales_yoy >= `sales_alone_pct`), percentages."""
+
+    sales_yoy_pct: float = Field(default=25.0, ge=-100, le=100_000)
+    eps_yoy_pct: float = Field(default=25.0, ge=-100, le=100_000)
+    sales_alone_pct: float = Field(default=50.0, ge=-100, le=100_000)
 
 
 class CatalystAttachedParams(ParamModel):
@@ -122,6 +147,18 @@ class MaxChaseParams(ParamModel):
 
 
 @dataclass(frozen=True)
+class ResultEvent:
+    """One stored results filing as `earnings_catalyst` reads it: when it became public and the
+    growth of its quarter as known then (`hat_financial_growth`, ratios: 0.25 is 25%)."""
+
+    public_at: datetime
+    period_end: date
+    sales_yoy: Decimal | None = None
+    eps_yoy: Decimal | None = None
+    turnaround: bool | None = None
+
+
+@dataclass(frozen=True)
 class LiveContext:
     """What a live criterion may read for one instrument at one instant.
 
@@ -129,7 +166,11 @@ class LiveContext:
     `pivot` or `consolidation_high`) and `opening_range_high`, absent until its bar is final.
     `elapsed` is the share of the session gone at `at`, in (0, 1]. `announcements` are the
     `published_at` instants of the announcements matched to the instrument.
-    `locked_upper_circuit` is None when it cannot be told (no band known)."""
+    `locked_upper_circuit` is None when it cannot be told (no band known). `minutes` are the
+    minutes from the session open to the close of the bar being judged. `results` are the
+    instrument's results filings (`ResultEvent`) that may fall in `earnings_catalyst`'s window,
+    which opens at `results_since` (the previous session's open); the criterion reads only those
+    public by `at`."""
 
     at: datetime
     price: Decimal | None = None
@@ -148,6 +189,9 @@ class LiveContext:
     adtr20: Decimal | None = None
     trigger_level: Decimal | None = None
     locked_upper_circuit: bool | None = None
+    minutes: Fraction | None = None
+    results: Sequence[ResultEvent] = ()
+    results_since: datetime | None = None
 
     def for_entry(
         self,
@@ -159,19 +203,8 @@ class LiveContext:
         locked_upper_circuit: bool | None,
     ) -> LiveContext:
         """This context with the entry-filter inputs of a trigger's plan set."""
-        return LiveContext(
-            at=self.at,
-            price=self.price,
-            bar_high=self.bar_high,
-            bar_close=self.bar_close,
-            levels=self.levels,
-            cum_volume=self.cum_volume,
-            elapsed=self.elapsed,
-            avg50_volume=self.avg50_volume,
-            adv20=self.adv20,
-            open_price=self.open_price,
-            prev_close=self.prev_close,
-            announcements=self.announcements,
+        return replace(
+            self,
             entry=entry,
             stop=stop,
             adtr20=adtr20,
@@ -251,13 +284,70 @@ def volume_pace(ctx: LiveContext, p: VolumePaceParams) -> CriterionResult:
     return verdict(projected >= needed, float(projected), REASON_LOW_PACE)
 
 
+def early_volume_needed(adv20: Decimal, p: EarlyVolumeParams, minutes: Fraction) -> Fraction:
+    """The day volume `early_volume` requires `minutes` after the open (`EarlyVolumeParams`)."""
+    if p.mode == EARLY_TIME_ANCHORED:
+        return Fraction(adv20) * min(Fraction(1), minutes / ANCHOR_MINUTES)
+    return Fraction(dec(p.vs_adv20)) * Fraction(adv20)
+
+
 def early_volume(ctx: LiveContext, p: EarlyVolumeParams) -> CriterionResult:
-    """HAT-CRIT-117: cumulative day volume at the trigger >= vs_adv20 x ADV(20)."""
+    """HAT-CRIT-117: cumulative day volume at the trigger >= the volume `early_volume_needed`
+    names; `time_anchored` without the minutes since the open is `no_data`."""
     adv20 = _pos(ctx.adv20)
     if ctx.cum_volume is None or ctx.cum_volume < 0 or adv20 is None:
         return no_data()
-    needed = Fraction(dec(p.vs_adv20)) * Fraction(adv20)
+    if p.mode == EARLY_TIME_ANCHORED and (ctx.minutes is None or ctx.minutes <= 0):
+        return no_data()
+    needed = early_volume_needed(adv20, p, ctx.minutes or Fraction(0))
     return verdict(ctx.cum_volume >= needed, float(ctx.cum_volume), REASON_LOW_EARLY_VOLUME)
+
+
+def results_filing(
+    results: Sequence[ResultEvent], since: datetime, at: datetime
+) -> ResultEvent | None:
+    """The newest filing public in (since, at], None without one; the latest-dated wins a tie of
+    instants (a revision filed with its original)."""
+    found = [r for r in results if since < r.public_at <= at]
+    return max(found, key=lambda r: (r.public_at, r.period_end), default=None)
+
+
+def growth_passes(event: ResultEvent, p: EarningsCatalystParams) -> bool | None:
+    """B1's growth rule on one filing; None when its sales growth is undefined."""
+    if event.sales_yoy is None:
+        return None
+    sales = event.sales_yoy * _HUNDRED
+    if sales < dec(p.sales_yoy_pct):
+        return False
+    eps_ok = event.eps_yoy is not None and event.eps_yoy * _HUNDRED >= dec(p.eps_yoy_pct)
+    return eps_ok or bool(event.turnaround) or sales >= dec(p.sales_alone_pct)
+
+
+def _ratio_pct(value: Decimal | None) -> float | None:
+    return None if value is None else float(value * _HUNDRED)
+
+
+def earnings_catalyst(ctx: LiveContext, p: EarningsCatalystParams) -> CriterionResult:
+    """HAT-CRIT-127 (plan B1): a results filing of the instrument public in (the previous
+    session's open, the trigger instant] (`results_filing`) whose growth passes
+    (`growth_passes`). The value is its sales growth in percent; `extras` log the filing's
+    `results_public_at`, `sales_yoy_pct`, `eps_yoy_pct` and `turnaround` on every evaluation
+    that found one. Without the window's start it is `no_data`."""
+    if ctx.results_since is None:
+        return no_data()
+    event = results_filing(ctx.results, ctx.results_since, ctx.at)
+    if event is None:
+        return CriterionResult(False, 0.0, None, REASON_NO_RESULTS)
+    extras = {
+        "results_public_at": event.public_at.isoformat(),
+        "sales_yoy_pct": _ratio_pct(event.sales_yoy),
+        "eps_yoy_pct": _ratio_pct(event.eps_yoy),
+        "turnaround": event.turnaround,
+    }
+    passed = growth_passes(event, p)
+    reason = REASON_GROWTH_UNDEFINED if passed is None else REASON_GROWTH_LOW
+    result = verdict(bool(passed), _ratio_pct(event.sales_yoy), reason)
+    return CriterionResult(result.passed, result.score, result.value, result.reason, extras)
 
 
 def catalyst_attached(ctx: LiveContext, p: CatalystAttachedParams) -> CriterionResult:

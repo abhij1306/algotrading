@@ -64,6 +64,7 @@ from . import folder, trials
 from .data import MarketData, load_market
 from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of, resolve_knobs
 from .dsr import MIN_TRIALS, PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
+from .ep_log import uses_results
 from .evidence import (
     DSR_DIGITS,
     RunMetrics,
@@ -341,7 +342,11 @@ def _load(
         start=period[0],
         end=period[1],
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
+        # the EP log and `earnings_catalyst` read the stored results filings
+        results=any(p.preopen for s in specs for p in s.config.playbooks),
     )
+    if not data.results and any(uses_results(s.config) for s in specs):
+        raise BacktestError("backtest_results_missing")
     used_5m = data.intraday is not None and any(
         s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
     )

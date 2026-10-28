@@ -28,13 +28,13 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
 import numpy as np
 import polars as pl
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
 from ..data.bars_store import BarStore
@@ -61,8 +61,11 @@ from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.regime_gate import BREADTH_SESSIONS
 from ..engine.stops import mean_true_range
+from ..engine.trigger import ResultEvent
 from ..models import (
     HatCorporateAction,
+    HatFinancialGrowth,
+    HatFinancialResult,
     HatIndexMember,
     HatIndexMembership,
     HatIndustry,
@@ -71,6 +74,7 @@ from ..models import (
     HatUniverseVersion,
 )
 from ..money import exact
+from ..time import IST, as_utc
 from .spec import BacktestError, membership_key
 
 __all__ = [
@@ -199,6 +203,10 @@ class MarketData:
     # and its listing date.
     symbols: Mapping[str, Sequence[tuple[date, str]]] = field(default_factory=dict)
     listed_on: Mapping[str, date] = field(default_factory=dict)
+    # Each member's results filings public in the period (oldest first), with the growth of the
+    # filing's quarter as known when it became public: what `earnings_catalyst` and the EP log
+    # read (`results_events`); empty unless the run loads them (`load_market(results=True)`).
+    results: Mapping[str, Sequence[ResultEvent]] = field(default_factory=dict)
 
 
 def symbol_on(data: MarketData, instrument_id: str, day: date) -> str:
@@ -805,6 +813,64 @@ def chain_industries(
     return {k: sorted(v) for k, v in found.items()}
 
 
+def results_events(
+    rows: Iterable[tuple[uuid.UUID, datetime, date, uuid.UUID]],
+    growth: Mapping[uuid.UUID, tuple[Decimal | None, Decimal | None, bool | None]],
+    instruments: Collection[uuid.UUID],
+    lineage: Mapping[str, str],
+) -> dict[str, list[ResultEvent]]:
+    """Each run instrument's filings, oldest first, from result rows (id, public_at, period_end,
+    instrument) and their growth (sales, eps, turnaround) by result id; a linked older ISIN's
+    filings count for its chain (the id the run knows it by). Every row is kept, revisions
+    included: the criterion reads the newest public by its instant (`live.results_filing`)."""
+    out: dict[str, list[ResultEvent]] = defaultdict(list)
+    for result_id, public_at, period_end, instrument_id in rows:
+        chain = _chain_id(instrument_id, lineage)
+        if chain not in instruments:
+            continue
+        sales, eps, turnaround = growth.get(result_id, (None, None, None))
+        out[str(chain)].append(ResultEvent(public_at, period_end, sales, eps, turnaround))
+    for events in out.values():
+        events.sort(key=lambda e: (e.public_at, e.period_end))
+    return dict(out)
+
+
+def _results(
+    session: Session,
+    instruments: Collection[uuid.UUID],
+    lineage: Mapping[str, str],
+    first: date,
+    end: date,
+) -> dict[str, list[ResultEvent]]:
+    """`results_events` of the filings public from the previous session of `first` through
+    `end` (never after the period: no hold-out read). None stored is no filing."""
+    if not inspect(session.get_bind(HatFinancialResult)).has_table(
+        HatFinancialResult.__tablename__
+    ):
+        return {}
+    since = as_utc(datetime.combine(first - timedelta(days=7), time(0), tzinfo=IST))
+    until = as_utc(datetime.combine(end + timedelta(days=1), time(0), tzinfo=IST))
+    rows = session.execute(
+        select(
+            HatFinancialResult.id,
+            HatFinancialResult.public_at,
+            HatFinancialResult.period_end,
+            HatFinancialResult.instrument_id,
+        ).where(HatFinancialResult.public_at >= since, HatFinancialResult.public_at < until)
+    ).all()
+    growth = {
+        g.result_id: (g.sales_yoy, g.eps_yoy, g.turnaround)
+        for g in session.scalars(
+            select(HatFinancialGrowth).where(
+                HatFinancialGrowth.as_of >= since, HatFinancialGrowth.as_of < until
+            )
+        )
+    }
+    return results_events(
+        ((r[0], as_utc(r[1]), r[2], r[3]) for r in rows), growth, instruments, lineage
+    )
+
+
 def _isins(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, str]:
     wanted = set(instruments)
     return {
@@ -1026,6 +1092,7 @@ def load_market(
     start: date,
     end: date,
     regime_inputs: bool = False,
+    results: bool = False,
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `run.json` `data.data_snapshot_id` and `--rerun`). Raises `BacktestError` when the
@@ -1120,6 +1187,7 @@ def load_market(
     symbols, listed_on = _symbols(session, instruments)
     intraday = BarStore(store.root)
     sessions_5m = [d for d in intraday.days() if start <= d <= end]
+    filings = _results(session, instruments, adjustment.lineage, window[0], end) if results else {}
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -1138,6 +1206,7 @@ def load_market(
         symbols=symbols,
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
+        results=filings,
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -1183,5 +1252,6 @@ def load_market(
         # these versions (CA6)
         "point_in_time": {"versions_digest": versions_sha, "versions": versions},
         "content_digest": _content_digest(market),
+        **({"financial_results": sum(len(v) for v in filings.values())} if results else {}),
     }
     return market, snapshot

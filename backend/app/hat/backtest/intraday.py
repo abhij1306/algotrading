@@ -36,18 +36,28 @@ from ..data.audit import CLOSE_5M_PCT
 from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
 from ..data.bars_store import BarStore
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
-from ..engine.trigger import Candidate, Trigger, TriggerMonitor
+from ..engine.trigger import (
+    Candidate,
+    CriterionResult,
+    Trigger,
+    TriggerMonitor,
+    evaluate_trigger,
+    in_window,
+)
 from ..money import MONEY_SCALE, require_exact
 from ..time import IST
+from .ep_log import trigger_depth
 
 __all__ = [
     "EP_ESTIMATE",
     "NO_CATALYST_MODE",
     "EpEstimate",
+    "EpTrace",
     "after_trigger",
     "on_basis",
     "replay",
     "session_bars",
+    "trace",
 ]
 
 # A mode no `catalyst_attached.required_in` can list: the catalyst never blocks a replay.
@@ -187,6 +197,42 @@ def replay(
             monitor.confirm(found.candidate.key)
             fired.append(found)
     return fired
+
+
+@dataclass(frozen=True)
+class EpTrace:
+    """How far a pre-open candidate got on its session's bars (`trace`): the deepest prefix of
+    the trigger gates that passed together on one bar, and that bar's instant, day volume and
+    the trigger outcomes (the last bar judged when no prefix passed)."""
+
+    depth: int
+    at: datetime | None
+    cum_volume: int | None
+    outcomes: Mapping[str, CriterionResult]
+
+
+def trace(day: date, candidate: Candidate, bars: Sequence[Bar], order: Sequence[str]) -> EpTrace:
+    """The candidate's `EpTrace` over `bars` (its session, in time order) for the trigger gates
+    `order`, judged as the monitor judges each final bar in the trigger window (the first bar
+    that passes them all ends it: the replay fires there)."""
+    view = _ReplayView(day, {candidate.symbol: bars})
+    monitor = TriggerMonitor(view)
+    best = EpTrace(-1, None, None, {})
+    for bar in bars:
+        view.seen(bar)
+        if not in_window(bar.final_at, view.session_start(day), view.session_end(day)):
+            continue
+        ctx = monitor.context(candidate, bar)
+        evaluation = evaluate_trigger(
+            candidate.playbook, ctx, candidate.mode, candidate.daily_results
+        )
+        outcomes = {o.type: o.result for o in evaluation.outcomes}
+        depth = trigger_depth(order, {k: v.passed for k, v in outcomes.items()})
+        if depth > best.depth or depth == best.depth == 0:
+            best = EpTrace(depth, bar.final_at, ctx.cum_volume, outcomes)
+        if depth == len(order):
+            break
+    return best if best.depth >= 0 else EpTrace(0, None, None, {})
 
 
 def _order(bar: Bar) -> tuple[datetime, str]:

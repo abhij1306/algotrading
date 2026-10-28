@@ -51,6 +51,8 @@ from ..configs.unit import configs_of
 from ..data.bars import Bar
 from ..data.demerger_notice import SKIP_DEMERGER_PENDING, entry_blocked
 from ..data.gapscan import Gapper, is_candidate
+from ..data.results.derive import growth_by_result, results_as_of
+from ..data.sessions import SESSION_OPEN
 from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..models import HatInstrument, HatWatchlistEntry
@@ -60,11 +62,14 @@ from ..risk import kill_ops
 from ..risk.decision import SignalContext
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
-from ..time import IST, trade_date_of, utc_now
+from ..time import IST, as_utc, trade_date_of, utc_now
 from . import entries, lifecycle, positions
 from .criteria import CONTRACTION_LOW, CriterionResult, EvalContext, evaluate, get_type
+from .criteria.live import ResultEvent
+from .criteria.setup import RANGE_SESSIONS, NeglectParams, neglect, range_pct
+from .criteria.universe import AdrMinParams, adr_min
 from .rescale import SKIP_ACTION_PENDING, awaits_rescale
-from .strategy.config import Playbook, StopRule, StrategyConfig, parse_config
+from .strategy.config import Instance, Playbook, StopRule, StrategyConfig, parse_config
 from .trigger import (
     Candidate,
     DailyInputs,
@@ -82,6 +87,11 @@ __all__ = [
     "TriggerService",
     "active_gap_floor",
     "ep_candidates",
+    "ep_gate",
+    "ep_stock_log",
+    "ep_results",
+    "result_event",
+    "session_open",
     "ep_setup_passes",
     "gap_floor",
     "route_by_mode",
@@ -209,27 +219,81 @@ def _playbook(config: StrategyConfig, name: str) -> Playbook | None:
 
 
 def ep_setup_passes(
-    playbook: Playbook, bars: pl.DataFrame, trade_date: date, previous: date | None
+    playbook: Playbook,
+    bars: pl.DataFrame,
+    trade_date: date,
+    previous: date | None,
+    universe: Sequence[Instance] = (),
+    series: str | None = None,
 ) -> bool:
-    """A pre-open playbook's setup on the daily bars up to `previous`, the market's last session
-    before `trade_date`: every enabled hard setup criterion passes. A setup-stage type
+    """A pre-open playbook's universe and setup on the daily bars up to `previous`, the market's
+    last session before `trade_date`: every enabled `universe` criterion (the playbook's
+    effective universe stage, `StrategyConfig.universe_for`, judged with the instrument's
+    `series`) and every enabled hard setup criterion passes. A universe or setup-stage type
     (`adr_min`, `sma_above`, ...) is evaluated as of `previous`, as the nightly scan would that
     evening; a trigger-stage type over daily bars (`neglect`) as of `trade_date`, reading the
     bars before it. Either way the trade date's own bar, which does not exist at the open, is
     never read. Like the nightly scan, which evaluates only the members with a bar on its date,
     an instrument without a bar on `previous` does not pass, nor do no bars or a setup with no
     enabled criterion (fail closed)."""
+    return ep_gate(playbook, bars, trade_date, previous, universe, series) is None
+
+
+EP_UNIVERSE = "universe"
+ADR_DAYS = 20
+_PLACES = 4
+EP_SETUP = "setup"
+
+
+def ep_gate(
+    playbook: Playbook,
+    bars: pl.DataFrame,
+    trade_date: date,
+    previous: date | None,
+    universe: Sequence[Instance] = (),
+    series: str | None = None,
+) -> str | None:
+    """`ep_setup_passes`'s verdict as the gate that failed: `universe`, `setup` or the type of
+    the first failing hard setup criterion (`neglect`), None when all pass."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
     before = bars.filter(pl.col("date") < trade_date)
     if not enabled or before.is_empty() or previous is None or before["date"].max() != previous:
-        return False
+        return EP_SETUP
     on_gap_day = EvalContext(as_of=trade_date, instrument_id="", bars=before)
-    previous_ctx = EvalContext(as_of=previous, instrument_id="", bars=before)
+    previous_ctx = EvalContext(as_of=previous, instrument_id="", bars=before, series=series)
+    for instance in sorted((u for u in universe if u.enabled), key=lambda i: i.order):
+        if not evaluate(instance.type, instance.params, previous_ctx).passed:
+            return EP_UNIVERSE
     for instance in sorted(enabled, key=lambda i: i.order):
         ctx = on_gap_day if get_type(instance.type).stage == "trigger" else previous_ctx
         if not evaluate(instance.type, instance.params, ctx).passed:
-            return False
-    return True
+            return instance.type
+    return None
+
+
+def _round(value: float | None) -> float | None:
+    return None if value is None else round(value, _PLACES)
+
+
+def ep_stock_log(bars: pl.DataFrame, previous: date) -> dict[str, float | None]:
+    """A pre-open candidate's logged stock values from its daily bars through `previous` (the
+    backtest's EP log): the 126-session range (`range_pct`), the ADR(20) (`adr_min`'s value)
+    and the 63-session return (`neglect`'s), None where the bars are short."""
+    ctx = EvalContext(as_of=previous, instrument_id="", bars=bars)
+    history = ctx.history
+    span = range_pct(history.high[-RANGE_SESSIONS:], history.low[-RANGE_SESSIONS:])
+    if len(history) < RANGE_SESSIONS:
+        span = None
+    adr = adr_min(ctx, AdrMinParams(days=ADR_DAYS, pct=0.0)).value
+    # neglect reads the sessions before its date: judged as of the day after `previous`
+    before = bars.filter(pl.col("date") <= previous)
+    after = EvalContext(as_of=previous + timedelta(days=1), instrument_id="", bars=before)
+    ret = neglect(after, NeglectParams(max_return_63d_pct=100_000)).value
+    return {
+        "range_126d_pct": _round(span),
+        "adr20_pre_gap_pct": _round(adr),
+        "ret_63d_pct": _round(ret),
+    }
 
 
 def ep_candidates(
@@ -268,12 +332,44 @@ def active_gap_floor(session: Session) -> Decimal | None:
 
 @dataclass(frozen=True)
 class EpInputs:
-    """One EP candidate instrument: its id, symbol, open price and announcement instants."""
+    """One EP candidate instrument: its id, symbol, open price, announcement instants, its
+    series (the universe stage reads it) and its results filings public after `results_since`
+    (`ep_results`)."""
 
     instrument_id: uuid.UUID
     symbol: str
     open_price: Decimal | None
     announcements: tuple[datetime, ...] = ()
+    series: str | None = None
+    results: tuple[ResultEvent, ...] = ()
+    results_since: datetime | None = None
+
+
+def session_open(day: date) -> datetime:
+    """09:15 IST of `day`: where `earnings_catalyst`'s window opens on the previous session."""
+    return datetime.combine(day, SESSION_OPEN, tzinfo=IST)
+
+
+def ep_results(
+    session: Session, instrument_id: uuid.UUID, since: datetime, at: datetime
+) -> tuple[ResultEvent, ...]:
+    """The instrument's results filings known at `at` (`results_as_of`) public after `since`,
+    each with the growth of its quarter as known when it became public."""
+    rows = [r for r in results_as_of(session, instrument_id, at) if as_utc(r.public_at) > since]
+    growth = growth_by_result(session, [r.id for r in rows])
+    return tuple(result_event(r.public_at, r.period_end, growth.get(r.id)) for r in rows)
+
+
+def result_event(public_at: datetime, period_end: date, growth: object) -> ResultEvent:
+    """A `ResultEvent` from a result's instant and quarter and its growth row (None: no growth
+    known, so the growth rule fails closed)."""
+    return ResultEvent(
+        as_utc(public_at),
+        period_end,
+        getattr(growth, "sales_yoy", None),
+        getattr(growth, "eps_yoy", None),
+        getattr(growth, "turnaround", None),
+    )
 
 
 def ep_bot_candidates(
@@ -314,6 +410,10 @@ def ep_bot_candidates(
                 announcements=item.announcements,
                 configured_max_chase_pct=last_configured_chase(configs, playbook.name),
                 daily_results=_daily_results(playbook, bars, item.instrument_id, trade_date),
+                results=item.results,
+                results_since=item.results_since,
+                universe=tuple(config.universe_for(playbook.name)),
+                series=item.series,
             )
             for playbook in preopen
             for item in instruments
