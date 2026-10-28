@@ -1046,8 +1046,9 @@ def _demerger_rows(session: Session) -> list[tuple[uuid.UUID, date, date | None]
 
 def _content_digest(market: MarketData) -> str:
     """sha256 of what the run read: the bars, features, index closes, membership intervals,
-    industry history and dividends, each in a fixed order. Two snapshots with the same row counts
-    but different prices or members have different digests."""
+    industry history, dividends and, when loaded, the results filings, each in a fixed order.
+    Two snapshots with the same row counts but different prices or members have different
+    digests."""
     digest = hashlib.sha256()
     for frame in (market.bars, market.features):
         ordered = frame.select(sorted(frame.columns)).sort(["date", "instrument_id"])
@@ -1080,7 +1081,32 @@ def _content_digest(market: MarketData) -> str:
         digest.update(
             repr(sorted((d.isoformat(), str(v)) for d, v in market.breadth.items())).encode()
         )
+    if market.results:
+        digest.update(results_digest_text(market.results).encode())
     return digest.hexdigest()
+
+
+def results_digest_text(results: Mapping[str, Sequence[ResultEvent]]) -> str:
+    """The results filings a run read, in a fixed order, for its content digest: a changed
+    filing or growth is a different snapshot."""
+    return repr(
+        sorted(
+            (
+                instrument_id,
+                [
+                    (
+                        e.public_at.isoformat(),
+                        e.period_end.isoformat(),
+                        str(e.sales_yoy),
+                        str(e.eps_yoy),
+                        e.turnaround,
+                    )
+                    for e in events
+                ],
+            )
+            for instrument_id, events in results.items()
+        )
+    )
 
 
 def load_market(

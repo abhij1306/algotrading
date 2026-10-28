@@ -16,7 +16,7 @@ import pytest
 import yaml
 
 from app.hat.backtest import ep_log
-from app.hat.backtest.data import results_events
+from app.hat.backtest.data import results_digest_text, results_events
 from app.hat.data.bars import Bar
 from app.hat.engine import exits
 from app.hat.engine.criteria import CriterionResult, EvalContext
@@ -384,3 +384,10 @@ def test_reads_results() -> None:
     assert not reads_results(base)
     ep["trigger"][-1]["enabled"] = False
     assert not reads_results(parse_config(raw).playbook("episodic_pivot"))
+
+
+def test_results_digest_text_sees_a_changed_growth() -> None:
+    event = _event(2, "0.3", "0.2", False)
+    revised = ResultEvent(event.public_at, event.period_end, Decimal("0.31"), event.eps_yoy, False)
+    assert results_digest_text({"a": [event]}) == results_digest_text({"a": [event]})
+    assert results_digest_text({"a": [event]}) != results_digest_text({"a": [revised]})
