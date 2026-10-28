@@ -1,4 +1,4 @@
-"""The criteria library: a registry of the 29 catalogue types.
+"""The criteria library: a registry of the 30 catalogue types.
 
 Pure by construction: nothing here imports the database, a router, a broker or the network
 (CONF `import_graph_boundaries`). Parameter models validate a config on save; `evaluate`
@@ -31,6 +31,7 @@ BARS = "bars_daily"
 PREOPEN = "preopen"
 NOT_EVALUABLE = "not_evaluable"
 FEATURES = "features_daily"
+RESULTS = "financial_results"  # `hat_financial_result` and its derived growth
 # The setup levels the library's criteria expose (`CriterionType.levels`).
 PIVOT = "pivot"
 CONTRACTION_LOW = "final_contraction_low"
@@ -159,6 +160,13 @@ _TYPES = (
         live.PriceBreaksLevelParams,
         ("live_bars",),
         live.price_breaks_level,
+    ),
+    _live(
+        "earnings_catalyst",
+        "trigger",
+        live.EarningsCatalystParams,
+        (RESULTS,),
+        live.earnings_catalyst,
     ),
     # The Q-EP setup is built live and holds `neglect` (BL "Qullamaggie-style bot").
     _t("neglect", "trigger", setup.NeglectParams, (BARS,), setup.neglect, ("setup",)),

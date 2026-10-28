@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from decimal import Decimal
 from fractions import Fraction
 from typing import Literal
@@ -389,12 +390,30 @@ class NeglectParams(ParamModel):
     max_return_63d_pct: float = Field(default=30.0, ge=-100, le=100_000)
     # Off by default (PR 56, research G07): the high/low range of the 126 sessions before the date.
     max_range_126d_pct: float | None = Field(default=None, gt=0, le=100_000)
+    # `up_only`: only a rise past the limit fails (a stock that fell is allowed); `both`, the
+    # default (left out of the canonical form), fails either way.
+    direction: Literal["up_only", "both"] = Field(default="both", exclude_if=lambda v: v == "both")
+
+
+RANGE_SESSIONS = 126
+
+
+def range_pct(highs: Sequence[float | None], lows: Sequence[float | None]) -> float | None:
+    """(max high / min low - 1) x 100 of the bars given; None with a missing or non-positive
+    value, or none at all."""
+    if not highs or not lows or any(v is None for v in (*highs, *lows)):
+        return None
+    low = min(v for v in lows if v is not None)
+    if low <= 0:
+        return None
+    return float((dec(max(v for v in highs if v is not None)) / dec(low) - 1) * 100)
 
 
 def neglect(ctx: EvalContext, params: NeglectParams) -> CriterionResult:
     """HAT-CRIT-120: the absolute 63-session move, on bars up to the previous session, is at most
     `max_return_63d_pct` (|close_prev / close_63 sessions before - 1|), so a stock that rose or
-    fell that far is not neglected. With `max_range_126d_pct`, the range of the 126 sessions
+    fell that far is not neglected (with `direction: up_only` only the rise counts). With
+    `max_range_126d_pct`, the range of the 126 sessions
     before the date (max high / min low - 1) is at most it too, and a stock with fewer such
     sessions is `no_data`; the evaluation date (the gap day) is never read. The value is the
     signed 63-session return."""
@@ -407,7 +426,7 @@ def neglect(ctx: EvalContext, params: NeglectParams) -> CriterionResult:
     limit = dec(params.max_return_63d_pct)
     if last_close * 100 > base * (100 + limit):
         return verdict(False, pct, "already_extended")
-    if last_close * 100 < base * (100 - limit):
+    if params.direction == "both" and last_close * 100 < base * (100 - limit):
         return verdict(False, pct, "already_fell")
     if params.max_range_126d_pct is not None:
         highs, lows = last(bars.high, 126), last(bars.low, 126)

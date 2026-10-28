@@ -82,11 +82,12 @@ class TradeError(HatError):
 
 def exit_rules_of(session: Session, signal: HatSignal) -> list[ExitRule]:
     """The exit stack of the strategy version the signal entered under: a version promoted
-    after the entry never changes the rules of an open trade (HAT-BOT-083)."""
+    after the entry never changes the rules of an open trade (HAT-BOT-083): the signal's
+    playbook's own stack when it has one, else the bot's (`StrategyConfig.exits_for`)."""
     version = configs_of(session).get(StrategyVersion, signal.strategy_version_id)
     if version is None:
         raise TradeError("unknown_strategy_version")
-    return list(parse_config(version.config).exits)
+    return list(parse_config(version.config).exits_for(signal.playbook))
 
 
 def entry_qty(session: Session, signal: HatSignal, position: HatPosition) -> int:

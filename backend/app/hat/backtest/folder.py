@@ -29,6 +29,8 @@ from typing import Any
 from app.paths import BACKTEST_SCHEMA
 
 from ..money import exact
+from . import ep_log
+from .ep_log import EP_CANDIDATE_COLUMNS, EP_COLUMNS
 from .report import BacktestResult, LegRow, SignalRow, TradeRow
 from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
@@ -71,7 +73,8 @@ __all__ = [
     "validate",
 ]
 
-CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks")
+# `ep_candidates` only in a run with a pre-open playbook (`ep_log`)
+CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks", "ep_candidates")
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
@@ -126,6 +129,7 @@ TRADE_COLUMNS = (
     "playbook",
     "engine_exit_reason",
     "auction_risk",
+    *EP_COLUMNS,
 )
 EQUITY_COLUMNS = (
     "date",
@@ -141,7 +145,7 @@ EQUITY_COLUMNS = (
     "breadth_pct",
     "benchmark_tri",
 )
-_FEATURES = ("industry", *STOCK_COLUMNS, *CONTEXT_COLUMNS, *SETUP_COLUMNS)
+_FEATURES = ("industry", *STOCK_COLUMNS, *CONTEXT_COLUMNS, *SETUP_COLUMNS, *EP_COLUMNS)
 REFUSAL_COLUMNS = (
     "date",
     "symbol",
@@ -815,6 +819,7 @@ def build(
             "by_cap_bucket": _group(trades, lambda t: t.features.get("cap_bucket")),
             "by_liquidity_bucket": _group(trades, liquidity),
             "by_playbook": _by_playbook(signals, codes, trades),
+            **_episodic(result, trades),
         },
         "funnel": dict(result.funnel),
     }
@@ -825,7 +830,34 @@ def build(
         "signals": _csv(SIGNAL_COLUMNS, signal_rows),
         "stocks": _csv(STOCK_ROW_COLUMNS, _stock_rows(signals, trades)),
     }
+    if result.ep_candidates:
+        csvs["ep_candidates"] = _csv(EP_CANDIDATE_COLUMNS, result.ep_candidates)
     return doc, csvs
+
+
+def _episodic(result: BacktestResult, trades: Sequence[_Trade]) -> dict[str, Any]:
+    """The C3 breakdowns of each pre-open playbook's trades (`ep_log.BREAKDOWNS`, by exit
+    reason with its average hold), under `episodic_pivot`; nothing for a run without one (no EP
+    log)."""
+    names = sorted({str(r["playbook"]) for r in result.ep_candidates})
+    if not names:
+        return {}
+    out: dict[str, Any] = {}
+    for name in names:
+        mine = [t for t in trades if t.row.playbook == name]
+        block: dict[str, Any] = {"trades": _bucket(mine)}
+        for key, column, rule in ep_log.BREAKDOWNS:
+
+            def value(t: _Trade, column: str = column, rule: Any = rule) -> str | None:  # noqa: ANN401
+                cell = t.features.get(column)
+                if rule is not None:
+                    return rule(cell)
+                return "unknown" if cell is None else cell
+
+            block[key] = _group(mine, value)
+        block["by_exit_reason"] = _group(mine, lambda t: t.exit)
+        out[name] = block
+    return {"episodic_pivot": out}
 
 
 EMPTY_METRICS: dict[str, Any] = {"trades": 0, "signals": 0}

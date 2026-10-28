@@ -14,6 +14,7 @@ runs/<run_id>/
   refusals.csv    # one row per blocked entry, with the same features
   signals.csv     # every setup that fired, taken or not
   stocks.csv      # one row per symbol: how S1 did on that stock
+  ep_candidates.csv  # pre-open playbook runs only: each gap-scan candidate-day
 ```
 
 Why four files: headline metrics say *whether* a variant is better. Trades, equity and refusals say *why*, and that is what tweak suggestions are built from.
@@ -415,3 +416,20 @@ empty when the index did not fall), `base_number`, `stage2_start_unknown`. `rs_r
 setup's `rs_rank` criterion value when it has one (under `basis: eligible` the 1..99 percentile
 within the bot's universe stage that night: an approximation of the IBD RS rating, not from
 the book), else the stored `rs_pct`.
+
+**Episodic pivot (a run whose config has a pre-open playbook).** trades.csv and signals.csv end
+with the EP log of each pre-open signal (empty for other playbooks'): `catalyst_type`
+(`earnings` with a results filing public in (the previous session's 09:15, the trigger],
+`other_announcement` when only `catalyst_attached` matched, which no stored past announcement
+allows today, else `none`), `results_public_at`, `sales_yoy_pct`, `eps_yoy_pct` and
+`turnaround` of that filing as known then, `gap_pct`, `trigger_time`, `vol_vs_adv20` (the day
+volume at the trigger over ADV(20)), `range_126d_pct` (max high / min low - 1 of the 126
+sessions to the previous one), `adr20_pre_gap_pct` (the repo's ADR(20) to the previous session)
+and `ret_63d_pct`. `ep_candidates.csv` holds one row per candidate-day in a pre-open playbook's
+gap scan: `basis`, `reached` (the last gate passed), `failed_gate`, `reason`, `signal_state` and
+the same columns. run.json `breakdowns.episodic_pivot.<playbook>` holds the playbook's trades
+`by_catalyst_type`, `by_sales_yoy` (lt25, 25_50, 50_100, gt100), `by_gap` (lt10, 10_15, 15_25,
+gt25), `by_trigger_time` (0920_0945, 0945_1100, after_1100), `by_adr20` (lt3, 3_4, 4_6, gt6),
+`by_range_126d` (lt30, 30_60, gt60) and `by_exit_reason` with the mean hold; run.json
+`funnel.by_playbook.<playbook>` counts candidates through `gap_scan`, `gap_up`, the hard setup criteria,
+`earnings_catalyst`, `early_volume`, `price_breaks_level`, the entry filters and `filled`.

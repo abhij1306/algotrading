@@ -34,6 +34,8 @@ builder = _script("agents/builder.py")
 secrets = _script("set_secrets.py")
 fyers_login = _script("fyers_login.py")
 results_probe = _script("research/s2_results_probe.py")
+ep_b7 = _script("research/s2_ep_intraday_results.py")
+ep_audit = _script("research/s2_ep_audit.py")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -590,3 +592,180 @@ def test_results_probe__xbrl_name_stamp_and_quarters() -> None:
     assert results_probe.quarters_in(2025, date(2026, 10, 28)) == 4
     assert results_probe.quarters_in(2026, date(2026, 10, 28)) == 2  # Sep 2026 due mid-Nov
     assert results_probe.summary([30, -10, 50]) == {"n": 3, "median": 30, "min": -10, "max": 50}
+
+
+# ---------------------------------------------------------------------------------------------
+# s2_ep_intraday_results (B7) and s2_ep_audit (C4)
+
+_IST = ep_b7.IST
+
+
+def _filing(at: datetime, period: date, sales: str | None = "0.3") -> object:
+    from decimal import Decimal
+
+    return ep_b7.ResultEvent(at, period, None if sales is None else Decimal(sales))
+
+
+def test_ep_b7__public_bucket() -> None:
+    times = [
+        datetime(2024, 5, 3, h, m, tzinfo=_IST) for h, m in ((9, 14), (9, 15), (15, 29), (15, 30))
+    ]
+    buckets = ["pre_open", "market", "market", "post_close"]
+    assert [ep_b7.public_bucket(t) for t in times] == buckets
+
+
+def test_ep_b7__first_filing_of_each_quarter() -> None:
+    q1, q2 = date(2024, 3, 31), date(2024, 6, 30)
+    first = _filing(datetime(2024, 5, 3, 10, tzinfo=_IST), q1)
+    revised = _filing(datetime(2024, 5, 9, 10, tzinfo=_IST), q1, "0.9")
+    later = _filing(datetime(2024, 8, 1, 10, tzinfo=_IST), q2)
+    assert ep_b7.first_filings([later, revised, first]) == [first, later]
+
+
+def test_ep_b7__growth_price_and_moves() -> None:
+    from decimal import Decimal
+
+    params = ep_b7.EarningsCatalystParams()
+    assert (
+        ep_b7.growth_group(
+            _filing(datetime(2024, 5, 3, tzinfo=_IST), date(2024, 3, 31), "0.6"), params
+        )
+        == "pass"
+    )
+    assert (
+        ep_b7.growth_group(
+            _filing(datetime(2024, 5, 3, tzinfo=_IST), date(2024, 3, 31), "0.1"), params
+        )
+        == "fail"
+    )
+    assert (
+        ep_b7.growth_group(
+            _filing(datetime(2024, 5, 3, tzinfo=_IST), date(2024, 3, 31), None), params
+        )
+        == "undefined"
+    )
+    start = datetime(2024, 5, 3, 9, 15, tzinfo=_IST)
+    bars = [
+        ep_b7.Bar(
+            "X",
+            start.replace(minute=15 + 5 * i),
+            Decimal(100 + i),
+            Decimal(101 + i),
+            Decimal(99),
+            Decimal(100 + i),
+            1,
+        )
+        for i in range(3)
+    ]
+    assert ep_b7.price_after(bars, start.replace(minute=21)) == Decimal(102)
+    assert ep_b7.price_after(bars, start.replace(minute=20)) == Decimal(101)
+    assert ep_b7.price_after(bars, start.replace(minute=40)) is None
+    assert ep_b7.move_pct(Decimal(100), Decimal(110)) == pytest.approx(10.0)
+    assert ep_b7.move_pct(None, Decimal(1)) is None
+    days = [date(2024, 5, d) for d in (2, 3, 6, 7)]
+    assert ep_b7.later_day(days, date(2024, 5, 3), 2) == date(2024, 5, 7)
+    assert ep_b7.later_day(days, date(2024, 5, 3), 5) is None
+    assert ep_b7.later_day(days, date(2024, 5, 4), 1) is None
+
+
+def test_ep_b7__summary() -> None:
+    got = ep_b7.summary([-2.0, 1.0, 3.0, 6.0])
+    assert got["n"] == 4
+    assert got["mean"] == 2.0
+    assert got["median"] == 2.0
+    assert got["up_pct"] == 75.0
+    assert ep_b7.summary([])["mean"] is None
+    assert ep_b7.summary([5.0])["p25"] == 5.0
+
+
+_TRADE = {
+    "playbook": "episodic_pivot",
+    "symbol": "ABC",
+    "instrument_id": "i1",
+    "entry_date": "2023-05-03",
+    "entry_price": "100",
+    "initial_stop": "95",
+    "exit_date": "2023-05-10",
+    "exit_price": "110",
+    "r_net": "0.5",
+    "gap_pct": "12.5",
+    "trigger_time": "09:35",
+    "catalyst_type": "earnings",
+}
+
+
+def test_ep_audit__entry_cases_join_legs() -> None:
+    rows = [
+        {**_TRADE, "trade_id": "7", "leg": "1", "exit_price": "104", "exit_date": "2023-05-06"},
+        {**_TRADE, "trade_id": "7", "leg": "2", "r_net": "1.25"},
+        {**_TRADE, "trade_id": "8", "leg": "1", "playbook": "breakout"},
+    ]
+    (case,) = ep_audit.entry_cases(rows)
+    assert (case.entry, case.stop, case.exit, case.exit_date) == (
+        100.0,
+        95.0,
+        110.0,
+        date(2023, 5, 10),
+    )
+    assert case.r == 1.75
+    assert case.gap_pct == "12.5"
+    assert case.trigger_time == "09:35"
+
+
+def test_ep_audit__near_miss_is_after_the_setup_and_before_the_fill() -> None:
+    gates = (
+        "gap_scan",
+        "gap_up",
+        "neglect",
+        "early_volume",
+        "price_breaks_level",
+        "max_chase",
+        "filled",
+    )
+    setup = ("neglect",)
+    for failed, near in (
+        ("neglect", False),
+        ("gap_up", False),
+        ("early_volume", True),
+        ("max_chase", True),
+        ("filled", False),
+        ("", False),
+    ):
+        assert ep_audit.near_miss({"failed_gate": failed}, gates, setup) is near, failed
+
+
+def test_ep_audit__sample_is_seeded_and_bounded() -> None:
+    cases = [ep_audit.Case("entry", f"S{i}", date(2023, 1, 1), *([""] * 6)) for i in range(30)]
+    first = ep_audit.sample(cases, 20, 7)
+    assert len(first) == 20
+    assert first == ep_audit.sample(cases, 20, 7)
+    assert ep_audit.sample(cases[:3], 20, 7) == cases[:3]
+
+
+def test_ep_audit__sma_and_opening_range() -> None:
+    from decimal import Decimal
+
+    assert ep_audit.sma([1.0, 2.0, 3.0, 4.0], 2) == [None, 1.5, 2.5, 3.5]
+    bar = ep_audit.Bar("X", datetime(2024, 5, 3, 9, 15, tzinfo=_IST), *(Decimal(5),) * 4, 1)
+    assert ep_audit.opening_range_high([bar]) == 5.0
+    assert ep_audit.opening_range_high([]) is None
+
+
+def test_ep_audit__daily_span() -> None:
+    days = [date(2023, 1, d) for d in range(2, 31)]
+    until, count = ep_audit.daily_span(days, date(2023, 1, 3), date(2023, 1, 5))
+    assert until == days[3 + ep_audit.DAILY_AFTER]
+    assert count == ep_audit.DAILY_BEFORE + max(ep_audit.SMAS) + 2 + ep_audit.DAILY_AFTER
+    assert ep_audit.daily_span(days, date(2023, 1, 30), date(2023, 1, 30))[0] == days[-1]
+
+
+def test_ep_b7__split_filings() -> None:
+    session = date(2024, 5, 3)
+    market = _filing(datetime(2024, 5, 3, 11, tzinfo=_IST), date(2024, 3, 31))
+    evening = _filing(datetime(2024, 5, 3, 18, tzinfo=_IST), date(2023, 12, 31))
+    outside = _filing(datetime(2025, 1, 2, 11, tzinfo=_IST), date(2024, 9, 30))
+    plain, by_day = ep_b7.split_filings(
+        {"a": [market, evening, outside]}, {session}, date(2024, 1, 1), date(2024, 12, 31)
+    )
+    assert plain == [("a", evening)]
+    assert by_day == {session: [("a", market)]}

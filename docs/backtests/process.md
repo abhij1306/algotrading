@@ -142,6 +142,13 @@ whose audit warns or fails):
   [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
   `run.json`) and writes its entries, seeded near-misses of the base geometry with charts, and
   the Depth_1 gate table to `reports/<variant>/audit/` (gitignored; needs matplotlib).
+- A run with a pre-open playbook also writes `ep_candidates.csv` and the
+  `breakdowns.episodic_pivot` tables (result-standard.md). Its audit: `python
+  scripts/research/s2_ep_audit.py --run-id <id> [--seed N]` samples 20 EP entries and 10 near
+  misses (seed printed) with a 5-minute and a daily chart each, to `reports/s2-ep/audit/`. The
+  intraday-results report: `python scripts/research/s2_ep_intraday_results.py
+  --strategy-version <id> --universe <name> [--from D] [--to D]` (in-sample only), to
+  `reports/s2-ep/b7/`.
 
 ### Data audit (`data_audit.json`, `app/hat/data/audit.py`)
 

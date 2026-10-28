@@ -643,6 +643,70 @@
               }
             }
           }
+        },
+        "episodic_pivot": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "trades",
+              "by_catalyst_type",
+              "by_sales_yoy",
+              "by_gap",
+              "by_trigger_time",
+              "by_adr20",
+              "by_range_126d",
+              "by_exit_reason"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "trades": {
+                "$ref": "#/$defs/bucket"
+              },
+              "by_catalyst_type": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_sales_yoy": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_gap": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_trigger_time": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_adr20": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_range_126d": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              },
+              "by_exit_reason": {
+                "type": "object",
+                "additionalProperties": {
+                  "$ref": "#/$defs/bucket"
+                }
+              }
+            }
+          }
         }
       }
     },

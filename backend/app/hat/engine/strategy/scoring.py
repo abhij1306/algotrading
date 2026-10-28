@@ -152,10 +152,12 @@ def evaluate_playbook(
     universe: StageOutcome | None = None,
 ) -> PlaybookEvaluation:
     """The nightly stages for one playbook: universe, regime gate, setup. A later stage runs only
-    after every earlier one passed. `universe`: the universe stage already evaluated on `ctx`
-    (it is the config's, the same for every playbook)."""
+    after every earlier one passed. `universe`: the bot's universe stage already evaluated on
+    `ctx`, which a playbook with its own universe (`Playbook.universe`) does not read."""
     chosen = config.playbook(playbook)
-    if universe is None:
+    if chosen.universe is not None:
+        universe = evaluate_stage("universe", chosen.universe, ctx)
+    elif universe is None:
         universe = evaluate_stage("universe", config.universe, ctx)
     if not universe.passed:
         return PlaybookEvaluation(playbook, False, (universe,))

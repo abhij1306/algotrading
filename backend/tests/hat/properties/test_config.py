@@ -225,18 +225,29 @@ def test_close_vs_pivot_needs_vcp(
 
 @given(raw_configs())
 def test_playbook_shape(raw: dict) -> None:
-    """PBT config.playbook_shape: a playbook is a setup, a trigger list,
-    entry filters and one stop rule; the regime rule and the exit stack belong to the bot."""
+    """PBT config.playbook_shape: a playbook is a setup, a trigger list, entry filters, one stop
+    rule and optionally its own universe and exit stack; the regime rule belongs to the bot, and
+    a playbook without its own universe or exits uses the bot's."""
     config = parse_config(raw)
     stored = config.to_json()
     assert config.playbooks
     assert len({p.name for p in config.playbooks}) == len(config.playbooks)
-    assert set(Playbook.model_fields) == {"name", "setup", "trigger", "entry_filters", "stop"}
+    assert set(Playbook.model_fields) == {
+        "name",
+        "setup",
+        "trigger",
+        "entry_filters",
+        "stop",
+        "universe",
+        "exits",
+    }
     assert set(StrategyConfig.model_fields) >= {"regime", "exits", "playbooks", "universe"}
-    for name in ("regime", "exits"):
-        leaked = copy.deepcopy(stored)
-        leaked["playbooks"][0][name] = stored[name]
-        assert "extra_forbidden" in codes_of(leaked)
+    leaked = copy.deepcopy(stored)
+    leaked["playbooks"][0]["regime"] = stored["regime"]
+    assert "extra_forbidden" in codes_of(leaked)
+    first = config.playbooks[0].name
+    assert config.exits_for(first) == config.exits
+    assert config.universe_for(first) == config.universe
     twice = copy.deepcopy(stored)
     twice["playbooks"] = [stored["playbooks"][0]] * 2
     assert "duplicate_playbook" in codes_of(twice)

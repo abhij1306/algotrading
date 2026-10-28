@@ -134,3 +134,16 @@ def results_as_of(
     by_id = {str(r.id): r for r in rows}
     known = known_at((result_row(r) for r in rows), ts, rule)
     return [by_id[known[key].id] for key in sorted(known)]
+
+
+def growth_by_result(
+    session: Session, result_ids: Sequence[uuid.UUID]
+) -> dict[uuid.UUID, HatFinancialGrowth]:
+    """The growth row of each of `result_ids` that has one (the growth of the row's quarter as
+    known when the row became public)."""
+    if not result_ids:
+        return {}
+    rows = session.scalars(
+        select(HatFinancialGrowth).where(HatFinancialGrowth.result_id.in_(list(result_ids)))
+    )
+    return {row.result_id: row for row in rows}

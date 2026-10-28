@@ -9,7 +9,8 @@ step of one never delays another:
 - `housekeeping`: the calendar check, the runtime lock check (`HatRuntime.watch_lock`), the retry of
   a feed-health kill write that failed, and on a trading day the session watch, the fill sync,
   the approval expiry, the reconciliation (every 5 minutes), the resume of stranded entries and
-  the tracking of positions opened after the day was armed (`Intraday.track_positions`);
+  the tracking of positions opened after the day was armed (`Intraday.track_positions`) and the
+  refresh of the EP candidates' results filings (`Intraday.refresh_results`);
 - `announcements`, when the parts give a fetch: the NSE announcements poll (up to two feeds of
   `FETCH_TIMEOUT_SECONDS` each).
 
@@ -227,6 +228,7 @@ class Periodic:
             steps += [
                 ("sessions", MINUTE, lambda: watch_sessions(a, now)),
                 ("track", MINUTE, lambda: a.intraday.track_positions(now)),
+                ("results", MINUTE, lambda: a.intraday.refresh_results(now)),
                 ("sync", timedelta(0), lambda: a.desks.sync_due(now)),
                 ("expire", MINUTE, lambda: a.desks.expire_all(now)),
                 ("reconcile", RECONCILE_EVERY, lambda: a.desks.reconcile_all(now)),

@@ -25,7 +25,9 @@ them at 13:50, 14:20 and 14:21-14:25), the close-phase ones (`exits.close_shadow
 
 `track_positions` (housekeeping, every minute in the session) prices and subscribes an open
 position that `live.prepare` did not know: a late fill on a name not on the day's watchlist is
-marked and exited on its own price, not yesterday's close.
+marked and exited on its own price, not yesterday's close. `refresh_results` (housekeeping, every
+minute) re-reads the results filings of the pre-open candidates that `earnings_catalyst` judges,
+so a filing stored after the gap scan counts from the next bar.
 """
 
 from __future__ import annotations
@@ -33,6 +35,7 @@ from __future__ import annotations
 import logging
 import uuid
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
@@ -52,7 +55,10 @@ from ..engine.live_entry import (
     TriggerService,
     active_gap_floor,
     ep_bot_candidates,
+    ep_results,
     ep_setup_passes,
+    reads_results,
+    session_open,
     watchlist_candidates,
 )
 from ..engine.portfolio.allocation_service import policy_at
@@ -285,6 +291,7 @@ class Intraday:
         bars before `day`, the day's open, announcements of the last 24 hours."""
         data = self._book.day(day)
         now = self._now()
+        since = None if data.last_session is None else session_open(data.last_session)
         with self._session_factory() as session:
             items = [
                 EpInputs(
@@ -294,6 +301,9 @@ class Intraday:
                     announcements=tuple(
                         a.published_at for a in attached_announcements(session, iid, now)
                     ),
+                    series=_series(session, iid),
+                    results=() if since is None else ep_results(session, iid, since, now),
+                    results_since=since,
                 )
                 for symbol, iid in found.items()
             ]
@@ -307,7 +317,14 @@ class Intraday:
                     data.bars,
                     calendar=self._calendar(),
                 )
-                if ep_setup_passes(c.playbook, data.bars(c.instrument_id), day, data.last_session)
+                if ep_setup_passes(
+                    c.playbook,
+                    data.bars(c.instrument_id),
+                    day,
+                    data.last_session,
+                    c.universe,
+                    c.series,
+                )
             ]
             self._prices.track_session(session, {c.instrument_id for c in candidates})
         for candidate in candidates:
@@ -317,6 +334,34 @@ class Intraday:
         return len(candidates)
 
     # --- during the session (housekeeping) ------------------------------------------------------
+
+    def refresh_results(self, now: datetime) -> int:
+        """Re-read the results filings of each watched pre-open candidate whose playbook enables
+        `earnings_catalyst`, so a filing stored after the gap scan but inside the window counts at
+        the next bar (housekeeping, every minute in the session). Returns how many candidates got
+        new filings; nothing outside an open session."""
+        calendar = self._calendar()
+        if calendar is None or not calendar.is_open(now):
+            return 0
+        watched = [
+            c
+            for c in self._service.monitor.candidates()
+            if c.results_since is not None and reads_results(c.playbook)
+        ]
+        if not watched:
+            return 0
+        changed = []
+        with self._session_factory() as session:
+            for candidate in watched:
+                assert candidate.results_since is not None
+                found = ep_results(session, candidate.instrument_id, candidate.results_since, now)
+                if found != candidate.results:
+                    changed.append(replace(candidate, results=found))
+        for candidate in changed:
+            self._service.monitor.add(candidate)
+        if changed:
+            logger.info("results filings refreshed for %d EP candidates", len(changed))
+        return len(changed)
 
     def track_positions(self, now: datetime) -> int:
         """Price and subscribe each open position's instrument that is not yet priced by id or
@@ -495,3 +540,9 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             shift=intraday.close_shift,
         ),
     )
+
+
+def _series(session: Session, instrument_id: uuid.UUID) -> str | None:
+    """The series the instrument trades under now (the universe stage's `series_in` reads it)."""
+    row = session.get(HatInstrument, instrument_id)
+    return None if row is None else row.series
