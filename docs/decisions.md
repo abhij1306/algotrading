@@ -163,9 +163,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   EP signal carries `catalyst_type` (`earnings`, `other_announcement`, `none`) and its sales and
   EPS growth, logged on every evaluation. Off in the stored S2 seed until the plan's Part C runs.
 - **Time-anchored early volume (owner 2026-10-28).** `early_volume` `mode: time_anchored` needs
-  ADV20 x `vs_adv20` x min(1, minutes / 30), the minutes from 09:15 to the close of the trigger
-  bar, so a 09:20 break needs a sixth of the 09:45 volume; `at_trigger` (the default, left out of
-  the canonical form) keeps the flat multiple, so stored configs keep their hash.
+  ADV20 x min(1, minutes / 30), the minutes from 09:15 to the close of the trigger bar (the
+  owner's formula: `vs_adv20` is not read in this mode), so a 09:20 break needs a sixth of the
+  09:45 volume; `at_trigger` (the default, left out of the canonical form) keeps the flat
+  `vs_adv20` multiple, so stored configs keep their hash.
 - **Neglect direction (owner 2026-10-28).** `neglect` `direction: up_only` fails only a rise past
   the 63-session limit, so a stock that fell hard can still be a neglected gapper; `both`, the
   default, is unchanged. Every EP signal logs the 126-session range (max high / min low - 1).

@@ -749,3 +749,23 @@ def test_ep_audit__sma_and_opening_range() -> None:
     bar = ep_audit.Bar("X", datetime(2024, 5, 3, 9, 15, tzinfo=_IST), *(Decimal(5),) * 4, 1)
     assert ep_audit.opening_range_high([bar]) == 5.0
     assert ep_audit.opening_range_high([]) is None
+
+
+def test_ep_audit__daily_span() -> None:
+    days = [date(2023, 1, d) for d in range(2, 31)]
+    until, count = ep_audit.daily_span(days, date(2023, 1, 3), date(2023, 1, 5))
+    assert until == days[3 + ep_audit.DAILY_AFTER]
+    assert count == ep_audit.DAILY_BEFORE + max(ep_audit.SMAS) + 2 + ep_audit.DAILY_AFTER
+    assert ep_audit.daily_span(days, date(2023, 1, 30), date(2023, 1, 30))[0] == days[-1]
+
+
+def test_ep_b7__split_filings() -> None:
+    session = date(2024, 5, 3)
+    market = _filing(datetime(2024, 5, 3, 11, tzinfo=_IST), date(2024, 3, 31))
+    evening = _filing(datetime(2024, 5, 3, 18, tzinfo=_IST), date(2023, 12, 31))
+    outside = _filing(datetime(2025, 1, 2, 11, tzinfo=_IST), date(2024, 9, 30))
+    plain, by_day = ep_b7.split_filings(
+        {"a": [market, evening, outside]}, {session}, date(2024, 1, 1), date(2024, 12, 31)
+    )
+    assert plain == [("a", evening)]
+    assert by_day == {session: [("a", market)]}

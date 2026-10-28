@@ -131,7 +131,9 @@ def trigger_depth(order: Sequence[str], passed: Mapping[str, bool]) -> int:
 
 
 def catalyst_type(filing: ResultEvent | None, announced: bool) -> str:
-    return CATALYST_EARNINGS if filing else CATALYST_OTHER if announced else CATALYST_NONE
+    if filing is not None:
+        return CATALYST_EARNINGS
+    return CATALYST_OTHER if announced else CATALYST_NONE
 
 
 def _round(value: float | Decimal | None) -> float | None:

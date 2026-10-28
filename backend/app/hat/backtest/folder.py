@@ -850,7 +850,9 @@ def _episodic(result: BacktestResult, trades: Sequence[_Trade]) -> dict[str, Any
 
             def value(t: _Trade, column: str = column, rule: Any = rule) -> str | None:  # noqa: ANN401
                 cell = t.features.get(column)
-                return (cell if cell is not None else "unknown") if rule is None else rule(cell)
+                if rule is not None:
+                    return rule(cell)
+                return "unknown" if cell is None else cell
 
             block[key] = _group(mine, value)
         block["by_exit_reason"] = _group(mine, lambda t: t.exit)

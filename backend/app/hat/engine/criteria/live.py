@@ -13,9 +13,10 @@ session a `Fraction`, so a value exactly on a threshold is a tie, never a roundi
 
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -203,7 +204,7 @@ class LiveContext:
         locked_upper_circuit: bool | None,
     ) -> LiveContext:
         """This context with the entry-filter inputs of a trigger's plan set."""
-        return replace(
+        return copy.replace(
             self,
             entry=entry,
             stop=stop,

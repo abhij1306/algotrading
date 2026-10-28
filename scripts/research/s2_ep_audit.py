@@ -29,6 +29,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
@@ -42,7 +43,7 @@ EP = "episodic_pivot"
 SMAS = (10, 20, 50)
 DAILY_BEFORE, DAILY_AFTER = 120, 20  # sessions drawn before the case day and after its exit
 CASE_COLUMNS = (
-    "case",
+    "kind",
     "symbol",
     "date",
     "results_public_at",
@@ -64,7 +65,7 @@ CASE_COLUMNS = (
 
 @dataclass(frozen=True)
 class Case:
-    case: str  # entry | near_miss
+    kind: str  # entry | near_miss
     symbol: str
     date: date
     results_public_at: str
@@ -198,7 +199,7 @@ def _charts(  # pragma: no cover - drawing
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    stem = f"{case.case}_{case.date}_{case.symbol}"
+    stem = f"{case.kind}_{case.date}_{case.symbol}"
     fig, ax = plt.subplots(figsize=(12, 6))
     for i, bar in enumerate(intraday):
         ax.vlines(i, float(bar.low), float(bar.high), color="#555555", linewidth=0.8)
@@ -216,7 +217,7 @@ def _charts(  # pragma: no cover - drawing
             )
     ticks = list(range(0, len(intraday), 6))
     ax.set_xticks(ticks, [intraday[i].start.strftime("%H:%M") for i in ticks])
-    ax.set_title(f"{case.symbol} {case.date} 5-minute ({case.case}, trigger {case.trigger_time})")
+    ax.set_title(f"{case.symbol} {case.date} 5-minute ({case.kind}, trigger {case.trigger_time})")
     ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(out / f"{stem}_5m.png", dpi=110)
@@ -236,20 +237,45 @@ def _charts(  # pragma: no cover - drawing
             ax.axvline(dates.index(day), color="#999999", linestyle=":", label=label)
     ticks = list(range(0, len(dates), 20))
     ax.set_xticks(ticks, [str(dates[i]) for i in ticks])
-    ax.set_title(f"{case.symbol} daily, SMA10/20/50 ({case.case} {case.date})")
+    ax.set_title(f"{case.symbol} daily, SMA10/20/50 ({case.kind} {case.date})")
     ax.legend(loc="best")
     fig.tight_layout()
     fig.savefig(out / f"{stem}_daily.png", dpi=110)
     plt.close(fig)
 
 
-def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the database
+def daily_span(days: Sequence[date], day: date, last: date) -> tuple[date, int]:
+    """The last session a case's daily chart draws (`DAILY_AFTER` after `last`, its exit) and how
+    many bars to draw up to it: `DAILY_BEFORE` before `day` plus the SMA warm-up."""
+    at = days.index(last) if last in days else len(days) - 1
+    until = days[min(at + DAILY_AFTER, len(days) - 1)]
+    held = at - days.index(day) if day in days else 0
+    return until, DAILY_BEFORE + max(SMAS) + held + DAILY_AFTER
+
+
+def _draw(out: Path, case: Case, data: Any, view: Any) -> None:  # noqa: ANN401  # pragma: no cover - drawing
+    """A case's charts from the run's market (`MarketData`, `MarketView`)."""
     import polars as pl
+
+    from app.hat.backtest.intraday import session_bars
+
+    scale = view.price_scale(case.instrument_id, case.date)
+    intraday: Sequence[Bar] = ()
+    if data.intraday is not None and scale:
+        found = session_bars(data.intraday, case.date, {case.instrument_id: scale})
+        intraday = found.get(case.instrument_id, ())
+    until, count = daily_span(list(view.days), case.date, case.exit_date or case.date)
+    frame = data.bars.filter(
+        (pl.col("instrument_id") == case.instrument_id) & (pl.col("date") <= until)
+    ).tail(count)
+    _charts(out, case, intraday, frame.select("date", "high", "low", "close").to_dicts())
+
+
+def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the database
     from sqlalchemy import text
 
     from app.database import db_session_scope
     from app.hat.backtest.data import MarketView, load_market
-    from app.hat.backtest.intraday import session_bars
     from app.hat.backtest.run_files import read_config, read_run
     from app.hat.backtest.runs import _replayed
     from app.hat.data.store import DataStore
@@ -297,22 +323,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the da
     view = MarketView(data, spec.config.regime.index)
     out = PROJECT_ROOT / "reports" / "s2-ep" / "audit"
     (out / "charts").mkdir(parents=True, exist_ok=True)
-    days = list(view.days)
     for case in cases:
-        scale = view.price_scale(case.instrument_id, case.date)
-        intraday: Sequence[Bar] = ()
-        if data.intraday is not None and scale:
-            found = session_bars(data.intraday, case.date, {case.instrument_id: scale})
-            intraday = found.get(case.instrument_id, ())
-        last = case.exit_date or case.date
-        at = days.index(last) if last in days else len(days) - 1
-        until = days[min(at + DAILY_AFTER, len(days) - 1)]
-        frame = data.bars.filter(
-            (pl.col("instrument_id") == case.instrument_id) & (pl.col("date") <= until)
-        ).tail(DAILY_BEFORE + max(SMAS) + (at - days.index(case.date) if case.date in days else 0))
-        _charts(
-            out / "charts", case, intraday, frame.select("date", "high", "low", "close").to_dicts()
-        )
+        _draw(out / "charts", case, data, view)
     with (out / "cases.csv").open("w", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(CASE_COLUMNS))
         writer.writeheader()

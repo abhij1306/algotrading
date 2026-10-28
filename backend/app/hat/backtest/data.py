@@ -841,10 +841,13 @@ def _results(
     lineage: Mapping[str, str],
     first: date,
     end: date,
+    *,
+    wanted: bool = True,
 ) -> dict[str, list[ResultEvent]]:
     """`results_events` of the filings public from the previous session of `first` through
-    `end` (never after the period: no hold-out read). None stored is no filing."""
-    if not inspect(session.get_bind(HatFinancialResult)).has_table(
+    `end` (never after the period: no hold-out read). None stored is no filing; nothing when
+    the run did not ask for them (`wanted`)."""
+    if not wanted or not inspect(session.get_bind(HatFinancialResult)).has_table(
         HatFinancialResult.__tablename__
     ):
         return {}
@@ -1086,6 +1089,13 @@ def _content_digest(market: MarketData) -> str:
     return digest.hexdigest()
 
 
+def _results_snapshot(filings: Mapping[str, Sequence[ResultEvent]], loaded: bool) -> dict[str, int]:
+    """The snapshot's count of the results filings read, only when the run loaded them."""
+    if not loaded:
+        return {}
+    return {"financial_results": sum(len(v) for v in filings.values())}
+
+
 def results_digest_text(results: Mapping[str, Sequence[ResultEvent]]) -> str:
     """The results filings a run read, in a fixed order, for its content digest: a changed
     filing or growth is a different snapshot."""
@@ -1213,7 +1223,7 @@ def load_market(
     symbols, listed_on = _symbols(session, instruments)
     intraday = BarStore(store.root)
     sessions_5m = [d for d in intraday.days() if start <= d <= end]
-    filings = _results(session, instruments, adjustment.lineage, window[0], end) if results else {}
+    filings = _results(session, instruments, adjustment.lineage, window[0], end, wanted=results)
     market = MarketData(
         days=tuple(window),
         bars=bars,
@@ -1278,6 +1288,6 @@ def load_market(
         # these versions (CA6)
         "point_in_time": {"versions_digest": versions_sha, "versions": versions},
         "content_digest": _content_digest(market),
-        **({"financial_results": sum(len(v) for v in filings.values())} if results else {}),
+        **_results_snapshot(filings, results),
     }
     return market, snapshot

@@ -389,5 +389,6 @@ def test_reads_results() -> None:
 def test_results_digest_text_sees_a_changed_growth() -> None:
     event = _event(2, "0.3", "0.2", False)
     revised = ResultEvent(event.public_at, event.period_end, Decimal("0.31"), event.eps_yoy, False)
-    assert results_digest_text({"a": [event]}) == results_digest_text({"a": [event]})
+    same = ResultEvent(event.public_at, event.period_end, event.sales_yoy, event.eps_yoy, False)
+    assert results_digest_text({"a": [event]}) == results_digest_text({"a": [same]})
     assert results_digest_text({"a": [event]}) != results_digest_text({"a": [revised]})

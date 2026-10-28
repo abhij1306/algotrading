@@ -30,7 +30,7 @@ import statistics
 import sys
 import uuid
 from collections import Counter, defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -82,7 +82,9 @@ def first_filings(events: Iterable[ResultEvent]) -> list[ResultEvent]:
 
 def growth_group(event: ResultEvent, params: EarningsCatalystParams) -> str:
     passed = growth_passes(event, params)
-    return "undefined" if passed is None else "pass" if passed else "fail"
+    if passed is None:
+        return "undefined"
+    return "pass" if passed else "fail"
 
 
 def price_after(bars: Sequence[Bar], at: datetime) -> Decimal | None:
@@ -176,6 +178,53 @@ def _pct(value: Decimal | None) -> float | None:
     return None if value is None else round(float(value * 100), 2)
 
 
+Filing = tuple[str, ResultEvent]  # (instrument id, its first filing of a quarter)
+
+
+def split_filings(
+    results: Mapping[str, Sequence[ResultEvent]], days: Collection[date], start: date, end: date
+) -> tuple[list[Filing], dict[date, list[Filing]]]:
+    """The first filings public in `start..end`: those made during market hours on a session of
+    `days`, by day, and the rest."""
+    plain: list[Filing] = []
+    by_day: dict[date, list[Filing]] = defaultdict(list)
+    for instrument_id, events in results.items():
+        for event in first_filings(events):
+            day = event.public_at.astimezone(IST).date()
+            if not start <= day <= end:
+                continue
+            if public_bucket(event.public_at) == MARKET and day in days:
+                by_day[day].append((instrument_id, event))
+            else:
+                plain.append((instrument_id, event))
+    return plain, by_day
+
+
+def _close_after(
+    view: MarketView, days: Sequence[date], instrument_id: str, day: date, sessions: int
+) -> Decimal | None:
+    later = later_day(days, day, sessions)
+    bar = None if later is None else view.bar(instrument_id, later)
+    return None if bar is None else bar.close
+
+
+def _moves(
+    view: MarketView, days: Sequence[date], filing: Filing, session: Sequence[Bar]
+) -> dict[str, float | None]:
+    """The filing's price at public_at and its moves to each horizon's close."""
+    instrument_id, event = filing
+    day = event.public_at.astimezone(IST).date()
+    price = price_after(session, event.public_at)
+    out: dict[str, float | None] = {"price_at": None if price is None else float(price)}
+    for name, sessions in HORIZONS:
+        if sessions == 0:
+            close = session[-1].close if session else None
+        else:
+            close = _close_after(view, days, instrument_id, day, sessions)
+        out[f"move_{name}_pct"] = move_pct(price, close)
+    return out
+
+
 def _rows(
     view: MarketView,
     results: Mapping[str, Sequence[ResultEvent]],
@@ -186,41 +235,15 @@ def _rows(
 ) -> list[FilingRow]:
     params = EarningsCatalystParams()
     days = list(view.days)
-    rows: list[FilingRow] = []
-    by_day: dict[date, list[tuple[str, ResultEvent]]] = defaultdict(list)
-    plain: list[tuple[str, ResultEvent]] = []
-    for instrument_id, events in results.items():
-        for event in first_filings(events):
-            day = event.public_at.astimezone(IST).date()
-            if not start <= day <= end:
-                continue
-            if public_bucket(event.public_at) == MARKET and day in days:
-                by_day[day].append((instrument_id, event))
-            else:
-                plain.append((instrument_id, event))
-    for instrument_id, event in plain:
-        day = event.public_at.astimezone(IST).date()
-        rows.append(_row(instrument_id, event, symbol(instrument_id, day), params))
+    plain, by_day = split_filings(results, set(days), start, end)
+    rows = [_row(i, e, symbol(i, e.public_at.astimezone(IST).date()), params) for i, e in plain]
     for day in sorted(by_day):
         bars = intraday_of(day, {i for i, _ in by_day[day]})
-        for instrument_id, event in by_day[day]:
+        for filing in by_day[day]:
+            instrument_id, event = filing
             row = _row(instrument_id, event, symbol(instrument_id, day), params)
-            session = bars.get(instrument_id, ())
-            price = price_after(session, event.public_at)
-            moves = {}
-            for name, sessions in HORIZONS:
-                later = day if sessions == 0 else later_day(days, day, sessions)
-                close = None
-                if sessions == 0 and session:
-                    close = session[-1].close
-                elif later is not None and (bar := view.bar(instrument_id, later)) is not None:
-                    close = bar.close
-                moves[f"move_{name}_pct"] = move_pct(price, close)
-            rows.append(
-                FilingRow(
-                    **{**asdict(row), "price_at": None if price is None else float(price), **moves}
-                )
-            )
+            moves = _moves(view, days, filing, bars.get(instrument_id, ()))
+            rows.append(FilingRow(**{**asdict(row), **moves}))
     return sorted(rows, key=lambda r: r.public_at)
 
 
