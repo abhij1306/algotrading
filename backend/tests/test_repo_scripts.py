@@ -913,3 +913,20 @@ def test_ep_b7__split_filings() -> None:
     )
     assert plain == [("a", evening)]
     assert by_day == {session: [("a", market)]}
+
+
+def test_overlay__latest_ingest_keeps_one_row_per_symbol_and_day() -> None:
+    old = "0190a000-0000-7000-8000-000000000000"
+    new = "0190b000-0000-7000-8000-000000000000"
+    rows = [
+        {"symbol": "NIFTYBEES", "date": "2024-01-02", "close": 1.0, "ingest_run_id": new},
+        {"symbol": "NIFTYBEES", "date": "2024-01-02", "close": 9.0, "ingest_run_id": old},
+        {"symbol": "NIFTYBEES", "date": "2024-01-03", "close": 2.0, "ingest_run_id": old},
+        {"symbol": "GOLDBEES", "date": "2024-01-02", "close": 3.0, "ingest_run_id": old},
+    ]
+    kept = overlay.latest_ingest(rows)
+    assert [(r["symbol"], r["date"], r["close"]) for r in kept] == [
+        ("NIFTYBEES", "2024-01-02", 1.0),
+        ("NIFTYBEES", "2024-01-03", 2.0),
+        ("GOLDBEES", "2024-01-02", 3.0),
+    ]

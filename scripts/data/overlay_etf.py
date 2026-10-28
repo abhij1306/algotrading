@@ -359,6 +359,19 @@ def year_chunks(lo: date, hi: date, years: int) -> list[tuple[date, date]]:
     return out
 
 
+def latest_ingest(
+    rows: Iterable[Mapping[str, Any]], key: Sequence[str] = ("symbol", "date")
+) -> list[Mapping[str, Any]]:
+    """The latest ingest run's row per `key`, as HAT's `bars_daily` view keeps (run ids are
+    uuid v7, so their order is time order), in the order of the rows kept."""
+    best: dict[tuple[Any, ...], Mapping[str, Any]] = {}
+    for r in rows:
+        k = tuple(r[c] for c in key)
+        if k not in best or str(r["ingest_run_id"]) > str(best[k]["ingest_run_id"]):
+            best[k] = r
+    return list(best.values())
+
+
 def kotak_bars(candles: Iterable[Sequence[Any]], source: str) -> list[Bar]:
     """Daily candles [ts, o, h, l, c, v] as bars by their IST date."""
     return [
@@ -384,7 +397,7 @@ def _write_once(path: Path, data: bytes) -> None:
     if path.exists():
         return
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{time.time_ns()}.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
 
@@ -434,8 +447,10 @@ def cmd_local(work: Work) -> None:
         t = ds.dataset(HAT_DATA_ROOT / "bars_daily_raw", format="parquet", partitioning="hive")
         df = t.to_table(filter=pc.field("symbol").isin(list(ETFS))).to_pandas()
         cols = ["date", "symbol", "isin", "series", "open", "high", "low", "close", "volume"]
-        df = df.assign(date=df["date"].astype(str))[cols].sort_values(["symbol", "date"])
-        df.to_csv(bars_path, index=False)
+        df = df.assign(date=df["date"].astype(str), ingest_run_id=df["ingest_run_id"].astype(str))
+        rows = latest_ingest(df[[*cols, "ingest_run_id"]].to_dict("records"))
+        rows.sort(key=lambda r: (r["symbol"], r["date"]))
+        _write_csv(bars_path, cols, ([r[c] for c in cols] for r in rows))
     index_path = out / "index_daily.csv"
     if not index_path.exists():
         t = ds.dataset(HAT_DATA_ROOT / "index_daily", format="parquet", partitioning="hive")
