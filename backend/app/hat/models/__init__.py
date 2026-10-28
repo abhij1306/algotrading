@@ -8,6 +8,7 @@ them (SQLite in tests, Postgres in production).
 
 from .controls import HatExposureState, HatKillSwitch, HatModeChange
 from .events import HatEvent
+from .fundamentals import HatFundamentalFact, HatFundamentalFiling, HatFundamentalMetric
 from .ops import (
     HatBrokerSession,
     HatCommandLog,
@@ -63,6 +64,9 @@ __all__ = [
     "HatEvent",
     "HatFinancialGrowth",
     "HatFinancialResult",
+    "HatFundamentalFact",
+    "HatFundamentalFiling",
+    "HatFundamentalMetric",
     "HatFill",
     "HatHoldingBaseline",
     "HatOrder",

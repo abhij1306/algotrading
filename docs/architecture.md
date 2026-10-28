@@ -105,7 +105,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   membership by date, announcements, demerger notices, broker symbols, universes, quality checks,
   and the quarterly financial results (`hat_financial_result`, one row per filing version,
   append-only; `hat_financial_growth`, derived from it; `data/results/`, read point in time with
-  `results_as_of`).
+  `results_as_of`), and the fundamentals store built from the same cache
+  (`hat_fundamental_filing`, `hat_fundamental_fact`, `hat_fundamental_metric`;
+  `data/fundamentals/`, docs/fundamentals.md).
   Only the data jobs and importers write it (`HatDataSessionLocal`, `db_session_scope(writes_data=True)`:
   the nightly ingest, `ca.adjust`, quality gate, reference, bands, calendar, announcements poll,
   the `app.hat.data` command lines and the admin data commands `admin.DATA_COMMANDS`); every other

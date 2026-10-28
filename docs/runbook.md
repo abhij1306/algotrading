@@ -274,6 +274,27 @@ filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`. Rows are append-only 
 UPDATE and DELETE), so try a change on a scratch database first. Run `parse` only after `fetch` has
 finished: a quarter not yet fetched would be backfilled from the secondary source.
 
+### Fundamentals
+
+`hat_fundamental_filing`, `hat_fundamental_fact` and `hat_fundamental_metric` hold every figure
+the results cache gives, and the ratios derived from it (docs/fundamentals.md). Run from
+`backend/` with the venv, `HAT_DATA_ROOT` and `DB_NAME=hat_live`, after the results `fetch` and
+`fetch-secondary` steps have finished:
+
+```bash
+python -m app.hat.data.fundamentals extract   # the cache into filings and facts (about 15 min)
+python -m app.hat.data.fundamentals derive    # hat_fundamental_metric, rebuilt
+python -m app.hat.data.fundamentals report --out <path>.md [--example RELIANCE]
+```
+
+`extract` reads only the cache and replaces both tables. With `--symbols A,B` it replaces only
+those instruments' rows. `--from`/`--to` limit the NSE period ends (default 2020-03-31 to
+today). The outcome counts go to `<HAT_DATA_ROOT>/fundamentals/extract-outcomes.json`. `derive`
+reads the stored filings, the daily closes and the split and bonus factors, and replaces the
+metrics. `report` writes the coverage report (default
+`<HAT_DATA_ROOT>/fundamentals/coverage-<date>.md`). Every step is rerunnable: the same cache
+gives the same rows.
+
 ### First live session checks (O2 day)
 
 Checks on the first session with a real Fyers account; note each in the Check log. They place

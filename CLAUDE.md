@@ -18,6 +18,7 @@ defaults: the last two sections of `docs/decisions.md`.
 | `docs/invariants.md` | The trading, money-safety and data rules the code must keep |
 | `docs/decisions.md` | Owner decisions in force with their reasons; planned work; pending defaults |
 | `docs/runbook.md` | Operator procedures: run, deploy, admin CLI, data tools, alerts, backup |
+| `docs/fundamentals.md` | The fundamentals store: tables, canonical items, derived-metric formulas |
 | `docs/agents/` | The orchestrator guide and the builder protocol |
 | `docs/backtests/` | The backtest process (`process.md`: every command, knob and check) and the result standard |
 | `README.md` | The public pitch |

@@ -359,6 +359,24 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   consolidated-first scope a quarter's standalone row is read only where that quarter has no
   consolidated row, so a quarter with consolidated results never falls back to standalone.
 
+- **Fundamentals store (owner 2026-10-28).** The full financial statements are built from the
+  results data already downloaded: the NSE results XBRL and the secondary source's company pages,
+  read from the cache with no new download. They are stored for later use, not read by any
+  strategy. Every numeric fact of each NSE document for its period is kept long format: the
+  quarter, the year to date, the half-year balance sheet and the half-year cash flow, with
+  segments and other dimensional lines. The main items map to canonical names. Bank, NBFC and
+  insurer taxonomies map what has a counterpart and keep the rest raw. Every figure of each page
+  (quarters, ten-plus years of profit and loss, balance sheet, cash flow, ratios, shareholding)
+  is kept the same way. The scope and basis are the results store's: NIFTY 500 point-in-time
+  members, consolidated first. NSE wins wherever both sources give a figure. Page figures are
+  restated as of the fetch and are flagged not point-in-time (`point_in_time=false`). Their
+  `public_at` is NSE's for the same period, else the regulatory deadline (45 days after a
+  quarter, 60 for March or a year, 21 for a shareholding pattern), estimated, and never after
+  the fetch. Ratios are derived point in time: a metric as of a moment reads only filings public
+  by then, valuations use the last close known then, and share counts are carried across splits
+  and bonuses. Each formula is written once (`docs/fundamentals.md`). The tables are projections
+  of the cache, replaced on each run, so no version history is kept beyond the cache's.
+
 ## Operations
 
 - **Self-hosted, one machine.** Always-on host with an ISP static IP registered with Fyers, a UPS
