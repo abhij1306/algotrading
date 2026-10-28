@@ -1,0 +1,19 @@
+[
+ {
+  "audited": "Un-Audited",
+  "broadCastDate": "15-Jan-2025 17:04:46",
+  "companyName": "HDFC Life Insurance Company Limited",
+  "consolidated": "Non-Consolidated",
+  "cumulative": "Non-cumulative",
+  "difference": "00:00:40",
+  "exchdisstime": "15-Jan-2025 17:05:26",
+  "insuranceType": "Life-Insurance",
+  "ixbrl": "https://nsearchives.nseindia.com/corporate/ixbrl/LI_117241_15012025170445_iXBRL_WEB.html",
+  "naAttach": "https://nsearchives.nseindia.com/na_attachments/HDFCLIFE_NA_15012025170446_1.zip",
+  "period": "Quarterly",
+  "periodEnd": "31-Dec-2024",
+  "relatingTo": "Third Quarter",
+  "symbol": "HDFCLIFE",
+  "xbrl": "https://nsearchives.nseindia.com/corporate/xbrl/LI_117241_1346285_15012025050445.xml"
+ }
+]

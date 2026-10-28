@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:in-capmkt="http://www.bseindia.com/xbrl/2020-03-31/in-capmkt" xmlns:in-capmkt-roles="http://www.bseindia.com/xbrl/Insurance/2020-03-31/in-capmkt-roles" xmlns:in-capmkt-ent="http://www.bseindia.com/xbrl/Insurance/2020-03-31/in-capmkt/in-capmkt-ent" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns:xl="http://www.xbrl.org/2003/XLink">
+<link:schemaRef xlink:type="simple" xlink:href="in-capmkt-ent-2020-03-31.xsd"/>
+<in-capmkt:NatureOfReportStandaloneConsolidated contextRef="OneI">Standalone</in-capmkt:NatureOfReportStandaloneConsolidated>
+</xbrli:xbrl>
