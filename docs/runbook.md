@@ -406,7 +406,11 @@ steps with `--help`): `kotak_5m` fetches the broker's 5-minute history for the N
 current and former members (`members` from hat_live, then `download`, `former-map`,
 `former-download`; market data only, about one call a second, resumable) into the
 `raw_5m/<SYMBOL>.parquet` layout `bars5m_import` reads; `nifty500_membership` builds the index
-history (Index membership).
+history (Index membership); `overlay_etf` gathers the idle-cash overlay's research data
+(NIFTYBEES, GOLDBEES, LIQUIDBEES daily and 5-minute bars, the TRIs, the 1D Rate Index and
+LIQUIDBEES' dividends from the AMC) into raw files it never overwrites, and builds the
+split-adjusted bars, the LIQUIDBEES total-return series and a coverage report from them; it
+writes nothing to the database.
 
 After an import or correction: `lineage build`, then `features`: it recomputes the chains whose
 factors, dividends or links changed (every date when more than `MAX_CHAINS` did), so `--full` is

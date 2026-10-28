@@ -263,12 +263,15 @@ def refresh_scrips(client: Any, work: Work) -> None:  # noqa: ANN401
 
 
 class Paced:
-    """historical_data at most once per `min_interval` seconds, retrying transient failures."""
+    """historical_data at most once per `min_interval` seconds, retrying transient failures;
+    `token` is a scrip token or an index name the endpoint takes ("Nifty 50")."""
 
     def __init__(self, client: Any, min_interval: float) -> None:  # noqa: ANN401
         self.client, self.min_interval, self.last, self.calls = client, min_interval, 0.0, 0
 
-    def candles(self, token: str, start: date, end: date) -> list[list[Any]]:
+    def candles(
+        self, token: str, start: date, end: date, interval: str = "5min"
+    ) -> list[list[Any]]:
         r: object = None
         for attempt in range(8):
             wait = self.last + self.min_interval - time.monotonic()
@@ -279,7 +282,7 @@ class Paced:
             try:
                 r = self.client.historical_data(
                     neosymbol=f"nse_cm|{token}",
-                    interval="5min",
+                    interval=interval,
                     from_date=start.isoformat(),
                     to_date=end.isoformat(),
                 )
