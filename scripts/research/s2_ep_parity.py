@@ -21,8 +21,8 @@ on or after it is the day, or a results board meeting that session or the one be
 the engine's `earnings_catalyst` (the newest filing public after the previous session's 09:15
 and by the trigger, with a defined sales growth), each difference with its cause.
 
-`parity`: a separate, simple implementation of the EP rules (`IndependentEp`) reproduces the
-engine's candidates (with the gate each failed) and its trades.
+`parity`: a separate, simple implementation of the EP rules (`s2_ep_independent.EpBook`) reproduces
+the engine's candidates (with the gate each failed) and its trades.
 
     DB_NAME=hat_live PGOPTIONS="-c default_transaction_read_only=on" HAT_DATA_ROOT=<data> \\
         venv/bin/python scripts/research/s2_ep_parity.py {reconcile,parity} \\
@@ -300,7 +300,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.out:
         pc.REPORTS.mkdir(parents=True, exist_ok=True)
         (pc.REPORTS / args.out).write_text(json.dumps(report, indent=1, default=str) + "\n")
-    return 0
+    return 0 if report.get("passed", True) else 1
 
 
 if __name__ == "__main__":

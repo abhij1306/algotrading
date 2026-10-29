@@ -33,13 +33,18 @@ from sqlalchemy import select, text  # noqa: E402
 
 from app.database import db_session_scope  # noqa: E402
 from app.hat.data.audit import CLOSE_5M_PCT  # noqa: E402
+from app.hat.data.bars import BAR_WIDTH  # noqa: E402
+from app.hat.data.sessions import SESSION_CLOSE, SESSION_OPEN  # noqa: E402
 from app.hat.models import HatEvent, HatIndexMember  # noqa: E402
 from app.hat.settings import operator_settings  # noqa: E402
 from app.paths import PROJECT_ROOT  # noqa: E402
 
 HOLD_OUT_START = "2025-01-01"
-GRID_BARS = 75  # 09:15 to 15:25
-FIRST_MIN, LAST_MIN = 555, 925  # 09:15 and 15:25, minutes after midnight IST
+# the grid `on_basis` reads: the regular session's 5-minute bars, in minutes after midnight IST
+FIRST_MIN = SESSION_OPEN.hour * 60 + SESSION_OPEN.minute
+WIDTH_MIN = int(BAR_WIDTH.total_seconds()) // 60
+LAST_MIN = SESSION_CLOSE.hour * 60 + SESSION_CLOSE.minute - WIDTH_MIN
+GRID_BARS = (LAST_MIN - FIRST_MIN) // WIDTH_MIN + 1
 RANGE_PCT = 0.1
 _FLOATS = ("adv", "open_off", "close_off", "high_off", "low_off")
 BUCKETS = ((0, 10), (10, 25), (25, 50), (50, 100), (100, None))  # ADV20, Rs crore
@@ -60,8 +65,9 @@ five as (
     select instrument_id, cast(date as date) as date,
            count(*) as n,
            count(distinct bar_start) as n_distinct,
-           count(*) filter (where (hour(s) * 60 + minute(s) - 555) % 5 = 0 and second(s) = 0
-                               and hour(s) * 60 + minute(s) between 555 and 925) as on_grid,
+           count(*) filter (where (hour(s) * 60 + minute(s) - $first) % $width = 0
+                               and second(s) = 0
+                               and hour(s) * 60 + minute(s) between $first and $last) as on_grid,
            min(s) as first_start, max(s) as last_start,
            arg_min(open, bar_start) as first_open, arg_max(close, bar_start) as last_close,
            max(high) as high, min(low) as low
@@ -206,6 +212,9 @@ def main(argv: list[str] | None = None) -> int:
             "daily": str(root / "bars_daily_raw" / "*" / "*.parquet"),
             "five": str(root / "bars_5m" / "*" / "*.parquet"),
             "holdout": HOLD_OUT_START,
+            "first": FIRST_MIN,
+            "last": LAST_MIN,
+            "width": WIDTH_MIN,
         },
     )
     names = [d[0] for d in cur.description]

@@ -5,14 +5,18 @@ of the same portfolio file: the nightly watchlist, the signals, the entries (dat
 exits (date, reason, price) and the trade list.
 
 The independent side never calls the engine's scan, criteria, trigger, stop, sizing or exit
-code. It reads the loaded market (`load_market`: the stored adjusted bars, features,
-point-in-time membership, dividends, delistings) and shares only the cost schedule (`costs`:
-slippage and charges, checked on their own in B3) and two data classifications (`isin`
-ordinary equity, the NSE tick slabs' table). Every rule it applies:
+code. It computes the features it reads (adv20, adr20, adtr20, rs_weighted: `own_features`)
+from the bars and compares them with the stored ones (`feature_check`). It shares with the
+engine, each covered by its own check: the loaded market (`load_market`: the stored adjusted
+bars, point-in-time membership, series, dividends, delistings and the results filter; B1),
+the fill model (`spec.fills.fill` and `affordable`: slippage, charges, the LIMIT cap, the DP
+charge and the sizing's cash term; B3) and two data classifications (`isin` ordinary equity,
+the NSE tick slabs' table). The rules it writes out by hand are refused unless the resolved
+config states them (`preconditions`). Every rule it applies:
 
 - night `prev` for trade date d; the regime: NIFTY 500 close of `prev` above the mean of its
   last 50 closes; the universe: a NIFTY 500 member on d and on the session after d (the entry
-  gate's conservative day), active, series EQ/BE as of `prev`, ordinary equity, a bar on `prev`;
+  gate's conservative day), series EQ/BE as of `prev`, ordinary equity, a bar on `prev`;
   mean traded value of the 20 bars through `prev` at least Rs 10 cr, raw close at least Rs 50;
 - the trend template on the dividend-adjusted (total return) series, bars since the last series
   break (a gap of more than 92 days): close > SMA150, close > SMA200, SMA150 > SMA200, SMA200
@@ -80,6 +84,21 @@ E4 = Decimal("0.0001")
 BREAK_DAYS = 92
 CIRCUIT_BANDS = (2, 5, 10, 20)
 SUSPENSION_SESSIONS = 5
+# The rules this script writes out by hand (module docstring), as the resolved config states
+# them: a run whose config says otherwise is refused (`preconditions`).
+TEMPLATE = (
+    ("sma_above", {"a": "close", "b": 150}),
+    ("sma_above", {"a": "close", "b": 200}),
+    ("sma_above", {"a": 150, "b": 200}),
+    ("sma_rising", {"sma": 200, "lookback_days": 21}),
+    ("sma_above", {"a": 50, "b": 150}),
+    ("sma_above", {"a": 50, "b": 200}),
+    ("sma_above", {"a": "close", "b": 50}),
+    ("pct_from_52w_low", {"min_pct": 30.0}),
+    ("pct_from_52w_high", {"max_pct_below": 25.0}),
+    ("close_vs_pivot", {"max_above_pct": 0.0}),
+)
+VCP_UNSUPPORTED = ("max_high_spread_pct", "min_first_depth_pct", "min_contraction_bars")
 
 
 def dec(x: float) -> Decimal:
@@ -168,12 +187,98 @@ def instruments(data: MarketData) -> dict[str, Inst]:
     return out
 
 
-def features(data: MarketData) -> dict[tuple[str, date], dict[str, float | None]]:
-    cols = [c for c in ("adr20", "adv20", "rs_weighted") if c in data.features.columns]
-    out = {}
-    for row in data.features.select(["instrument_id", "date", *cols]).iter_rows(named=True):
-        out[(row["instrument_id"], row["date"])] = row
+FEATURES = ("adv20", "adr20", "adtr20", "rs_weighted")
+RS_HORIZONS = ((63, 0.4), (126, 0.2), (189, 0.2), (252, 0.2))  # 3/6/9/12 months of 21 sessions
+FEATURE_RTOL = 1e-9
+
+
+def _rolling_mean(x: np.ndarray, seg: np.ndarray, n: int) -> np.ndarray:
+    """The mean of the last `n` rows of each row's series segment; NaN without `n` rows or with a
+    NaN among them."""
+    out = np.full(len(x), np.nan)
+    for i in range(n - 1, len(x)):
+        if i - n + 1 >= seg[i]:
+            out[i] = math.fsum(x[i - n + 1 : i + 1]) / n
     return out
+
+
+def own_features(data: MarketData, inst: Mapping[str, Inst]) -> dict[tuple[str, date], dict]:
+    """adv20, adr20, adtr20 and rs_weighted of every bar, from the bars: on the total-return
+    series (the price basis times the dividend factor) within the series segment, 20-row means
+    of the volume, of 100 (high / low - 1) and of the true range (with the bar's previous close
+    at the previous bar's factor, the first bar's at its own, when positive and not across a
+    series break) over the day's dividend factor, and 0.4 r63 + 0.2 r126 + 0.2 r189 +
+    0.2 r252 of the close (none without 252 earlier rows)."""
+    prev_close = {
+        f["instrument_id"][0]: f["prev_close"].cast(float).fill_null(np.nan).to_numpy()
+        for f in data.bars.select("instrument_id", "prev_close").partition_by(
+            "instrument_id", maintain_order=True
+        )
+    }
+    out: dict[tuple[str, date], dict] = {}
+    for iid, s in inst.items():
+        c, h, l = s.c * s.div, s.h * s.div, s.l * s.div  # noqa: E741
+        # the previous session's close on the total-return series: at that session's factor
+        # (the first bar's own); a first bar starts no series, so its previous close counts
+        pc_ = prev_close[iid] * np.r_[s.div[:1], s.div[:-1]]
+        first = np.arange(len(c)) == s.seg
+        first[:1] = False
+        usable = (pc_ > 0) & ~first
+        tr = np.where(usable, np.fmax(h, pc_), h) - np.where(usable, np.fmin(l, pc_), l)
+        ratio = np.where(l > 0, h / np.where(l > 0, l, 1.0) - 1.0, np.nan)
+        adv = _rolling_mean(s.vol, s.seg, 20)
+        adr = 100.0 * _rolling_mean(ratio, s.seg, 20)
+        adtr = _rolling_mean(tr, s.seg, 20) / s.div
+        for i, day in enumerate(s.days):
+            rs: float | None = 0.0
+            for n, w in RS_HORIZONS:
+                base = c[i - n] if i - n >= s.seg[i] else np.nan
+                if not base > 0 or np.isnan(c[i]):
+                    rs = None
+                    break
+                rs = rs + w * (c[i] / base - 1.0)
+            out[(iid, day)] = {
+                "adv20": None if np.isnan(adv[i]) else float(adv[i]),
+                "adr20": None if np.isnan(adr[i]) else float(adr[i]),
+                "adtr20": None if np.isnan(adtr[i]) else float(adtr[i]),
+                "rs_weighted": rs,
+            }
+    return out
+
+
+def feature_check(
+    own: Mapping[tuple[str, date], dict], data: MarketData, start: date, end: date
+) -> dict[str, Any]:
+    """The parity's features against the stored ones on every stored row of `start..end`: per
+    feature the rows compared, those equal within a relative 1e-9, those where one side has no
+    value, and the first differences."""
+    report: dict[str, Any] = {}
+    stored = data.features.filter((data.features["date"] >= start) & (data.features["date"] <= end))
+    for name in FEATURES:
+        if name not in stored.columns:
+            continue
+        same, one_sided, differ = 0, 0, []
+        for iid, day, v in stored.select("instrument_id", "date", name).iter_rows():
+            mine = (own.get((iid, day)) or {}).get(name)
+            v = None if v is None or (isinstance(v, float) and math.isnan(v)) else v
+            if mine is None or v is None:
+                if mine is None and v is None:
+                    same += 1
+                else:
+                    one_sided += 1
+                    differ.append((str(day), iid, v, mine))
+            elif math.isclose(mine, v, rel_tol=FEATURE_RTOL, abs_tol=1e-12):
+                same += 1
+            else:
+                differ.append((str(day), iid, v, mine))
+        report[name] = {
+            "rows": stored.height,
+            "same": same,
+            "one_sided": one_sided,
+            "differ": len(differ) - one_sided,
+            "first": differ[:5],
+        }
+    return report
 
 
 def members_on(data: MarketData) -> dict[str, list[tuple[date, date | None]]]:
@@ -297,7 +402,7 @@ def _sma(x: np.ndarray, n: int) -> float:
 
 
 def template(c: np.ndarray, h: np.ndarray, l: np.ndarray) -> bool:  # noqa: E741
-    if len(c) < 252 or len(c) < 221:
+    if len(c) < 252:
         return False
     close = c[-1]
     s50, s150, s200 = _sma(c, 50), _sma(c, 150), _sma(c, 200)
@@ -401,11 +506,70 @@ class Out:
     final: Decimal | None = None  # the cash after the period-end sales
 
 
+def preconditions(spec: RunSpec) -> list[str]:
+    """What of the resolved S1 config this script does not implement (empty: all of it)."""
+    cfg, conv = spec.config, spec.conventions
+    unmet = []
+    if len(cfg.playbooks) != 1:
+        unmet.append("one playbook")
+    pb = cfg.playbooks[0]
+    hard = tuple(
+        (c.type, dict(c.params)) for c in pb.setup.criteria if c.enabled and c.mode == "hard"
+    )
+    if hard != TEMPLATE:
+        unmet.append(f"the trend template and close_vs_pivot as written, not {hard}")
+    vcp = [c for c in pb.setup.criteria if c.enabled and c.mode != "hard"]
+    if [c.type for c in vcp] != ["vcp"]:
+        unmet.append("one scored criterion, vcp")
+    elif (
+        any(vcp[0].params.get(k) is not None for k in VCP_UNSUPPORTED)
+        or vcp[0].params.get("pivot_source") != "vcp"
+    ):
+        unmet.append(f"vcp without {', '.join(VCP_UNSUPPORTED)}, pivot_source vcp")
+    trig = [
+        (t.type, t.params.get("level"), t.params.get("confirm")) for t in pb.trigger if t.enabled
+    ]
+    if trig != [("price_breaks_level", "pivot", "close")]:
+        unmet.append(f"the trigger price_breaks_level at the pivot, not {trig}")
+    if [f.type for f in pb.entry_filters if f.enabled] != ["max_chase"]:
+        unmet.append("one entry filter, max_chase")
+    if type(pb.stop).__name__ != "StopBelowFinalContractionLow" or pb.stop.min_pct:
+        unmet.append("the stop below the final contraction low without min_pct")
+    regime = cfg.regime
+    if regime.rule != "close_above_sma_and_rising" or regime.params.get("rising_days", 0) != 0:
+        unmet.append("the regime close above its SMA (rising_days 0)")
+    if {u.type for u in cfg.universe if u.enabled} != {"series_in", "min_turnover", "min_price"}:
+        unmet.append("the universe series_in, min_turnover, min_price")
+    exits = {e.rule: e for e in cfg.exits if e.enabled}
+    if set(exits) != {"hard_stop", "close_below_sma", "trailing_swing_low"} or any(
+        getattr(e, "sell_fraction", 1) != 1
+        or getattr(e, "start_r", None) is not None
+        or getattr(e, "grace_sessions", None) is not None
+        or getattr(e, "above_stop", False)
+        for e in exits.values()
+    ):
+        unmet.append("the full exits hard_stop, close_below_sma, trailing_swing_low, no options")
+    if (
+        conv.entry_bars,
+        conv.entry_fill_rule,
+        conv.slot_order,
+        conv.ambiguous,
+        conv.regime_mult,
+        conv.suspension_sessions,
+    ) != ("daily", "penetration_1_tick", "rs", "pessimistic", "1", SUSPENSION_SESSIONS):
+        unmet.append("conventions daily, penetration_1_tick, rs, pessimistic, regime_mult 1")
+    if spec.co_sleeves or spec.overlay is not None:
+        unmet.append("no co-sleeve, no overlay")
+    return unmet
+
+
 class Book:
     def __init__(self, data: MarketData, spec: RunSpec) -> None:
+        if unmet := preconditions(spec):
+            raise SystemExit("s1_parity does not cover: " + "; ".join(unmet))
         self.data, self.spec = data, spec
         self.inst = instruments(data)
-        self.feat = features(data)
+        self.feat = own_features(data, self.inst)
         self.members = members_on(data)
         self.scan = Scanner(data, spec, self.inst)
         policy = spec.policy.policy
@@ -451,6 +615,26 @@ class Book:
             return None
         adj, raw = s.c4[last], Decimal(repr(float(s.raw[last]))).quantize(E4)
         return (t * adj / raw).quantize(E4, ROUND_HALF_EVEN)
+
+    def scan_tick(self, iid: str, prev: date, day: date) -> Decimal | None:
+        """The tick of `day` as the scan night `prev` prices it: the slab of the last raw close
+        of the month before, in the units of the scan's prices by the adjusted and raw closes of
+        the last bar through `prev`, as doubles (the slab itself when they are equal), half to
+        even to 4 places, at least 0.0001."""
+        s = self.inst[iid]
+        n = bisect_left(s.days, day)
+        month = bisect_left(s.days[:n], day.replace(day=1))
+        ref = month - 1 if month - 1 >= 0 else n - 1
+        if ref < 0 or np.isnan(s.raw[ref]):
+            return None
+        t = tick_size(Decimal(repr(float(s.raw[ref]))))
+        last = s.last_through(prev)
+        if t is None or last is None or not (s.c[last] > 0 and s.raw[last] > 0):
+            return None
+        adj, raw = Decimal(repr(float(s.c[last]))), Decimal(repr(float(s.raw[last])))
+        if adj == raw:
+            return t
+        return max((t * adj / raw).quantize(E4, ROUND_HALF_EVEN), E4)
 
     def bar(self, iid: str, day: date) -> int | None:
         s = self.inst.get(iid)
@@ -504,8 +688,9 @@ class Book:
         self.sold_today.add((day, p.iid))
         self.cash += filled * p.qty - fees
         self.positions.remove(p)
-        self.out.fills.append((day, p.iid, "sell", p.qty, filled, fees))
-        self.out.trades.append((p.iid, p.entry_day, p.entry, p.stop, p.qty, day, reason, filled))
+        self.out.fills.append((day, p.iid, "exit_full", "sell", p.qty, filled, fees))
+        leg = ((day, p.qty, filled, fees, reason),)  # one leg: no partial exits
+        self.out.trades.append((p.iid, p.entry_day, p.entry, p.stop, p.qty, day, reason, leg))
         if reason == "hard_stop":
             self.stopouts += 1
 
@@ -583,7 +768,8 @@ class Book:
             rows.append(found)
         rows.sort(key=lambda r: (-r.score, r.iid))
         for r in rows:
-            self.out.watch.append((day, r.iid, round(r.score, 4), r.pivot))
+            planned = self.planned_stop(r, prev)
+            self.out.watch.append((day, r.iid, round(r.score, 4), r.pivot, planned))
         return rows
 
     def morning(self, day: date) -> None:
@@ -699,7 +885,7 @@ class Book:
             p = Position(r.iid, day, qty, filled, price, stop, r.pivot_date)
             self.positions.append(p)
             self.used.add((r.iid, r.pivot_date))
-            self.out.fills.append((day, r.iid, "buy", qty, filled, fees))
+            self.out.fills.append((day, r.iid, "entry", "buy", qty, filled, fees))
             self.signal(day, r, "Open", None, price, stop, qty)
             entered += 1
             # the entry-day low after the break (the engine's ADR20 estimate)
@@ -716,6 +902,18 @@ class Book:
             self.engine_signal[(r.iid, day)] = {"dip": dip}
             if dip is not None and dip <= stop:
                 self.sell(p, day, stop, "hard_stop")
+
+    def planned_stop(self, r: Setup, prev: date) -> Decimal | None:
+        """The night's stop at the pivot: the base low less the buffer floored to the tick of
+        the calendar day after `prev` (standing for the next session), none without a tick,
+        not below the pivot or wider than the cap."""
+        tick = self.scan_tick(r.iid, prev, prev + timedelta(days=1))
+        if tick is None:
+            return None
+        stop = floor_tick(r.base_low * (100 - self.stop_buffer) / 100, tick)
+        if not 0 < stop < r.pivot or (r.pivot - stop) * 100 > self.stop_max * r.pivot:
+            return None
+        return stop
 
     def signal(self, day, r, state, reason, price, stop, qty) -> None:  # noqa: ANN001
         self.out.signals.append((day, r.iid, state, reason, price, stop, qty))
@@ -824,7 +1022,7 @@ def replay_check(book: Book, engine_trades: list[tuple]) -> dict[str, Any]:
 def engine_rows(result: BacktestResult) -> dict[str, list[tuple]]:
     return {
         "watch": [
-            (w.trade_date, w.instrument_id, round(float(w.score), 4), w.pivot)
+            (w.trade_date, w.instrument_id, round(float(w.score), 4), w.pivot, w.planned_stop)
             for w in result.watchlists
         ],
         "signals": [
@@ -840,28 +1038,42 @@ def engine_rows(result: BacktestResult) -> dict[str, list[tuple]]:
                 t.qty,
                 t.exit_date,
                 t.exit_reason,
-                t.legs[0].price if t.legs else None,
+                tuple((g.day, g.qty, g.price, g.fees, g.rule) for g in t.legs),
             )
             for t in result.trades
         ],
-        "fills": [(f.day, f.instrument_id, f.side, f.qty, f.price, f.fees) for f in result.fills],
+        "fills": [
+            (f.day, f.instrument_id, f.purpose, f.side, f.qty, f.price, f.fees)
+            for f in result.fills
+        ],
         "equity": [(d, e) for d, e in result.equity],
     }
 
 
 def _norm(row: tuple) -> tuple:
-    return tuple(v.normalize() if isinstance(v, Decimal) else v for v in row)
+    return tuple(
+        v.normalize() if isinstance(v, Decimal) else _norm(v) if isinstance(v, tuple) else v
+        for v in row
+    )
 
 
-def compare(engine: Mapping[str, list[tuple]], ours: Out) -> dict[str, Any]:
+def compare(
+    engine: Mapping[str, list[tuple]], ours: Out, engine_skips: Mapping[str, int]
+) -> dict[str, Any]:
+    """Each kind of row, engine against parity as multisets, every row with every field; the
+    equity row by row through the last session (the engine's last mark is after the
+    period-end sales: the parity's cash after them); the skip counts by reason. `passed`: no
+    difference anywhere."""
     report: dict[str, Any] = {}
-    # the engine's last mark is after the period-end sales: compared as the final equity
+    equity = [(d, e) for d, e, _ in ours.equity[:-1]]
+    if ours.equity:
+        equity.append((ours.equity[-1][0], ours.final))
     named = (
         ("watch", engine["watch"], ours.watch),
         ("signals", engine["signals"], ours.signals),
         ("trades", engine["trades"], ours.trades),
         ("fills", engine["fills"], ours.fills),
-        ("equity", engine["equity"][:-1], [(d, e) for d, e, _ in ours.equity[:-1]]),
+        ("equity", engine["equity"], equity),
     )
     for name, theirs, mine in named:
         a = [_norm(r) for r in theirs]
@@ -874,6 +1086,15 @@ def compare(engine: Mapping[str, list[tuple]], ours: Out) -> dict[str, Any]:
             "only_parity": only_p,
         }
     report["final_equity"] = {"engine": str(engine["equity"][-1][1]), "parity": str(ours.final)}
+    reasons = sorted(set(engine_skips) | set(ours.skips))
+    report["skips"] = {
+        "engine": dict(sorted(engine_skips.items())),
+        "parity": dict(sorted(ours.skips.items())),
+        "differ": [r for r in reasons if engine_skips.get(r, 0) != ours.skips.get(r, 0)],
+    }
+    report["passed"] = not report["skips"]["differ"] and all(
+        not report[n]["only_engine"] and not report[n]["only_parity"] for n, *_ in named
+    )
     return report
 
 
@@ -892,22 +1113,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     book = Book(data, spec)
     ours = book.run()
     rows = engine_rows(result)
-    report = compare(rows, ours)
+    report = compare(rows, ours, result.skips)
+    report["features"] = feature_check(book.feat, data, args.start, args.end)
     report["exit_replay"] = replay_check(book, rows["trades"])
     for name, part in report.items():
-        if name in ("final_equity", "exit_replay"):
+        if name in ("final_equity", "exit_replay", "skips", "passed", "features"):
             print(f"{name}:", part)
             continue
         print(
             f"{name}: engine {part['engine']} parity {part['parity']} "
             f"only_engine {len(part['only_engine'])} only_parity {len(part['only_parity'])}"
         )
-    print("parity skips:", dict(ours.skips), "engine skips:", dict(result.skips))
     if args.out:
         pc.REPORTS.mkdir(parents=True, exist_ok=True)
 
-        def sym(row: tuple) -> list:
-            out = [str(v) for v in row]
+        def sym(row: object) -> object:
+            if not isinstance(row, tuple):
+                return row
+            out: list = [str(v) for v in row]
             for n, v in enumerate(row):
                 if isinstance(v, str) and len(v) == 36:
                     day = next((x for x in row if isinstance(x, date)), args.end)
@@ -916,12 +1139,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         dump = {
             k: {kk: [sym(r) for r in vv] if isinstance(vv, list) else vv for kk, vv in v.items()}
+            if isinstance(v, dict)
+            else v
             for k, v in report.items()
         }
         (pc.REPORTS / args.out).write_text(json.dumps(dump, indent=1) + "\n", encoding="utf-8")
-    return 0
+    return 0 if report["passed"] else 1
 
 
 if __name__ == "__main__":
-    del timedelta
     sys.exit(main())

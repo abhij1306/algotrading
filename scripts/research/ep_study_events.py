@@ -20,14 +20,15 @@ kept; this module is its definition, transcribed:
 
 from __future__ import annotations
 
-import glob
-from datetime import date, datetime, time
+import csv
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
+from parity_common import HOLD_OUT_START
 from sqlalchemy import select
 
 from app.hat.data.chains import stored_adjustment
@@ -104,6 +105,25 @@ def first_session_open_after(sessions: np.ndarray, at: np.ndarray) -> np.ndarray
     return np.searchsorted(opens.values, at, side="left")
 
 
+def results_meetings(folder: Path, end: date) -> pd.DataFrame:
+    """The results board meetings (`isin`, `md`) of the study's `board_meetings_*.csv` files in
+    `folder` dated through `end`, never past the hold-out start: each row is dropped as it is
+    read, before any frame holds it."""
+    last = min(end, HOLD_OUT_START - timedelta(days=1))
+    kept = []
+    for path in sorted(folder.glob("board_meetings_*.csv")):
+        with path.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                try:
+                    md = datetime.strptime(row["meeting_date"], "%d-%b-%Y").date()
+                except (TypeError, ValueError):
+                    continue
+                if md > last or "result" not in (row["purpose"] or "").lower():
+                    continue
+                kept.append((row["isin"], pd.Timestamp(md)))
+    return pd.DataFrame(kept, columns=["isin", "md"])
+
+
 def study_events(
     store: DataStore,
     session: Any,  # noqa: ANN401
@@ -142,14 +162,8 @@ def study_events(
     res["earn"] = True
     p = p.merge(res, on=["iid", "d"], how="left")
     p["earn"] = p.earn.fillna(False).astype(bool)
-    bm = pd.concat(
-        pd.read_csv(f, usecols=["isin", "meeting_date", "purpose"])
-        for f in sorted(glob.glob(str(board_meetings / "board_meetings_*.csv")))
-    )
-    bm = bm[bm.purpose.str.contains("result", case=False, na=False)].copy()
-    bm["md"] = pd.to_datetime(bm.meeting_date, format="%d-%b-%Y", errors="coerce")
-    bm = bm[bm.md.notna() & (bm.md <= pd.Timestamp(end))].drop_duplicates(["isin", "md"])
-    si = np.searchsorted(sessions, bm.md.values, side="left")
+    bm = results_meetings(board_meetings, end).drop_duplicates(["isin", "md"])
+    si = np.searchsorted(sessions, bm.md.values.astype(sessions.dtype), side="left")
     okb = si < len(sessions) - 1
     bm, si = bm[okb], si[okb]
     flag = pd.concat(

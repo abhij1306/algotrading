@@ -6,6 +6,7 @@ import importlib.util
 import json
 import sys
 import uuid
+from dataclasses import replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -1078,3 +1079,16 @@ def test_truncation__compare_warns_on_a_cut_more_than_five_sessions_before_t() -
     later = truncation.compare(_result(_DAYS[:10]), long, at)["delisting_known_later"]
     assert later["uncompared_sessions"] == 6
     assert "6 sessions" in later["warning"]
+
+
+def test_truncation__compare_leaves_out_the_cuts_delisting_sales_of_rotation_holdings() -> None:
+    at, cut = _DAYS[9], _DAYS[6]
+    delisting = (_trade("x", cut, DELISTED),)
+    sale = {"date": cut, "name": "r", "side": "sell", "reason": DELISTED}
+    order = {"date": cut, "name": "q", "side": "buy", "reason": "rebalance"}
+    short = replace(_result(_DAYS[:10]), rebalances=(order,))
+    long = replace(_result(_DAYS, trades=delisting), rebalances=(order, sale))
+    assert truncation.compare(short, long, at)["rebalances"]["pass"]
+    # another order of the cut is still compared
+    long = replace(_result(_DAYS, trades=delisting), rebalances=(sale,))
+    assert not truncation.compare(short, long, at)["rebalances"]["pass"]

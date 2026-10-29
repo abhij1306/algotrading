@@ -1,8 +1,10 @@
 """An independent, simple implementation of the S2 episodic-pivot rules (accuracy plan W2 B6),
 run by `s2_ep_parity.py parity` against the engine's result of the same portfolio and window.
-It reads the same market (`load_market`: the stored bars, features, membership, 5-minute bars
-and results filings) and the resolved config, and none of the engine's signal, trigger, stop,
-risk or exit code: the rules below are transcribed from the playbook spec and the config.
+It reads the same market (`load_market`: the stored bars, membership, 5-minute bars and
+results filings; B1) and fill model (`spec.fills`; B3) as the S1 parity, computes its features
+from the bars (`s1_parity.own_features`), and none of the engine's signal, trigger, stop, risk
+or exit code: the rules below are transcribed from the playbook spec and the resolved config,
+which must state them (`preconditions`).
 
 - gap scan, each session D (scan night P, the session before): a NIFTY 500 member on D, a bar
   on D and a previous stored close, open >= previous close x (1 + 6%) exactly; the bot's
@@ -70,9 +72,23 @@ EST_AT = time(9, 35)
 ENTRY_AT = time(9, 30)
 HISTORY = 64
 GATES = ("gap_up", "earnings_catalyst", "early_volume", "price_breaks_level")
+# the candidate funnel in order: a candidate reached the gate before the one it failed, and
+# `filled` when it failed none
+FUNNEL = (
+    "gap_scan",
+    "gap_up",
+    "neglect",
+    "earnings_catalyst",
+    "early_volume",
+    "price_breaks_level",
+    "adtr_filter",
+    "max_chase",
+    "filled",
+)
 LEVELS = ("L1", "L2", "L3")
 BARS_5M = "bars_5m"
 SUPPORTED_EXITS = {"hard_stop", "close_below_sma", "max_hold"}
+NEGLECT_OFF = 10_000  # a 63-day return cap this high never binds: the neglect caps are off
 
 
 @dataclass
@@ -120,6 +136,16 @@ class Record:
     failed_gate: str | None = None
     reason: str | None = None
     state: str | None = None
+    reached: str | None = None  # the engine's; the parity's is `reached_of`
+
+    def reached_of(self) -> str:
+        """The last gate passed: the one before the failed gate, `filled` with none failed."""
+        if self.failed_gate is None:
+            return FUNNEL[-1]
+        return FUNNEL[FUNNEL.index(self.failed_gate) - 1]
+
+    def key(self) -> tuple:
+        return (self.basis, self.failed_gate, self.reason, self.state, self.reached_of())
 
 
 @dataclass
@@ -146,15 +172,63 @@ def growth_passes(event: Any, p: Mapping[str, Any]) -> bool | None:  # noqa: ANN
     return eps_ok or bool(event.turnaround) or alone_ok
 
 
+def preconditions(spec: RunSpec) -> list[str]:
+    """What of the resolved EP config this script does not implement (empty: all of it)."""
+    cfg, conv = spec.config, spec.conventions
+    unmet = []
+    pb = next((p for p in cfg.playbooks if p.preopen), None)
+    if pb is None or len(cfg.playbooks) != 1:
+        return ["one pre-open playbook"]
+    setup = {c.type: c.params for c in pb.setup.criteria if c.enabled}
+    neglect = setup.get("neglect", {})
+    if (
+        list(setup) != ["neglect"]
+        or neglect.get("max_range_126d_pct") is not None
+        or neglect.get("max_return_63d_pct", 0) < NEGLECT_OFF
+    ):
+        unmet.append(f"the neglect setup with its caps off (63-day return at least {NEGLECT_OFF})")
+    trig = {t.type: t.params for t in pb.trigger if t.enabled}
+    if set(trig) != set(GATES):
+        unmet.append(f"the triggers {', '.join(GATES)}, not {sorted(trig)}")
+    level = trig.get("price_breaks_level", {})
+    if (level.get("level"), level.get("confirm")) != ("opening_range_high", "close"):
+        unmet.append("price_breaks_level at the opening-range high on a close")
+    growth = dict(trig.get("earnings_catalyst", {}))
+    if set(growth) - {"sales_yoy_pct", "eps_yoy_pct", "sales_alone_pct"}:
+        unmet.append(f"earnings_catalyst growth thresholds only, not {sorted(growth)}")
+    if [f.type for f in pb.entry_filters if f.enabled] != ["adtr_filter", "max_chase"]:
+        unmet.append("the entry filters adtr_filter, max_chase")
+    if type(pb.stop).__name__ != "StopLowOfDay" or pb.stop.max_pct is not None:
+        unmet.append("the low-of-day stop without a width cap")
+    if {u.type for u in cfg.universe if u.enabled} != {"series_in", "min_turnover", "adr_min"}:
+        unmet.append("the universe series_in, min_turnover, adr_min")
+    if not {e.rule for e in cfg.exits if e.enabled} <= SUPPORTED_EXITS:
+        unmet.append(f"the exits {', '.join(sorted(SUPPORTED_EXITS))} only")
+    regime = cfg.regime
+    if (
+        regime.rule != "breadth_above"
+        or dec(regime.params.get("min_pct", 0)) != 0
+        or int(regime.params.get("smooth_days", 1)) != 1
+        or regime.params.get("off_below_pct") is not None
+    ):
+        unmet.append("the regime breadth_above min_pct 0 over one session (always on)")
+    if (
+        conv.entry_bars not in (BARS_5M, "daily")
+        or (conv.entry_fill_rule, conv.slot_order, conv.ambiguous, conv.regime_mult)
+        != ("penetration_1_tick", "time", "optimistic", "1")
+        or conv.suspension_sessions != s1.SUSPENSION_SESSIONS
+    ):
+        unmet.append("conventions bars_5m or daily, penetration_1_tick, time, optimistic, 1")
+    if spec.co_sleeves or spec.overlay is not None:
+        unmet.append("no co-sleeve, no overlay")
+    return unmet
+
+
 class EpBook(s1.Book):
     def __init__(self, data: MarketData, spec: RunSpec) -> None:  # noqa: PLR0915
         self.data, self.spec = data, spec
         self.inst = s1.instruments(data)
-        cols = [c for c in ("adv20", "adtr20") if c in data.features.columns]
-        self.feat = {
-            (r["instrument_id"], r["date"]): r
-            for r in data.features.select(["instrument_id", "date", *cols]).iter_rows(named=True)
-        }
+        self.feat = s1.own_features(data, self.inst)
         self.members = s1.members_on(data)
         cfg = spec.config
         pb = next(p for p in cfg.playbooks if p.preopen)
@@ -175,18 +249,8 @@ class EpBook(s1.Book):
         self.adr_min = dec(uni["adr_min"]["pct"])
         exits = {e.rule: e for e in cfg.exits if e.enabled}
         regime = cfg.regime
-        supported = (
-            set(exits) <= SUPPORTED_EXITS
-            and regime.rule == "breadth_above"
-            and int(regime.params.get("smooth_days", 1)) == 1
-            and regime.params.get("off_below_pct") is None
-            and spec.conventions.entry_bars in (BARS_5M, "daily")
-        )
-        if not supported:
-            raise SystemExit(
-                "s2_ep_independent covers the exits hard_stop, close_below_sma and max_hold, the "
-                "breadth_above regime over one session and entry_bars bars_5m or daily only"
-            )
+        if unmet := preconditions(spec):
+            raise SystemExit("s2_ep_independent does not cover: " + "; ".join(unmet))
         self.breadth_min = dec(regime.params.get("min_pct", 0))
         self.five_minute = spec.conventions.entry_bars == BARS_5M
         self.sma_n = int(exits["close_below_sma"].sma)
@@ -245,8 +309,9 @@ class EpBook(s1.Book):
         self.sold_today.add((day, p.iid))
         self.cash += filled * p.qty - fees
         self.positions.remove(p)
-        self.out.fills.append((day, p.iid, "sell", p.qty, filled, fees))
-        self.out.trades.append((p.iid, p.entry_day, p.entry, p.stop, p.qty, day, reason, filled))
+        self.out.fills.append((day, p.iid, "exit_full", "sell", p.qty, filled, fees))
+        leg = ((day, p.qty, filled, fees, reason),)  # one leg: no partial exits
+        self.out.trades.append((p.iid, p.entry_day, p.entry, p.stop, p.qty, day, reason, leg))
         if reason == "hard_stop":
             self.stopouts += 1
         pnl = filled * p.qty - fees - p.cost + p.dividends
@@ -624,7 +689,7 @@ class EpBook(s1.Book):
             self.cash -= filled * qty + fees
             held = Held(p.iid, day, qty, filled, price, stop, p.basis, filled * qty + fees)
             self.positions.append(held)
-            self.out.fills.append((day, p.iid, "buy", qty, filled, fees))
+            self.out.fills.append((day, p.iid, "entry", "buy", qty, filled, fees))
             self.signal(day, p, "Open", None, qty)
             rec.state = "Open"
             entered += 1
@@ -679,15 +744,21 @@ class EpBook(s1.Book):
 
 
 def engine_candidates(result: BacktestResult) -> dict[tuple[date, str], Record]:
+    """The engine's EP log by (day, instrument); a key logged twice stops the run (a duplicate
+    would otherwise collapse into one candidate)."""
     out = {}
     for r in result.ep_candidates:
         day = r["trade_date"]
         day = day if isinstance(day, date) else date.fromisoformat(str(day))
-        out[(day, str(r["instrument_id"]))] = Record(
+        key = (day, str(r["instrument_id"]))
+        if key in out:
+            raise SystemExit(f"the engine logged the EP candidate {key} twice")
+        out[key] = Record(
             r.get("basis") or None,
             r.get("failed_gate") or None,
             r.get("reason") or None,
             r.get("signal_state") or None,
+            r.get("reached") or None,
         )
     return out
 
@@ -696,30 +767,40 @@ def run_and_compare(spec: RunSpec, data: MarketData, result: BacktestResult) -> 
     book = EpBook(data, spec)
     ours = book.run()
     engine = s1.engine_rows(result)
-    report = s1.compare(engine, ours)
+    report = s1.compare(engine, ours, result.skips)
+    report["features"] = s1.feature_check(book.feat, data, spec.start, spec.end)
     eng_c, our_c = engine_candidates(result), ours.candidates
 
     def sym(key: tuple[date, str]) -> str:
         return f"{key[0]} {symbol_on(data, key[1], key[0])}"
 
+    def fields(r: Record) -> dict[str, Any]:
+        return dict(
+            zip(("basis", "failed_gate", "reason", "state", "reached"), r.key(), strict=True)
+        )
+
+    def engine_fields(r: Record) -> dict[str, Any]:
+        return {**fields(r), "reached": r.reached}
+
     only_e = sorted(set(eng_c) - set(our_c))
     only_p = sorted(set(our_c) - set(eng_c))
     both = sorted(set(eng_c) & set(our_c))
     differ = [
-        (sym(k), vars(eng_c[k]), vars(our_c[k]))
+        (sym(k), engine_fields(eng_c[k]), fields(our_c[k]))
         for k in both
-        if (eng_c[k].basis, eng_c[k].failed_gate, eng_c[k].reason, eng_c[k].state)
-        != (our_c[k].basis, our_c[k].failed_gate, our_c[k].reason, our_c[k].state)
+        if engine_fields(eng_c[k]) != fields(our_c[k])
     ]
     by_year = Counter(k[0].year for k in eng_c)
     report["candidates"] = {
         "engine": len(eng_c),
         "parity": len(our_c),
         "engine_by_year": dict(sorted(by_year.items())),
+        "reached_engine": dict(Counter(r.reached for r in eng_c.values()).most_common()),
         "only_engine": [sym(k) for k in only_e],
         "only_parity": [sym(k) for k in only_p],
         "fields_differ": differ,
     }
+    report["passed"] = report["passed"] and not (only_e or only_p or differ)
     report["funnel_engine"] = {
         f"{g}/{r}": n
         for (g, r), n in Counter((r.failed_gate, r.reason) for r in eng_c.values()).items()
@@ -728,5 +809,4 @@ def run_and_compare(spec: RunSpec, data: MarketData, result: BacktestResult) -> 
         f"{g}/{r}": n
         for (g, r), n in Counter((r.failed_gate, r.reason) for r in our_c.values()).items()
     }
-    report["parity_skips"] = dict(ours.skips)
     return report
