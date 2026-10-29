@@ -748,9 +748,14 @@ class Book:
 
     def delistings(self, day: date) -> None:
         for p in sorted(self.positions, key=lambda p: (p.entry_day, p.iid)):
-            if (p.iid, day) in self.data.demerger_exits:
-                self.sell(p, day, self.mark_price(p.iid, day), "demerger")
-            elif self.data.last_traded.get(p.iid) == day:
+            # a demerger exit sells at the close, not with no bar or locked at the lower band
+            if (p.iid, day) not in self.data.demerger_exits:
+                continue
+            i = self.bar(p.iid, day)
+            if i is not None and not self.lower_locked(p.iid, day, i, whole_day=True):
+                self.sell(p, day, self.inst[p.iid].c4[i], "demerger")
+        for p in sorted(self.positions, key=lambda p: (p.entry_day, p.iid)):
+            if self.data.last_traded.get(p.iid) == day:
                 self.sell(p, day, self.mark_price(p.iid, day), "delisted")
 
 

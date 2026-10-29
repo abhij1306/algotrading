@@ -118,19 +118,22 @@ def results_as_of(
     instrument_id: uuid.UUID,
     ts: datetime,
     rule: str = BASIS_CONSOLIDATED_FIRST,
+    *,
+    announced_only: bool = False,
 ) -> list[HatFinancialResult]:
     """The instrument's results known at `ts`: only rows with `public_at <= ts`, the latest
     version of each (period_end, basis), a secondary-source row only where no NSE row of that
     key is public by `ts`, insurers' metadata rows left out, a standalone row only where the
-    basis rule `rule` keeps it (`growth.known_at`); by period end, then basis."""
-    rows = list(
-        session.scalars(
-            select(HatFinancialResult).where(
-                HatFinancialResult.instrument_id == instrument_id,
-                HatFinancialResult.public_at <= ts,
-            )
-        )
+    basis rule `rule` keeps it (`growth.known_at`); by period end, then basis. With
+    `announced_only` the rows whose `public_at` is estimated are left out first, so a later
+    estimated version never hides an announced one."""
+    query = select(HatFinancialResult).where(
+        HatFinancialResult.instrument_id == instrument_id,
+        HatFinancialResult.public_at <= ts,
     )
+    if announced_only:
+        query = query.where(HatFinancialResult.public_at_estimated.is_(False))
+    rows = list(session.scalars(query))
     by_id = {str(r.id): r for r in rows}
     known = known_at((result_row(r) for r in rows), ts, rule)
     return [by_id[known[key].id] for key in sorted(known)]

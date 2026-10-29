@@ -71,6 +71,8 @@ ENTRY_AT = time(9, 30)
 HISTORY = 64
 GATES = ("gap_up", "earnings_catalyst", "early_volume", "price_breaks_level")
 LEVELS = ("L1", "L2", "L3")
+BARS_5M = "bars_5m"
+SUPPORTED_EXITS = {"hard_stop", "close_below_sma", "max_hold"}
 
 
 @dataclass
@@ -172,6 +174,21 @@ class EpBook(s1.Book):
         self.adr_days = int(uni["adr_min"]["days"])
         self.adr_min = dec(uni["adr_min"]["pct"])
         exits = {e.rule: e for e in cfg.exits if e.enabled}
+        regime = cfg.regime
+        supported = (
+            set(exits) <= SUPPORTED_EXITS
+            and regime.rule == "breadth_above"
+            and int(regime.params.get("smooth_days", 1)) == 1
+            and regime.params.get("off_below_pct") is None
+            and spec.conventions.entry_bars in (BARS_5M, "daily")
+        )
+        if not supported:
+            raise SystemExit(
+                "s2_ep_independent covers the exits hard_stop, close_below_sma and max_hold, the "
+                "breadth_above regime over one session and entry_bars bars_5m or daily only"
+            )
+        self.breadth_min = dec(regime.params.get("min_pct", 0))
+        self.five_minute = spec.conventions.entry_bars == BARS_5M
         self.sma_n = int(exits["close_below_sma"].sma)
         self.grace = exits["close_below_sma"].grace_sessions
         self.max_hold = int(exits["max_hold"].days)
@@ -394,7 +411,7 @@ class EpBook(s1.Book):
 
     def on_bars(self, iid: str, day: date, prev: date, i: int, bars: list[Bar5]) -> Plan | None:
         rec = self.out.candidates[(day, iid)]
-        rec.basis = "bars_5m"
+        rec.basis = BARS_5M
         s = self.inst[iid]
         f = self.feat.get((iid, prev)) or {}
         adv = f.get("adv20")
@@ -463,7 +480,7 @@ class EpBook(s1.Book):
         dip = min(lows, default=None)
         local = b.final
         seconds = local.hour * 3600 + local.minute * 60 + local.second
-        return Plan(iid, "bars_5m", entry, stop, dip, skip, seconds, b.final)
+        return Plan(iid, BARS_5M, entry, stop, dip, skip, seconds, b.final)
 
     def estimate(self, iid: str, day: date, prev: date, i: int) -> Plan | None:
         rec = self.out.candidates[(day, iid)]
@@ -521,7 +538,7 @@ class EpBook(s1.Book):
     def ep_entries(self, day: date, prev: date, found: list[str], capital: Decimal) -> None:
         self.bars5 = {}
         store = self.data.intraday
-        if found and store is not None and store.path(day).is_file():
+        if self.five_minute and found and store is not None and store.path(day).is_file():
             for r in store.read(day, found):
                 self.bars5.setdefault(r.instrument_id, []).append(r)
         plans = []
@@ -535,7 +552,8 @@ class EpBook(s1.Book):
                 plans.append(plan)
         plans.sort(key=lambda p: p.iid)
         plans.sort(key=lambda p: p.seconds)
-        regime_on = self.data.breadth.get(prev) is not None
+        breadth = self.data.breadth.get(prev)  # breadth_above over one session
+        regime_on = breadth is not None and dec(breadth) >= self.breadth_min
         nxt = self._next(day)
         entered = 0
         for n, p in enumerate(plans):
@@ -601,7 +619,7 @@ class EpBook(s1.Book):
                 self.signal(day, p, "Rejected", reason, 0)
                 rec.state, rec.failed_gate, rec.reason = "Rejected", "filled", reason
                 continue
-            limit = price if p.basis == "bars_5m" else None
+            limit = price if p.basis == BARS_5M else None
             filled, fees = self.fills.fill("buy", qty, price, day, limit=limit)
             self.cash -= filled * qty + fees
             held = Held(p.iid, day, qty, filled, price, stop, p.basis, filled * qty + fees)
@@ -645,9 +663,14 @@ class EpBook(s1.Book):
 
     def delistings(self, day: date) -> None:
         for p in sorted(self.positions, key=lambda p: (p.entry_day, p.iid)):
-            if (p.iid, day) in self.data.demerger_exits:
-                self.sell(p, day, self.mark_price(p.iid, day), "demerger", (4, p.iid))
-            elif self.data.last_traded.get(p.iid) == day:
+            # a demerger exit sells at the close, not with no bar or locked at the lower band
+            if (p.iid, day) not in self.data.demerger_exits:
+                continue
+            i = self.bar(p.iid, day)
+            if i is not None and not self.lower_locked(p.iid, day, i, whole_day=True):
+                self.sell(p, day, self.inst[p.iid].c4[i], "demerger", (4, p.iid))
+        for p in sorted(self.positions, key=lambda p: (p.entry_day, p.iid)):
+            if self.data.last_traded.get(p.iid) == day:
                 self.sell(p, day, self.mark_price(p.iid, day), "delisted", (4, p.iid))
 
 

@@ -4,7 +4,8 @@ in a cache file so the independent side can be rerun without the engine, and the
 run read (`load_market`: the same stored bars, features and membership).
 
 The cache is keyed by the portfolio text, the window and the engine source (a hash of every
-`backend/app/hat` Python file), so an engine change reruns the engine. Cache files live under
+`backend/app/hat` Python file), so an engine change reruns the engine, and keeps a digest of
+the market it read (`market_digest`), so a changed market reruns it too. Cache files live under
 `reports/parity/cache/` (gitignored). Hold-out windows (2025 on) are refused.
 """
 
@@ -86,15 +87,34 @@ def engine_and_market(
             spec, target = bt_truncation._spec_of(session, doc, start, end)
             data = _market(session, store, spec, target)
             with path.open("rb") as f:
-                result = pickle.load(f)  # noqa: S301 - our own cache file
-            print(f"engine result from cache {path.name}", file=sys.stderr)
-            return spec, data, result
+                kept = pickle.load(f)  # noqa: S301 - our own cache file
+            if isinstance(kept, tuple) and kept[0] == market_digest(data):
+                print(f"engine result from cache {path.name}", file=sys.stderr)
+                return spec, data, kept[1]
+            print("the market changed since the cached run: rerunning", file=sys.stderr)
         spec, data, result, took = bt_truncation._run(session, store, doc, start, end)
         print(f"engine run {start}..{end}: {took:.0f}s", file=sys.stderr)
     CACHE.mkdir(parents=True, exist_ok=True)
     with path.open("wb") as f:
-        pickle.dump(result, f)
+        pickle.dump((market_digest(data), result), f)
     return spec, data, result
+
+
+def market_digest(data: MarketData) -> str:
+    """A hash of the loaded market the engine and the parity side read (bars, features,
+    membership, results, sessions): a cached result is used only on the same market."""
+    h = hashlib.sha256()
+    for frame in (data.bars, data.features):
+        h.update(str(frame.shape).encode())
+        h.update(frame.hash_rows().sum().to_bytes(8, "little", signed=False))
+    h.update(
+        repr(
+            sorted((str(m.instrument_id), m.effective_from, m.effective_to) for m in data.members)
+        ).encode()
+    )
+    h.update(repr(sorted((k, len(v)) for k, v in data.results.items())).encode())
+    h.update(repr(list(data.days)).encode())
+    return h.hexdigest()[:16]
 
 
 def multiset_diff(a: Sequence[Any], b: Sequence[Any]) -> tuple[list[Any], list[Any]]:

@@ -366,8 +366,8 @@ def ep_results(
     backtest leaves it out."""
     rows = [
         r
-        for r in results_as_of(session, instrument_id, at)
-        if as_utc(r.public_at) > since and not r.public_at_estimated
+        for r in results_as_of(session, instrument_id, at, announced_only=True)
+        if as_utc(r.public_at) > since
     ]
     growth = growth_by_result(session, [r.id for r in rows])
     return tuple(result_event(r.public_at, r.period_end, growth.get(r.id)) for r in rows)
