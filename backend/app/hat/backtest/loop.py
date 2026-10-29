@@ -173,14 +173,15 @@ from ..configs.unit import configs_of
 from ..data.bars import Bar as DataBar
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
-from ..engine import entries, exits, lifecycle, positions, shadow, trigger, watchlist
+from ..engine import entries, exits, lifecycle, positions, rotation, shadow, trigger, watchlist
 from ..engine.confidence import BACKTEST_CONFIDENCE
 from ..engine.live_entry import EP_UNIVERSE, ep_gate, ep_stock_log, gap_floor, session_open
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate, sleeve_key
 from ..engine.portfolio.health import Health
+from ..engine.portfolio.universe import members_on
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.scan import ScanInputs
+from ..engine.scan import ScanInputs, universe_passers
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
 from ..engine.strategy.config import Playbook, StopLowOfDay, StrategyConfig
 from ..models import (
@@ -241,6 +242,7 @@ from .report import (
     DEMERGER,
     END_OF_PERIOD,
     BacktestResult,
+    FillRow,
     SessionRow,
     SignalRow,
     TradeRow,
@@ -249,6 +251,7 @@ from .report import (
     compute_metrics,
     flag_auction_risk,
 )
+from .rotation import Market, Plan, Quote, RotationBook, TrCloses
 from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
 from .spec import (
@@ -582,6 +585,15 @@ class _Run:
             for (config, weight, table), bot_id in zip(sleeves, bot_ids, strict=True)
         ]
         self.leg = self.legs[0]  # the strategy the entry phase is deciding (`_use`)
+        versions = [spec.strategy_version_id, *(c.strategy_version_id for c in spec.co_sleeves)]
+        # each rotation strategy's book (`rotation`), by leg: it trades outside the ledger
+        self.books = {
+            n: RotationBook(leg.config, versions[n], spec.policy.version_id, spec.fills, leg.prefix)
+            for n, leg in enumerate(self.legs)
+            if leg.config.rotation is not None
+        }
+        self.tr_closes = TrCloses(data.bars, self.days) if self.books else None
+        self.rotation_dividends = _ZERO
         # the account's equity each night's allocation read: a portfolio run's global open-risk
         # cap is of it, as live's (`portfolio.jobs`); a one-strategy run keeps its sleeve's
         # capital there (the known gap `single_sleeve_caps`)
@@ -674,8 +686,9 @@ class _Run:
             prev = self.view.prev(day)
             if prev is not None:
                 for leg in self.legs:
-                    self._use(leg)
-                    self._publish(prev, day)
+                    if leg.config.rotation is None:  # a rotation has no watchlist
+                        self._use(leg)
+                        self._publish(prev, day)
                 account = self._equity_now()[0]
                 self.account_equity[day] = account
                 allocations = self.sleeve.allocate(prev, account)
@@ -684,6 +697,7 @@ class _Run:
             if self.overlay is not None:
                 self.overlay.open_session(day, self._free_cash())
             self._morning(day, prev)
+            self._rotate(day, prev)
             self._sync_ladder()
             if prev is not None:
                 self._entries(day, prev)
@@ -832,6 +846,153 @@ class _Run:
                 self._evaluate(position, exits.ExitView(bar.open), "live", _at(day, _AT_OPEN, 1))
             self._down_leg(position, bar, _at(day, _AT_LOW))
             self._up_leg(position, bar.open, bar.high, day, _at(day, _AT_HIGH))
+
+    # --- rotation (`rotation`) ----------------------------------------------------------------
+
+    def _rotate(self, day: date, prev: date | None) -> None:
+        """Each rotation book's open (`_rotate_book`), in leg order."""
+        for n, book in self.books.items():
+            self._rotate_book(self.legs[n], book, day, prev)
+
+    def _rotate_book(self, leg: _Leg, book: RotationBook, day: date, prev: date | None) -> None:
+        """A rotation book's open: its dividends, its pending sales, and the rebalance its
+        `prev` close decided, at the account's equity of that close times its weight. Buys the
+        cash cannot pay draw on the overlay's same-day credit, sold as they fill."""
+        credit = book.dividends(lambda i: self.view.dividends_on(i, day))
+        if credit:
+            self.rotation_dividends += credit
+            self.dividend_credits += 1
+            if self.overlay is not None:
+                self.overlay.dividend(day, credit)
+        book.see(lambda i: None if (b := self.view.bar(i, day)) is None else (b.high, b.low))
+        book.sell_pending(day, lambda i: self._quote(i, day, "sell"), self._symbol(day))
+        rules = leg.config.rotation
+        if prev is None or rules is None or not rotation.is_rebalance(prev, day, rules.rebalance):
+            return
+        plan = self._rotation_plan(book, leg, prev, day)
+        funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
+        overlay = self.overlay
+
+        def cash() -> Decimal:
+            credit = _ZERO if overlay is None else overlay.credit_for(day, funded)
+            return self._free_cash() + credit
+
+        market = Market(
+            opens={
+                name: bar.open
+                for name in {*plan.target, *book.holdings}
+                if (bar := self.view.bar(name, day)) is not None
+            },
+            sell=lambda i: self._quote(i, day, "sell"),
+            buy=lambda i: self._quote(i, day, "buy"),
+            cash=cash,
+            symbol=self._symbol(day),
+            entry=lambda i, qty, price, _rank, score: self._rotation_signal(
+                leg, i, day, prev, qty, price, score
+            ),
+        )
+        equity = self.account_equity.get(day, self.spec.initial_equity)
+        book.rebalance(day, plan, equity * leg.weight, market)
+        if overlay is not None and self._free_cash() < 0:
+            overlay.fund(day, funded, -self._free_cash())
+
+    def _rotation_plan(self, book: RotationBook, leg: _Leg, prev: date, day: date) -> Plan:
+        """The rebalance `prev`'s close decides for trade date `day` (`RotationBook.plan`): the
+        members of `day` (the scan's rule, `scan_night_members`) that pass the universe stage on
+        `prev`, scored on their total-return closes through `prev`."""
+        rules = leg.config.rotation
+        if rules is None or self.tr_closes is None:  # pragma: no cover - a rotation leg's book
+            raise BacktestError("backtest_not_a_rotation")
+        inputs = ScanInputs(
+            as_of=prev,
+            members=sorted(str(m) for m in members_on(self.data.members, day)),
+            bars=self.view.window(prev),
+            regime_closes=self.view.closes_through(prev),
+            breadth=self.view.breadth_through(prev),
+            series=series_as_of(self.data.series, prev),
+            memo=leg.scan_memo,
+        )
+        passers = universe_passers(leg.config, inputs)
+        closes = self.tr_closes.window(passers, self.index[prev], rotation.window_rows(rules))
+        gate_on = regime_allows_longs(leg.config.regime, inputs.regime_closes, inputs.breadth)
+        leg.gate[day] = gate_on
+        return book.plan(
+            prev,
+            passers,
+            closes,
+            pending=self.view.pending_on(prev),
+            gate_on=gate_on,
+            can_buy=lambda i: self._quote(i, day, "buy")[0] is not None,
+        )
+
+    def _quote(self, instrument_id: str, day: date, side: str) -> Quote:
+        """The price a rotation order in `instrument_id` fills at on `day`'s open, else None and
+        why not: no bar (`no_bar`), a sale on a session pinned at the lower band
+        (`lower_circuit`), a buy at the upper band at the open or with the circuit state
+        unknown (`upper_circuit`, live fails closed), a buy on the name's demerger exit session
+        or factor-pending day (`demerger_pending`, `factor_pending`)."""
+        bar = self.view.bar(instrument_id, day)
+        if bar is None:
+            return None, "no_bar"
+        if side == "sell":
+            if self._lower_locked(instrument_id, day, bar):
+                return None, "lower_circuit"
+            return bar.open, None
+        if (instrument_id, day) in self.data.demerger_exits:
+            return None, SKIP_DEMERGER_PENDING
+        if instrument_id in self.view.pending_on(day):
+            return None, SKIP_FACTOR_PENDING
+        if self._locked(instrument_id, bar.open, bar.high, day) is not False:
+            return None, "upper_circuit"
+        return bar.open, None
+
+    def _symbol(self, day: date) -> Any:  # noqa: ANN401 - a callable
+        return lambda instrument_id: symbol_on(self.data, instrument_id, day)
+
+    def _rotation_signal(
+        self,
+        leg: _Leg,
+        instrument_id: str,
+        day: date,
+        prev: date,
+        qty: int,
+        price: Decimal,
+        score: Decimal | None,
+    ) -> SignalRow:
+        """A rotation trade's entry as a taken signal (the result files' features): no stop."""
+        open_count, open_risk = self._book()
+        return SignalRow(
+            trade_date=day,
+            playbook=self.books[self.legs.index(leg)].playbook,
+            instrument_id=instrument_id,
+            state=lifecycle.OPEN,
+            reason=None,
+            trigger_price=price,
+            stop_price=_ZERO,
+            qty=qty,
+            strategy_version_id=self.books[self.legs.index(leg)].version,
+            risk_policy_version_id=self.spec.policy.version_id,
+            entry_price=price,
+            scan_date=prev,
+            open_positions=open_count,
+            open_risk=open_risk,
+            equity=self._equity_now()[0],
+            regime_on=leg.gate.get(day),
+            breadth_pct=self.data.breadth.get(prev),
+            features=self.signal_features.at(
+                instrument_id,
+                day,
+                prev,
+                entry=price,
+                stop=_ZERO,
+                score=score,
+                pivot=None,
+                criteria_results=None,
+            ),
+        )
+
+    def _rotation_mark(self, day: date) -> Any:  # noqa: ANN401 - a callable
+        return lambda instrument_id, fallback: self._mark_price(instrument_id, day, fallback)
 
     # --- entries -----------------------------------------------------------------------------
 
@@ -1790,6 +1951,13 @@ class _Run:
             if bar is None or self._lower_locked(held.instrument_id, day, bar):
                 continue
             self._close(position, bar.close, DEMERGER, _at(day, _AT_END))
+        for book in self.books.values():
+            for name in sorted(book.holdings):
+                if (name, day) not in self.data.demerger_exits:
+                    continue
+                bar = self.view.bar(name, day)
+                if bar is not None and not self._lower_locked(name, day, bar):
+                    book.close_out(name, day, bar.close, DEMERGER, self._symbol(day))
 
     def _delistings(self, day: date) -> None:
         """An instrument's last traded session closes its open position at that close
@@ -1806,6 +1974,15 @@ class _Run:
                 price = last[1] if last is not None else None
             if price is not None:
                 self._close(position, price, DELISTED, _at(day, _AT_END))
+        for book in self.books.values():
+            for name in sorted(book.holdings):
+                if self.data.last_traded.get(name) != day:
+                    continue
+                bar = self.view.bar(name, day)
+                last = self._last_close(name)
+                price = bar.close if bar is not None else None if last is None else last[1]
+                if price is not None:
+                    book.close_out(name, day, price, DELISTED, self._symbol(day))
 
     def _finish(self, last: date) -> None:
         for position in self._open_positions():
@@ -1813,6 +1990,8 @@ class _Run:
             price = self._mark_price(held.instrument_id, last, Decimal(position.avg_entry))
             held.low = min(held.low, price)  # a suspension mark below the traded lows is the MAE
             self._close(position, price, END_OF_PERIOD, _at(last, _AT_END, 30))
+        for book in self.books.values():
+            book.finish(last, self._rotation_mark(last))
         self.session.flush()
         if self.overlay is not None:
             # full liquidation: the sleeve sells at the close and the open year's tax is paid
@@ -1858,6 +2037,8 @@ class _Run:
         for side, value, fees in exact_flows(self.session):
             cash += value if side == "sell" else -value
             cash -= fees
+        for book in self.books.values():
+            cash += book.flow
         return cash if self.overlay is None else cash + self.overlay.cash
 
     def _free_cash(self) -> Decimal:
@@ -1869,7 +2050,12 @@ class _Run:
         """The day's strategy fills into the overlay's tax book: a buy's outlay, a sale's net."""
         if self.overlay is None:
             return
-        for side, instrument_id, qty, price, fees in fills_on(self.session, day):
+        rotated = [
+            (f.side, f.instrument_id, f.qty, f.price, f.fees)
+            for book in self.books.values()
+            for f in book.fills_on(day)
+        ]
+        for side, instrument_id, qty, price, fees in [*fills_on(self.session, day), *rotated]:
             amount = qty * price + fees if side == "buy" else qty * price - fees
             self.overlay.trade(side, instrument_id, qty, amount, day)
 
@@ -1911,6 +2097,8 @@ class _Run:
             held = self.held[position.id]
             price = self._mark_price(held.instrument_id, day, Decimal(position.avg_entry))
             held_value += position.qty_open * price
+        for book in self.books.values():
+            held_value += book.value(self._rotation_mark(day))
         sleeve = _ZERO if self.overlay is None else self.overlay.value(day)
         return self._cash() + held_value + sleeve, held_value
 
@@ -1931,6 +2119,7 @@ class _Run:
         self.equity.append((day, equity))
         self.invested.append(held_value / equity if equity > 0 else _ZERO)
         count, risk = self._book()
+        count += sum(len(book.holdings) for book in self.books.values())  # no stop: no risk
         if self.overlay is not None:  # the book's held value is the positions and the sleeve
             held_value += self.overlay.value(day)
         prev = self.view.prev(day)
@@ -2012,11 +2201,25 @@ class _Run:
             tuple(replace(t, playbook=leg.prefix + t.playbook) for t in trades),
         )
 
+    def _all_signals(self) -> list[SignalRow]:
+        """The ledger's signals and the rotation entries, by trade date (stable)."""
+        found = [*self.signal_rows, *(s for book in self.books.values() for s in book.signals)]
+        return sorted(found, key=lambda s: s.trade_date) if self.books else found
+
+    def _all_fills(self) -> tuple[FillRow, ...]:
+        """The ledger's fills and the rotation books', by day (stable)."""
+        found = fill_rows(self.session)
+        if not self.books:
+            return found
+        rotated = [f for book in self.books.values() for f in book.fill_rows]
+        return tuple(sorted([*found, *rotated], key=lambda f: f.day))
+
     def _result(self) -> BacktestResult:
         rows = [self._rows_of(leg) for leg in self.legs]
         watch_rows = tuple(w for watched, _ in rows for w in watched)
         traded = tuple(t for _, trades in rows for t in trades)
-        if len(self.legs) > 1:
+        traded += tuple(t for book in self.books.values() for t in book.trades)
+        if len(self.legs) > 1 or self.books:
             watch_rows = tuple(
                 sorted(
                     watch_rows, key=lambda w: (w.trade_date, -w.score, w.playbook, w.instrument_id)
@@ -2056,7 +2259,7 @@ class _Run:
             entry_bars=self.entry_bars,
         )
         metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
-        metrics["dividend_income"] = str(self.dividend_cash)
+        metrics["dividend_income"] = str(self.dividend_cash + self.rotation_dividends)
         metrics["dividend_credits"] = self.dividend_credits
         overlay: dict[str, Any] = {}
         if self.overlay is not None and self.spec.overlay is not None:
@@ -2078,8 +2281,8 @@ class _Run:
             trades=trade_rows,
             equity=equity,
             watchlists=watch_rows,
-            signals=tuple(self._forward(s) for s in self.signal_rows),
-            fills=fill_rows(self.session),
+            signals=tuple(self._forward(s) for s in self._all_signals()),
+            fills=self._all_fills(),
             skips=skips,
             metrics=metrics,
             invested=invested,
@@ -2089,6 +2292,7 @@ class _Run:
             ep_candidates=tuple(r.row() for r in sorted(records, key=lambda r: r.row_key)),
             overlay=overlay,
             overlay_rows=() if self.overlay is None else tuple(r.csv() for r in self.overlay.rows),
+            rebalances=tuple(row for book in self.books.values() for row in book.rows),
         )
         self.session.close()
         return result

@@ -1,7 +1,9 @@
 """The strategy config model: nine stages, playbooks, criterion instances.
 
 A config is data: criterion instances for universe, setup, trigger and entry filters, one regime
-rule, one stop rule per playbook and an exit stack. It holds no risk, size or capital number
+rule, one stop rule per playbook and an exit stack; or, for a rotation strategy, the universe
+stage, the regime and a `rotation` block in place of the playbooks and exits (`Rotation`). It
+holds no risk, size or capital number
 (HAT-BOT-072): those live in the risk policy, and `parse_config` rejects any such key at any
 depth with the reason `risk_key` before anything else is read.
 
@@ -462,6 +464,48 @@ ExitRule = Annotated[
 ]
 
 
+# --- rotation ---------------------------------------------------------------------------------
+
+
+class Rotation(Model):
+    """A cross-sectional momentum rotation (`engine.rotation`). On the close of each `rebalance`
+    session (the last of its month, of its half month or of its week) every member that passes
+    the config's universe stage and has `min_bars` bars in the last `long_sessions` sessions is
+    scored on its total-return closes (`score`: `riskadj` the mean of the z-scores of the
+    `short_sessions` and `long_sessions` returns over their annualised `vol_sessions`
+    volatility, `r6` the short return, `r12_1` the long return without the last `skip_sessions`,
+    `hi52` the close over its `long_sessions` high), and at the next open the book holds the top
+    `top_n`: a holding stays while it ranks within `buffer_rank` and is eligible, then the best
+    names not held fill the rest. Each holding's target is an equal share of the sleeve's
+    capital; a buy, top-up or trim under `min_change_pct` percent of the target is skipped, and
+    with `reweight` false a held name keeps its size. No stop and no exit rule: a name leaves when
+    it falls out of the buffer or the universe. With `market_filter` the regime gate off on the
+    rebalance close empties the book."""
+
+    rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
+    score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
+    short_sessions: int = Field(default=126, ge=5, le=504)
+    long_sessions: int = Field(default=252, ge=5, le=504)
+    skip_sessions: int = Field(default=21, ge=0, le=126)
+    vol_sessions: int = Field(default=252, ge=20, le=504)
+    min_bars: int = Field(default=240, ge=1, le=504)
+    top_n: int = Field(default=20, ge=1, le=200)
+    buffer_rank: int = Field(default=40, ge=1, le=1000)
+    reweight: bool = True
+    min_change_pct: float = Field(default=2.0, ge=0, le=100)
+    market_filter: bool = False
+
+    @model_validator(mode="after")
+    def _check(self) -> Rotation:
+        if self.buffer_rank < self.top_n:
+            raise ValueError("buffer_rank_below_top_n")
+        if self.short_sessions > self.long_sessions or self.skip_sessions >= self.long_sessions:
+            raise ValueError("lookbacks_out_of_order")
+        if self.min_bars > self.long_sessions:
+            raise ValueError("min_bars_above_long_sessions")
+        return self
+
+
 # --- playbooks and the config -----------------------------------------------------------------
 
 
@@ -589,14 +633,23 @@ class StrategyConfig(Model):
     market: Literal["NSE"] = "NSE"
     universe: list[Instance] = Field(max_length=MAX_INSTANCES)
     regime: Regime
-    playbooks: list[Playbook] = Field(min_length=1, max_length=8)
-    exits: list[ExitRule] = Field(min_length=1, max_length=20)
+    playbooks: list[Playbook] = Field(max_length=8)
+    exits: list[ExitRule] = Field(max_length=20)
+    # A rotation strategy (`Rotation`), which has no playbook and no exit rule. Left out of the
+    # canonical form when unset, so the stored configs keep their hash.
+    rotation: Rotation | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> StrategyConfig:
         if not NAME.match(self.bot):
             raise ValueError("bad_name")
         object.__setattr__(self, "universe", _sorted_unique(self.universe))
+        if self.rotation is not None:
+            if self.playbooks or self.exits:
+                raise ValueError("rotation_with_playbooks_or_exits")
+            return self
+        if not self.playbooks:
+            raise ValueError("no_playbook")
         names = [p.name for p in self.playbooks]
         if len(set(names)) != len(names):
             raise ValueError("duplicate_playbook")
@@ -683,6 +736,9 @@ def normalise_raw(raw: Mapping[str, Any]) -> dict[str, Any]:
     is not part of a config (the database numbers versions)."""
     out = {k: v for k, v in raw.items() if k != "version"}
     out["universe"] = _instances(out.get("universe", []), "universe")
+    if "rotation" in out:  # a rotation strategy has no playbook and no exit rule
+        out.setdefault("playbooks", [])
+        out.setdefault("exits", [])
     if "playbooks" in out:
         playbooks = out["playbooks"]
         out["playbooks"] = (
@@ -731,6 +787,7 @@ __all__ = [
     "ConfigError",
     "Instance",
     "Playbook",
+    "Rotation",
     "SetupStage",
     "StrategyConfig",
     "parse_config",

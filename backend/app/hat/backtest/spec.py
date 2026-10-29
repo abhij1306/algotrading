@@ -206,6 +206,10 @@ CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
 # from the 1D Rate Index less its expense ratio where its dividends are not known (the ranges in
 # `overlay.liquidbees_tr_proxy`), ETF trades on the stock cost model (equity delivery STT on every
 # ETF, LIQUIDBEES included).
+# Reported by a run with a rotation strategy (`strategy.config.Rotation`): its orders fill at the
+# stored daily open (the pre-open auction's price) plus the run's slippage, and are sized on the
+# account's equity at the decision close, not marked at that open.
+ROTATION_GAPS = ("rotation_fills_at_daily_open", "rotation_sized_on_decision_close")
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",
@@ -415,6 +419,8 @@ class RunSpec:
         for every state: a spec that exists is a valid run."""
         if self.for_promotion:
             self.conventions.check_promotion(self.fills.slippage_bps)
+            if self.config.rotation is not None:  # no live rotation sleeve yet
+                raise BacktestError("backtest_promotion_rotation")
         weight = sleeve_weight(self)
         if self.co_sleeves:
             if self.for_promotion:  # evidence is of one sleeve
@@ -479,9 +485,14 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(g for g in KNOWN_GAPS if not (spec.co_sleeves and g == "single_sleeve_caps")),
         *(CO_SLEEVE_GAPS if spec.co_sleeves else ()),
         *(OVERLAY_GAPS if spec.overlay is not None else ()),
+        *(ROTATION_GAPS if _rotates(spec) else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
     ]
+
+
+def _rotates(spec: RunSpec) -> bool:
+    return any(c.rotation is not None for c in (spec.config, *(s.config for s in spec.co_sleeves)))
 
 
 def with_cooldown(policy: PolicyVersion, sessions: int) -> PolicyVersion:

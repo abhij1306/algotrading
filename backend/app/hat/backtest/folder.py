@@ -32,7 +32,7 @@ from ..money import exact
 from . import ep_log
 from .ep_log import EP_CANDIDATE_COLUMNS, EP_COLUMNS
 from .overlay import OVERLAY_CSV_HEADER
-from .report import BacktestResult, LegRow, SignalRow, TradeRow
+from .report import REBALANCE_COLUMNS, BacktestResult, LegRow, SignalRow, TradeRow
 from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
 from .spec import BASIS_5M, BacktestError
@@ -76,7 +76,17 @@ __all__ = [
 
 # `ep_candidates` only in a run with a pre-open playbook (`ep_log`)
 # `overlay` only in a run with the ETF overlay (its columns `overlay.OVERLAY_CSV_HEADER`)
-CSV_FILES = ("trades", "equity", "refusals", "signals", "stocks", "ep_candidates", "overlay")
+# `rebalances` only in a run with a rotation strategy (`report.REBALANCE_COLUMNS`)
+CSV_FILES = (
+    "trades",
+    "equity",
+    "refusals",
+    "signals",
+    "stocks",
+    "ep_candidates",
+    "overlay",
+    "rebalances",
+)
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
@@ -91,6 +101,8 @@ CONTEXT_COLUMNS = (
     "index_regime_on",
     "breadth_pct",
 )
+# a rotation trade's rank (1 the best) and score on its entry night and its exit night
+ROTATION_COLUMNS = ("rank_entry", "score_entry", "rank_exit", "score_exit")
 TRADE_COLUMNS = (
     "run_id",
     "trade_id",
@@ -132,6 +144,7 @@ TRADE_COLUMNS = (
     "engine_exit_reason",
     "auction_risk",
     *EP_COLUMNS,
+    *ROTATION_COLUMNS,
 )
 EQUITY_COLUMNS = (
     "date",
@@ -576,9 +589,20 @@ def _trade_rows(
                     "playbook": row.playbook,
                     "engine_exit_reason": leg.rule if not last else row.exit_reason,
                     "auction_risk": row.auction_risk if last else None,
+                    **(_rotation(row, last) if row.entry_rank is not None else {}),
                 }
             )
     return out
+
+
+def _rotation(row: TradeRow, last: bool) -> dict[str, Any]:
+    """A rotation trade's `ROTATION_COLUMNS`: its entry's on every leg, its exit's on the last."""
+    return {
+        "rank_entry": row.entry_rank,
+        "score_entry": row.score,
+        "rank_exit": row.exit_rank if last else None,
+        "score_exit": row.exit_score if last else None,
+    }
 
 
 def _equity_rows(
@@ -834,6 +858,8 @@ def build(
     }
     if result.ep_candidates:
         csvs["ep_candidates"] = _csv(EP_CANDIDATE_COLUMNS, result.ep_candidates)
+    if result.rebalances:
+        csvs["rebalances"] = _csv(REBALANCE_COLUMNS, result.rebalances)
     if result.overlay:
         doc["overlay"] = dict(result.overlay)
         csvs["overlay"] = _csv(

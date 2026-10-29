@@ -1,0 +1,37 @@
+# Registration (engine/strategy/registry.py); the strategy config follows the --- line.
+sleeve: S6
+persona: Momentum-rotation
+regime: momentum
+---
+# Source: cross-sectional momentum (Jegadeesh and Titman, 1993) ranked on risk-adjusted returns as
+# NSE's NIFTY200 Momentum 30 index does (the mean of the z-scores of the 6- and 12-month returns
+# over their volatility). The settings are the pick of the in-sample pandas study, 2016-2024: top
+# 20, monthly, a hold buffer of the top 40, equal weight reset each month.
+bot: momentum-rotation
+version: 1
+market: NSE
+# capital allocation: set in the account risk policy
+
+universe:
+  - {type: series_in, params: {series: [EQ, BE]}}
+  - {type: min_turnover, params: {days: 20, inr_cr: 10}}
+  - {type: min_price, params: {inr: 50}}
+
+regime:
+  index: NIFTY 500
+  rule: close_above_sma_and_rising    # read only under `market_filter` (off)
+  params: {sma: 200, rising_days: 0}
+
+rotation:
+  rebalance: month_end
+  score: riskadj
+  short_sessions: 126
+  long_sessions: 252
+  skip_sessions: 21
+  vol_sessions: 252
+  min_bars: 240
+  top_n: 20
+  buffer_rank: 40
+  reweight: true
+  min_change_pct: 2
+  market_filter: false
