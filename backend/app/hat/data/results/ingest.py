@@ -196,8 +196,10 @@ def member_filings(
     cache: RawCache, member: Member, insurance: Sequence[Filing], owners: dict[str, str]
 ) -> list[Filing]:
     """The member's filings from the cached listings of each symbol it had, one per XBRL URL
-    (earliest broadcast first); a row that names an ISIN outside the member's chain (`owners`:
-    each covered ISIN, an earlier one too, -> its company's instrument) is left out."""
+    (earliest broadcast first); a row that names the ISIN of another company (`owners`: each
+    known ISIN -> its company's instrument, a chain's earlier ISINs -> its latest) is left out.
+    An ISIN no instrument holds (NSE lists some companies under an ISIN from before 2016) is
+    kept: the symbol's own listing carries it."""
     answers = []
     for symbol in member.symbols:
         for listing, url in listing_urls(symbol):
@@ -207,7 +209,7 @@ def member_filings(
     filings = filings_of(answers) + [f for f in insurance if f.symbol in member.symbols]
     out: dict[str, Filing] = {}
     for filing in sorted(filings, key=_filing_order):
-        if filing.isin and owners.get(filing.isin) != member.instrument_id:
+        if filing.isin and owners.get(filing.isin, member.instrument_id) != member.instrument_id:
             continue
         if filing.xbrl_url and filing.xbrl_url not in out:
             out[filing.xbrl_url] = filing
@@ -295,8 +297,11 @@ JOIN hat_instrument i ON i.id = c.id GROUP BY c.head
 def chain_owners(
     session: Session, members: Sequence[Member]
 ) -> dict[str, str]:  # pragma: no cover - the database
-    """Each covered ISIN, an earlier one of a chain too, -> its company's (latest) instrument."""
-    owners = {m.isin: m.instrument_id for m in members}
+    """Each known ISIN -> its instrument, and each covered ISIN, an earlier one of a chain too,
+    -> its company's (latest) instrument."""
+    known = session.execute(select(HatInstrument.isin, HatInstrument.id)).tuples()
+    owners = {isin: str(instrument_id) for isin, instrument_id in known}
+    owners |= {m.isin: m.instrument_id for m in members}
     return owners | {isin: m.instrument_id for m in members for isin in _isins(session, m.older)}
 
 
