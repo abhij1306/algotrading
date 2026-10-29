@@ -965,8 +965,9 @@ def _results(
     wanted: bool = True,
 ) -> dict[str, list[ResultEvent]]:
     """`results_events` of the filings public from the previous session of `first` through
-    `end` (never after the period: no hold-out read). None stored is no filing; nothing when
-    the run did not ask for them (`wanted`)."""
+    `end` (never after the period: no hold-out read), each with a real announcement instant
+    (`public_at_estimated` false). None stored is no filing; nothing when the run did not ask
+    for them (`wanted`)."""
     if not wanted or not inspect(session.get_bind(HatFinancialResult)).has_table(
         HatFinancialResult.__tablename__
     ):
@@ -979,7 +980,13 @@ def _results(
             HatFinancialResult.public_at,
             HatFinancialResult.period_end,
             HatFinancialResult.instrument_id,
-        ).where(HatFinancialResult.public_at >= since, HatFinancialResult.public_at < until)
+        ).where(
+            HatFinancialResult.public_at >= since,
+            HatFinancialResult.public_at < until,
+            # a regulatory deadline standing in for an unknown instant is no announcement: it
+            # cannot time a gap's catalyst
+            HatFinancialResult.public_at_estimated.is_(False),
+        )
     ).all()
     growth = {
         g.result_id: (g.sales_yoy, g.eps_yoy, g.turnaround)

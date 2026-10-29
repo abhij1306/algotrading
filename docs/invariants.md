@@ -250,11 +250,12 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   deadline, XBRL-date or observed time (`hat_financial_result` refuses DELETE and any other
   UPDATE). `public_at` is never before the exchange disseminated the figures; an announcement
   without a dissemination time counts from 15 minutes after its submission (99.7% of those with
-  one are disseminated by then); an estimated one is late, never early. A filing made more than
-  a day after another filing of its quarter (a revision) never takes the original's
-  announcement time. An integrated filing whose listing gives no broadcast time is public from
-  its results announcement, else from the end of its creation day (estimated), never from the
-  document's creation time.
+  one are disseminated by then); an estimated one is late, never early, and never times a
+  catalyst: `earnings_catalyst` reads only filings with a real announcement instant, live and
+  in the backtest. A filing made more than a day after another filing of its quarter (a
+  revision) never takes the original's announcement time. An integrated filing whose listing
+  gives no broadcast time is public from its results announcement, else from the end of its
+  creation day (estimated), never from the document's creation time.
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank. The scan's `rs_eligible` ranks only the members

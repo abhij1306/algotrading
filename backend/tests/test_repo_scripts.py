@@ -5,12 +5,23 @@ network, a broker, herdr, git or a database."""
 import importlib.util
 import json
 import sys
+import uuid
+from dataclasses import replace
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
 
 import pytest
 
+from app.hat.backtest.report import (
+    DELISTED,
+    END_OF_PERIOD,
+    BacktestResult,
+    FillRow,
+    TradeRow,
+    WatchRow,
+)
 from app.paths import PROJECT_ROOT
 
 
@@ -37,6 +48,7 @@ results_probe = _script("research/s2_results_probe.py")
 ep_b7 = _script("research/s2_ep_intraday_results.py")
 ep_audit = _script("research/s2_ep_audit.py")
 overlay = _script("data/overlay_etf.py")
+truncation = _script("research/bt_truncation.py")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -948,3 +960,135 @@ def test_overlay__latest_ingest_keeps_one_row_per_symbol_and_day() -> None:
         ("NIFTYBEES", "2024-01-03", 2.0),
         ("GOLDBEES", "2024-01-02", 3.0),
     ]
+
+
+# ---------------------------------------------------------------------------------------------
+# bt_truncation
+
+_UUID = uuid.UUID(int=1)
+
+
+def _trade(instrument: str, exit_day: date, reason: str) -> TradeRow:
+    one = Decimal(1)
+    return TradeRow(
+        entry_date=date(2024, 1, 1),
+        exit_date=exit_day,
+        playbook="default",
+        instrument_id=instrument,
+        qty=1,
+        entry_price=one,
+        initial_stop=one,
+        exit_reason=reason,
+        realized_pnl=one,
+        fees=one,
+        r_multiple=one,
+        mfe_r=one,
+        mae_r=one,
+        holding_days=1,
+        strategy_version_id=_UUID,
+        risk_policy_version_id=_UUID,
+    )
+
+
+def _watch(day: date, instrument: str) -> WatchRow:
+    return WatchRow(day, "default", instrument, Decimal(1), Decimal(10), Decimal(9))
+
+
+def _fill(day: date, instrument: str) -> FillRow:
+    return FillRow(day, instrument, "entry", "buy", 1, Decimal(10), Decimal(0))
+
+
+def _result(
+    days: list[date],
+    trades: tuple[TradeRow, ...] = (),
+    watchlists: tuple[WatchRow, ...] = (),
+    fills: tuple[FillRow, ...] = (),
+) -> BacktestResult:
+    return BacktestResult(
+        trades=trades,
+        equity=tuple((d, Decimal(100)) for d in days),
+        watchlists=watchlists,
+        signals=(),
+        fills=fills,
+        skips={},
+        metrics={},
+    )
+
+
+_DAYS = [date(2024, 1, d) for d in range(1, 21)]
+
+
+def test_truncation__delisted_later_only_the_longer_runs_exits_through_t() -> None:
+    at = _DAYS[9]
+    short = _result(_DAYS[:10], trades=(_trade("a", _DAYS[3], DELISTED),))
+    long = _result(
+        _DAYS,
+        trades=(
+            _trade("a", _DAYS[3], DELISTED),  # the shorter run knew it
+            _trade("b", _DAYS[5], DELISTED),
+            _trade("b", _DAYS[7], DELISTED),  # the first exit of b counts
+            _trade("c", _DAYS[4], END_OF_PERIOD),  # not a delisting
+            _trade("d", _DAYS[12], DELISTED),  # after T
+        ),
+    )
+    assert truncation.delisted_later(short, long, at) == {"b": _DAYS[5]}
+
+
+def test_truncation__compare_without_a_cut_reads_decisions_through_t() -> None:
+    at = _DAYS[9]
+    short = _result(_DAYS[:10], watchlists=(_watch(at, "a"),), fills=(_fill(_DAYS[8], "a"),))
+    long = _result(
+        _DAYS,
+        watchlists=(_watch(at, "a"), _watch(_DAYS[10], "z")),
+        fills=(_fill(_DAYS[8], "a"), _fill(_DAYS[10], "z")),
+    )
+    checks = truncation.compare(short, long, at)
+    assert all(c["pass"] for c in checks.values())
+    assert checks["delisting_known_later"]["uncompared_sessions"] == 0
+    assert checks["delisting_known_later"]["warning"] is None
+    long = _result(_DAYS, watchlists=(_watch(at, "a"), _watch(at, "b")))
+    assert not truncation.compare(short, long, at)["watchlists"]["pass"]
+
+
+def test_truncation__compare_after_a_cut_reads_its_decisions_not_its_fills() -> None:
+    at, cut = _DAYS[9], _DAYS[6]
+    delisting = (_trade("x", cut, DELISTED),)
+    short = _result(_DAYS[:10], watchlists=(_watch(cut, "a"),), fills=(_fill(cut, "a"),))
+    # the cut's fills and the later sessions' decisions differ: not compared
+    long = _result(
+        _DAYS,
+        trades=delisting,
+        watchlists=(_watch(cut, "a"), _watch(_DAYS[7], "b")),
+        fills=(_fill(cut, "b"),),
+    )
+    checks = truncation.compare(short, long, at)
+    assert all(c["pass"] for c in checks.values())
+    later = checks["delisting_known_later"]
+    assert later["diverged_after_delisting_hindsight_on"] == cut.isoformat()
+    assert later["uncompared_sessions"] == 3
+    assert later["warning"] is None
+    assert checks["fills_on_t"]["not_compared"] == "diverged"
+    # a decision of the cut itself is compared
+    long = _result(_DAYS, trades=delisting, watchlists=(_watch(cut, "b"),))
+    assert not truncation.compare(short, long, at)["watchlists"]["pass"]
+
+
+def test_truncation__compare_warns_on_a_cut_more_than_five_sessions_before_t() -> None:
+    at = _DAYS[9]
+    long = _result(_DAYS, trades=(_trade("x", _DAYS[3], DELISTED),))
+    later = truncation.compare(_result(_DAYS[:10]), long, at)["delisting_known_later"]
+    assert later["uncompared_sessions"] == 6
+    assert "6 sessions" in later["warning"]
+
+
+def test_truncation__compare_leaves_out_the_cuts_delisting_sales_of_rotation_holdings() -> None:
+    at, cut = _DAYS[9], _DAYS[6]
+    delisting = (_trade("x", cut, DELISTED),)
+    sale = {"date": cut, "name": "r", "side": "sell", "reason": DELISTED}
+    order = {"date": cut, "name": "q", "side": "buy", "reason": "rebalance"}
+    short = replace(_result(_DAYS[:10]), rebalances=(order,))
+    long = replace(_result(_DAYS, trades=delisting), rebalances=(order, sale))
+    assert truncation.compare(short, long, at)["rebalances"]["pass"]
+    # another order of the cut is still compared
+    long = replace(_result(_DAYS, trades=delisting), rebalances=(sale,))
+    assert not truncation.compare(short, long, at)["rebalances"]["pass"]

@@ -14,8 +14,12 @@ One difference is known and reported apart, `delisting_known_later`: an instrume
 delists after T whose last bar is on or before T. The longer run closes it at that last close
 (`MarketData.last_traded`, counted `delisted_exit` in its hindsight reads); the shorter one cannot
 know it is delisted, and the cash that exit frees can change the later decisions of other names.
-The comparison is then exact up to the session before the first such exit, and the report says
-`diverged_after_delisting_hindsight_on` that day: the later days are neither passed nor failed.
+The decisions (watchlists, signals, skips, EP log, rotation orders but the day's delisting
+sales) are then compared through the first such exit's day, whose decisions come before its
+delisting exits, and the fills, equity and overlay rows up to the session before it; the report
+says `diverged_after_delisting_hindsight_on` that day and counts the sessions after it through T
+(`uncompared_sessions`, the cut's own day not counted), neither passed nor failed, with a
+warning when there are more than 5.
 
 `fingerprint`: one run's resolved-config hash, trade-list hash (as `run.json` `binding` hashes
 it), and hashes of its fills, signals and equity curve, to show a change left a run's results
@@ -70,6 +74,7 @@ from app.paths import PROJECT_ROOT  # noqa: E402
 
 HOLD_OUT_START = date(2025, 1, 1)  # never run: the hold-out
 MAX_LISTED = 20
+MAX_UNCOMPARED = 5  # sessions after a delisting cut before the report warns
 REPORTS = PROJECT_ROOT / "reports" / "bt-verify"  # where `--out` writes (gitignored)
 _REPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json")
 
@@ -208,19 +213,29 @@ def delisted_later(short: BacktestResult, long: BacktestResult, at: date) -> dic
 
 def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, dict[str, Any]]:
     """The decisions of the run to `at` against those of the longer run, up to `at`; with a
-    delisting known later (the module docstring), exactly up to the session before the first
-    such exit, and reported diverged from it on."""
+    delisting known later (the module docstring), decisions through the first such exit's day
+    and fills and equity before it, and the sessions after it reported uncompared."""
     checks: dict[str, dict[str, Any]] = {}
     later = delisted_later(short, long, at)
     cut = min(later.values(), default=None)
+    # the sessions after the cut through T whose decisions are not compared (the cut's own are)
+    uncompared = 0 if cut is None else sum(1 for d, _ in long.equity if cut < d <= at)
     checks["delisting_known_later"] = {
         "pass": True,
         "instruments": {k: v.isoformat() for k, v in sorted(later.items())},
         "diverged_after_delisting_hindsight_on": None if cut is None else cut.isoformat(),
+        "uncompared_sessions": uncompared,
+        "warning": (
+            f"the cut is {uncompared} sessions before T: pick another T"
+            if uncompared > MAX_UNCOMPARED
+            else None
+        ),
     }
 
+    # the cut's own decisions are made before its delisting exits (`loop._Run.run`): a
+    # decision of the cut is compared, its fills and close are not
     def through(day: date) -> bool:  # a decision of `day` is compared
-        return day <= at if cut is None else day < cut
+        return day <= at if cut is None else day <= cut
 
     def before(day: date) -> bool:  # a fill, an equity or overlay row of `day` is compared
         return day < at if cut is None else day < cut
@@ -256,11 +271,15 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
         checks["fills_on_t"] = _fills_on(short, long, at)
     else:
         checks["fills_on_t"] = {"compared": 0, "pass": True, "not_compared": "diverged"}
-    reb_s = [_rebalance_key(r) for r in short.rebalances if through(_day(r))]
-    reb_l = [_rebalance_key(r) for r in long.rebalances if through(_day(r))]
-    # the shorter run's period-end sales of its rotation holdings are its own
-    reb_s = [k for k in reb_s if '"reason": "end_of_period"' not in k]
-    reb_l = [k for k in reb_l if '"reason": "end_of_period"' not in k]
+
+    # the shorter run's period-end sales of its rotation holdings are its own, and the cut's
+    # delisting sales (`RotationBook.close_out`) are fills of the cut, not compared
+    def rebalance(row: Mapping[str, Any]) -> bool:
+        day, reason = _day(row), row.get("reason")
+        return through(day) and reason != END_OF_PERIOD and not (reason == DELISTED and day == cut)
+
+    reb_s = [_rebalance_key(r) for r in short.rebalances if rebalance(r)]
+    reb_l = [_rebalance_key(r) for r in long.rebalances if rebalance(r)]
     record("rebalances", _multiset_diff(reb_s, reb_l), len(reb_s))
     eq_s = [f"{d},{_text(e)}" for d, e in short.equity if before(d)]
     eq_l = [f"{d},{_text(e)}" for d, e in long.equity if before(d)]
@@ -353,6 +372,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             del data, spec
             gc.collect()
             checks = compare(short, long, args.at)
+            if warning := checks["delisting_known_later"]["warning"]:
+                print(f"warning: {warning}", file=sys.stderr)
             report |= {
                 "from": args.start.isoformat(),
                 "t": args.at.isoformat(),
