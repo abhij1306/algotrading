@@ -95,6 +95,24 @@ def test_kotak__work_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
 # overlay_etf
 
 
+def test_overlay__overlapping_window_files_give_one_candle_per_time_the_latest() -> None:
+    older = [
+        ["2026-10-26T00:00:00+05:30", 1, 1, 1, 1, 5],
+        ["2026-10-27T00:00:00+05:30", 2, 2, 2, 2, 5],
+    ]
+    newer = [
+        ["2026-10-27T00:00:00+05:30", 3, 3, 3, 3, 6],
+        ["2026-10-28T00:00:00+05:30", 4, 4, 4, 4, 6],
+    ]
+    got = overlay.unique_candles([older, newer])
+    assert [c[4] for c in got] == [1, 3, 4]
+
+
+def test_kotak__topup_takes_its_session_range() -> None:
+    args = kotak.parse_args(["--work", "/w", "topup", "--from", "2026-10-27", "--to", "2026-10-28"])
+    assert (args.start, args.end) == (date(2026, 10, 27), date(2026, 10, 28))
+
+
 def test_overlay__fixed_windows_are_anchored_and_cover_the_range() -> None:
     got = overlay.fixed_windows(date(2021, 2, 5), date(2021, 4, 10), 30, date(2021, 1, 1))
     assert got == [

@@ -1,0 +1,11 @@
+# Every day at 19:30 IST, after the bhavcopy is out; a day with no new session does little.
+# Persistent: a run missed while the machine was stopped or suspended runs when it is back.
+[Unit]
+Description=HAT daily data update, 19:30 IST
+
+[Timer]
+OnCalendar=*-*-* 19:30:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target

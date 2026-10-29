@@ -607,6 +607,12 @@ def client_from_env(env: Mapping[str, str]) -> McpClient | None:
     return McpClient(HttpTransport(endpoints)) if endpoints else None
 
 
+def offline_client() -> McpClient:
+    """A client with no server, for a run without the NSE MCP servers (the daily data update):
+    every call fails `McpConfigError`, so each caller takes its non-MCP path."""
+    return McpClient(HttpTransport({}))
+
+
 def _quote_date(data: object) -> date | None:
     quotes = data.get("quotes") if isinstance(data, dict) else None
     if isinstance(quotes, list) and quotes and isinstance(quotes[0], dict):

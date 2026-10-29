@@ -14,7 +14,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 
 | Package | Holds |
 | --- | --- |
-| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data (`instruments`, symbol history `symbol_history`, broker symbols `broker_symbols`, ISIN classes `isin`) and calendar, universe, corporate actions (`corporate_actions`, the bars gate `ca_gate`, the importers' shared apply step `ca_apply`, one-off imports `ca_import`/`ca_research` (rows `ca_research_rows`)/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, point-in-time index membership `index_membership`, notices
+| `data` | NSE MCP and bhavcopy ingest, quality gate, reference data (`instruments`, symbol history `symbol_history`, broker symbols `broker_symbols`, ISIN classes `isin`) and calendar, universe, corporate actions (`corporate_actions`, the bars gate `ca_gate`, the importers' shared apply step `ca_apply`, one-off imports `ca_import`/`ca_research` (rows `ca_research_rows`)/`ca_dividends`, dividends `ca_payouts`, the nightly `bc` file `ca_bc` and its import `ca_nightly`, corrections `ca_corrections`, `known_on` rules `ca_known`, versions `ca_versions` (its `Ledger` the one writer of `hat_corporate_action`), `point_in_time`, `ca_demergers`, point-in-time index membership `index_membership`, the daily data update `update` (NSE's text files `nse_files`), notices
 `demerger_notice`), the adjusted series' input (`chains`), ISIN lineage (`lineage`, its journal `lineage_store`, `lineage_review`, `lineage_override`, `nse_changes`), history build, features (its state and staleness `features_state`), Parquet store (`store`, its coverage reports `store_coverage`), live feed and 5-minute bars, gap scan, announcements |
 | `engine` | Criteria library, strategy config and versions (`strategy`: `versions`, the release gate `release`, the criterion catalogue `catalogue`), scan, trigger monitor, exits, stops, entries, demerger exits (`demerger_exit`), shadow engine, positions and trade results (`positions`, `trade_dividends`), approvals, portfolio (regime, health, allocator, sleeve lifecycle) |
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
@@ -43,6 +43,10 @@ ingest.nightly (NSE MCP from 18:00, bhavcopy 22:00) -> raw bars + index/breadth,
   the version-ledger projection check)
   coverage.check, exits.close_gaps
 ```
+
+Without the live service (research), `python -m app.hat.data.update` (`data/update`, a systemd user
+timer at 19:30 IST) runs the data jobs of this chain without the MCP servers, plus the download
+tools, with per-step catch-up (runbook, Daily data update).
 
 Intraday (one `LiveFeed`, one Fyers data socket):
 

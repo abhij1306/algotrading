@@ -12,6 +12,7 @@ Usage (from the repo root, backend venv active, `pip install neo-api-client pyot
     python scripts/data/kotak_5m.py --work DIR former-download [--limit N]
     python scripts/data/kotak_5m.py --work DIR former-trim
     python scripts/data/kotak_5m.py --work DIR former-summary
+    python scripts/data/kotak_5m.py --work DIR topup --from D --to D
 
 `--work` (or `KOTAK_5M_DIR`) is a directory outside the repo. `members` reads the database
 (`DB_*`, read-only) and writes `universe_raw.csv` (today's members: symbol, isin, series,
@@ -31,6 +32,10 @@ rename's single ordinary share of the issuer, then from the oldest archived scri
 broker still serves (`former/mapping.csv`). `former-download` writes `raw_5m_former/` and
 `former/universe_raw.csv`, reusing a file `download` already fetched for the same token;
 `former-summary` writes `former/unavailable.csv` with the reason for each row not served.
+
+`topup` is the daily data update's (`python -m app.hat.data.update`): the sessions `--from`..`--to`
+of every member in `universe_raw.csv` (run `members` first) into `raw_5m_topup/`, emptied first,
+for the importer to add the days not stored.
 
 Market data only: the script calls login, scrip_master and historical_data, never an order API,
 at about one call a second. Credentials come from the environment or the repo's `.env`
@@ -95,6 +100,10 @@ class Work:
     @property
     def raw(self) -> Path:
         return self.root / "raw_5m"
+
+    @property
+    def topup(self) -> Path:
+        return self.root / "raw_5m_topup"
 
     @property
     def former(self) -> Path:
@@ -524,6 +533,45 @@ def cmd_backfill(work: Work, interval: float) -> None:
     cmd_summary(work)
 
 
+def cmd_topup(work: Work, start: date, end: date, interval: float) -> int:
+    """Every member's [start, end] into `raw_5m_topup/`, one call per member and window; exit 1
+    when a member's call kept failing (the next run asks again)."""
+    work.topup.mkdir(parents=True, exist_ok=True)
+    for old in work.topup.glob("*.parquet"):  # only the previous top-up's files
+        old.unlink()
+    client = login()
+    refresh_scrips(client, work)
+    tokens = token_index(equity_scrips(work.scrips))
+    pace = Paced(client, interval)
+    members = read_members(work.universe.read_text().splitlines())
+    got, empty, failed, missing = 0, 0, [], []
+    for m in members:
+        sym = m["symbol"]
+        token = tokens.get(sym) or tokens.get(m["isin"])
+        if not token:
+            missing.append(sym)
+            continue
+        try:
+            parts = [
+                to_table(c) for s, e in windows(end, start) if (c := pace.candles(token, s, e))
+            ]
+        except RuntimeError as e:
+            print(f"{sym}: FAILED {e}", flush=True)
+            failed.append(sym)
+            continue
+        if parts:
+            _write_parquet(_merged(parts), work.topup / f"{sym}.parquet")
+            got += 1
+        else:
+            empty += 1
+    print(
+        f"TOPUP {start}..{end}: {got} files, {empty} empty, {len(missing)} without a token"
+        f" {missing[:10]}, {len(failed)} failed {failed[:10]} ({pace.calls} calls)",
+        flush=True,
+    )
+    return 1 if failed else 0
+
+
 def cmd_summary(work: Work) -> None:
     state = _load_state(work.state, {"done": {}, "missing": []})
     got = {s: v for s, v in state["done"].items() if v[2]}
@@ -734,6 +782,9 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         sub.add_parser(name).add_argument("--limit", type=int, default=None)
     for name in ("backfill", "summary", "former-map", "former-trim", "former-summary"):
         sub.add_parser(name)
+    t = sub.add_parser("topup", help="the sessions --from..--to of every member (daily update)")
+    t.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
+    t.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
     args = p.parse_args(argv)
     if args.work is None:
         p.error("--work or KOTAK_5M_DIR is required")
@@ -763,6 +814,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             cmd_former_trim(work)
         case "former-summary":
             cmd_former_summary(work)
+        case "topup":
+            return cmd_topup(work, args.start, args.end, args.interval)
     return 0
 
 

@@ -609,10 +609,21 @@ def _index_files(work: Work, name: str, value_key: str) -> list[tuple[date, floa
 
 
 def _kotak_candles(work: Work, label: str, iv: str) -> list[list[Any]]:
-    out: list[list[Any]] = []
-    for path in sorted((work.kotak / "raw" / label / iv).glob("*.json")):
-        out += json.loads(path.read_text())["candles"]
-    return out
+    return unique_candles(
+        json.loads(p.read_text())["candles"]
+        for p in sorted((work.kotak / "raw" / label / iv).glob("*.json"))
+    )
+
+
+def unique_candles(files: Iterable[Sequence[Sequence[Any]]]) -> list[list[Any]]:
+    """One candle per timestamp, in time order, from the window files oldest first. The current
+    window is fetched again each day under a later end (`start_<yesterday>.json`), so its files
+    overlap: the latest file's candle wins."""
+    by_ts: dict[str, list[Any]] = {}
+    for candles in files:
+        for c in candles:
+            by_ts[str(c[0])] = list(c)
+    return [by_ts[ts] for ts in sorted(by_ts)]
 
 
 def _db_bars(work: Work) -> dict[str, list[Bar]]:

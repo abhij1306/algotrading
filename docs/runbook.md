@@ -200,6 +200,66 @@ job's files are under `HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds 
 stderr). The job list is in memory: after a restart it is empty, and a child still running
 finishes and records its runs.
 
+### Daily data update
+
+`python -m app.hat.data.update` (or `scripts/hat_data_update.sh`, from any directory) brings
+every data store up to the latest finished session (from 18:00 IST, the day's; before, the
+previous) when the live service is not running. It runs the steps below in order; each finds its
+own last good session and fills every session after it through `--through`, so a missed day is
+caught up on the next run; a step with no good session yet starts at `--through` (older history
+is the backfill tools' job). A failed step does not stop the steps that do not read its data; the
+steps that read it are skipped.
+
+| Step | Does | Waits on |
+| --- | --- | --- |
+| `calendar` | `calendar.refresh`: NSE's holiday list into `hat_trading_calendar` | |
+| `bars` | `history_cli --resume`: the bhavcopy days into `bars_daily_raw`, the index archive | |
+| `ingest` | `ingest.nightly` per session on the stored bars: index levels, market breadth, NIFTY 500 TRI, `ingest.completed` | bars |
+| `quality` | `quality.gate` per session | ingest |
+| `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`) | ingest |
+| `features` | `features --through` | quality, ca |
+| `membership` | `nifty500_membership.py` fetch, text, parse, reference, build as of today, then `load-index-membership --apply` | bars |
+| `bars5m` | `kotak_5m.py members` and `topup` of the missing sessions, then `bars5m_import --apply` | bars |
+| `etf` | `overlay_etf.py` local, kotak, indices, dividends, build, store | |
+| `results` | weekly: results fetch, fetch-secondary, parse, derive | |
+| `fundamentals` | weekly: fundamentals extract, derive | results, bars |
+
+Results and fundamentals run weekly: the cached filings change only in results season, `extract`
+replaces every row (about 15 minutes), and an NSE filing keeps NSE's own `public_at`, so a week's
+delay moves no point-in-time date (a secondary-source page counts from its fetch: up to a week
+later, never earlier). The working directories are `HAT_DATA_ROOT/work/nifty500`,
+`work/kotak_5m` and `work/overlay`, or `NIFTY500_DIR`, `KOTAK_5M_DIR`, `OVERLAY_DATA_DIR`; the
+membership one holds the hand-kept `overrides.json` and `symbol_alias.json` (Index membership).
+Kotak credentials come from the environment or `.env` and are never printed; `KOTAK_PYTHON`
+(the timer installer passes it on) names an interpreter with neo-api-client and pyotp when the
+backend's lacks them.
+
+```bash
+scripts/hat_data_update.sh --dry-run                 # what each step would do
+scripts/hat_data_update.sh                           # everything due
+scripts/hat_data_update.sh --only bars5m             # one step (a weekly one runs when named)
+scripts/hat_data_update.sh --through 2026-10-28      # stop at an earlier session
+scripts/hat_data_update.sh --status                  # the status file
+```
+
+Status: `HAT_DATA_ROOT/update/status.json` holds, per step, `result` (`ok`, `failed`, `skipped`,
+`not_due`), `last_good` (the session its data is complete through), `last_run`, `last_ok_run`,
+`detail` and `log`; the step's output is in `HAT_DATA_ROOT/logs/update/<date>/<step>.log`. The
+exit is 1 when a step failed or was skipped, 3 when another run holds `update/update.lock`.
+`bars5m` also needs the minute-history lock: while another `bars_5m` writer runs it fails, and
+the next run catches up.
+
+Schedule: `scripts/install_data_update_timer.sh <HAT_DATA_ROOT>` installs the systemd user timer
+(`deploy/systemd/`) for that checkout: every day at 19:30 IST, `Persistent=true`, so a run missed
+while the machine was stopped or suspended starts when it is back (needs lingering:
+`loginctl enable-linger`). `systemctl --user list-timers hat-data-update.timer` shows the next
+run, `journalctl --user -u hat-data-update` the summary lines.
+
+Recover: read the failed step's `detail` and log, fix the cause, then run that step with
+`--only` (or wait for the next run). A failing `quality` keeps `features` back, as it does the
+live chain; a `membership` build that refuses an unresolved symbol needs an `overrides.json` or
+`symbol_alias.json` entry.
+
 ### Index membership
 
 A backtest reads its universe's index (`publish-universe --index`, default `NIFTY 500`) point in
