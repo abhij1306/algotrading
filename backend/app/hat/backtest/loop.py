@@ -856,8 +856,11 @@ class _Run:
 
     def _rotate_book(self, leg: _Leg, book: RotationBook, day: date, prev: date | None) -> None:
         """A rotation book's open: its dividends, its pending sales, and the rebalance its
-        `prev` close decided, at the account's equity of that close times its weight. Buys the
-        cash cannot pay draw on the overlay's same-day credit, sold as they fill."""
+        `prev` close decided, on the sleeve's allocation of that night (the account's equity of
+        that close times the allocator's final weight, after the regime multiplier and the caps,
+        as every leg is sized); a night without an allocation makes no rebalance, as it rejects
+        the other legs' entries. Buys the cash cannot pay draw on the overlay's same-day credit,
+        sold as they fill."""
         credit = book.dividends(lambda i: self.view.dividends_on(i, day))
         if credit:
             self.rotation_dividends += credit
@@ -868,6 +871,9 @@ class _Run:
         book.sell_pending(day, lambda i: self._quote(i, day, "sell"), self._symbol(day))
         rules = leg.config.rotation
         if prev is None or rules is None or not rotation.is_rebalance(prev, day, rules.rebalance):
+            return
+        allocation = leg.allocations.get(day)
+        if allocation is None:
             return
         plan = self._rotation_plan(book, leg, prev, day)
         funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
@@ -891,8 +897,9 @@ class _Run:
                 leg, i, day, prev, qty, price, score
             ),
         )
-        equity = self.account_equity.get(day, self.spec.initial_equity)
-        book.rebalance(day, plan, equity * leg.weight, market)
+        # the allocator's weight over the equity it allocated (`allocation.capital` unrounded)
+        equity = self.account_equity[day]
+        book.rebalance(day, plan, equity * allocation.final_weight, market)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
 
