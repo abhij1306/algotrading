@@ -1,0 +1,15 @@
+# The daily data update (docs/runbook.md, Daily data update). Installed with
+# scripts/install_data_update_timer.sh, which fills in @REPO@, @DATA_ROOT@ and @KOTAK_PYTHON@.
+[Unit]
+Description=HAT daily data update
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HAT_DATA_ROOT=@DATA_ROOT@ DB_NAME=hat_live KOTAK_PYTHON=@KOTAK_PYTHON@
+ExecStart=@REPO@/scripts/hat_data_update.sh
+# 3: another run holds the update lock
+SuccessExitStatus=3
+Nice=10
+MemoryMax=4G
+TimeoutStartSec=8h
