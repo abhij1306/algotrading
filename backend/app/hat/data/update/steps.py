@@ -176,6 +176,25 @@ def calendar(ctx: Context) -> Done:
     return Done(_last(ctx.sessions), done.detail)
 
 
+def listing(ctx: Context) -> Done:
+    """`listing.refresh`: the stocks of the instrument master from NSE's equity list, after the
+    bars step registered the day's new ISINs (inactive until a listing names them)."""
+    from app.database import HatDataSessionLocal
+
+    from ..bhavcopy import http_fetcher
+    from ..nse_files import EQUITY_LIST_URL, url_source
+    from ..reference_jobs import LISTING_REFRESH, listing_refresh
+
+    def body(day: date) -> Callable[[], object]:
+        return listing_refresh(
+            equity_list=url_source(EQUITY_LIST_URL, http_fetcher()),
+            session_factory=HatDataSessionLocal,
+            today=day,
+        )
+
+    return _each_session(ctx, LISTING_REFRESH, [ctx.today], body)
+
+
 def bars(ctx: Context) -> Done:
     from ..store import DATASET_BARS
 
@@ -535,6 +554,7 @@ def record(ctx: Context) -> Done:
 BODIES: dict[str, Callable[[Context], Done]] = {
     "calendar": calendar,
     "bars": bars,
+    "listing": listing,
     "ingest": ingest,
     "quality": quality,
     "ca": ca,

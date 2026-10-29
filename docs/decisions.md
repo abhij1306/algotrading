@@ -192,6 +192,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 ## Data
 
+- **Tradable series: EQ and BE.** BE (trade-for-trade, delivery only) suits CNC swing trades, so
+  it is tradable beside EQ (`broker_symbols.FYERS_SERIES`, the seeds' `series_in`); BZ (companies
+  in breach of listing rules) never is.
 - **Free official sources.** Nightly prices from the NSE MCP with the bhavcopy at 22:00 as
   fallback; history from bhavcopy archives since 2011; Fyers for live ticks and minute history.
   Research MCPs are chat-side only and never feed a scan or order.
@@ -542,7 +545,13 @@ MCP server (advisory only); a CLI to re-run one job for a past trade date; a wee
 live trading of `entry_timing: daily_close`. Results data: ingest NSE's Annual and Others results
 listings (a few year-end quarters are filed only there, excepted in D5 meanwhile); one row per
 NSE sha in `results_events` (filings stored under an older ISIN of the same company before the
-chain rule); no secondary rows after a company's last traded day.
+chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
+D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
+adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
+follow-ups: check each demerger factor against the company's published cost-of-acquisition ratio
+(today it is checked only against the same raw bars it was taken from); pin the NSE-side value in
+an exception beside the stored one; undo a face-value change for rights as of the NSE pull's
+date, not the last bar; and read a stock's series as of each day for `series_in`, not today's.
 
 ## Defaults awaiting owner confirmation
 

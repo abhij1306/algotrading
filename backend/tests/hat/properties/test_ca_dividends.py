@@ -50,6 +50,37 @@ def test_payouts_reads_one_amount_per_kind() -> None:
 
 
 @pytest.mark.parametrize(
+    ("text", "kind", "amount"),
+    [
+        ("Annual General Meeting/Div Rs 4 Per Share", KIND_FINAL, "4"),
+        ("Final Divdend Rs 2.50", KIND_FINAL, "2.50"),
+        ("Divided - Rs 3 Per Share", KIND_FINAL, "3"),
+        ("Dividend - Rs 62..50 Per Share", KIND_FINAL, "62.50"),  # NSE's doubled point
+        ("Dividend - Rs 5 Per Share Of Rs 10/- Each", KIND_FINAL, "5"),  # not the face value
+        ("Spl Dividend Rs 7", KIND_SPECIAL, "7"),
+        ("Interim Div. Of Re. 0.70/- Per Equity Share Re.1/- Each", KIND_INTERIM, "0.70"),
+        ("Aanual General Meeting/ Diviednd Rs 0.50 Per Share", KIND_FINAL, "0.50"),
+        ("Interim Dividen Rs 5 Per Share", KIND_INTERIM, "5"),
+        ("Annual General Meeting / Divividend - Rs 2/- Per Share", KIND_FINAL, "2"),
+        (" Interim Dividned - Rs 135 Per Share", KIND_INTERIM, "135"),
+    ],
+)
+def test_payouts_reads_nses_spellings(text: str, kind: str, amount: str) -> None:
+    assert payouts(text) == (_p(kind, amount),)
+    assert payouts("Divisional Meeting Rs 5") == "no_dividend"
+    assert payouts("Diversion Of Funds Rs 5") == "no_dividend"
+
+
+def test_payouts_reads_a_bare_amount_right_after_the_word() -> None:
+    # M&M 2013-07-18
+    assert payouts("Annual General Meeting/Dividend 12.50/-+Special Dividend 0.50/- Per Share") == (
+        _p(KIND_FINAL, "12.50"),
+        _p(KIND_SPECIAL, "0.50"),
+    )
+    assert payouts("Dividend 2013-14") == "no_amount"  # a year is no amount
+
+
+@pytest.mark.parametrize(
     "text",
     [
         "Interm Dividend - Rs 2 Per Share",

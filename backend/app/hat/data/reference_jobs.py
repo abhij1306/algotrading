@@ -1,4 +1,5 @@
-"""Job bodies `reference.weekly`, `bands.nightly` and `calendar.refresh` (HAT-DATA-020..027).
+"""Job bodies `reference.weekly`, `listing.refresh`, `bands.nightly` and `calendar.refresh`
+(HAT-DATA-020..027).
 
 Each body is meant for `run_job` and is idempotent: a crash after the body returns but before
 the success is recorded re-runs it, and every write below changes nothing the second time. The
@@ -17,10 +18,12 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..models import HatMarket
+from ..models import HatInstrument, HatMarket
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from . import broker_symbols, instruments, symbol_history
 from . import calendar as hat_calendar
+from .corporate_actions import lock_reference_data
+from .isin import ordinary_equity
 from .kite_symbols import KiteSymbolData
 from .mcp_client import McpClient, McpError
 from .reference import (
@@ -122,6 +125,56 @@ def reference_weekly(
         if kite_symbols is not None:
             rows += refresh_kite(session_factory, kite_symbols)
         return JobResult(calls=client.log.calls, rows=rows)
+
+    return body
+
+
+LISTING_REFRESH = "listing.refresh"
+
+
+def listing_refresh(
+    *, equity_list: TextSource, session_factory: SessionFactory, today: date
+) -> Callable[[], JobResult]:
+    """Daily, in the data update: the stocks of the instrument master in line with NSE's equity
+    list (`EQUITY_L.csv`) alone, so an ISIN the bars step registered (inactive, no name, face
+    value 0) is activated and named the session it lists, a listed stock's rename or series move
+    is taken, and a stock the list no longer holds is marked delisted. The list holds stocks
+    only: every active instrument that is not a stock (`isin.ordinary_equity`: ETFs and other
+    funds, rights entitlements) is kept as listed (`still_listed`), never delisted here;
+    `reference.weekly` owns the rest. The shrink guard (`reference_listing_shrunk`) refuses a
+    list that lost half the master."""
+
+    def body() -> JobResult:
+        csv_rows = parse_equity_list_csv(_read(equity_list, "reference_csv_unavailable"))
+        stocks = [s for s in csv_rows if ordinary_equity(s.isin)]
+        if not stocks:  # a list of no stock would delist every one
+            raise JobError("reference_csv_empty")
+        build = build_listing_from_csv(stocks)
+        with session_factory() as session:
+            market_id = _market_id(session)
+            lock_reference_data(session)  # before the read: no writer activates one meanwhile
+            others = {
+                (i.symbol, i.series)
+                for i in session.scalars(
+                    select(HatInstrument).where(
+                        HatInstrument.market_id == market_id, HatInstrument.active.is_(True)
+                    )
+                )
+                if not ordinary_equity(i.isin)
+            }
+            report = instruments.upsert_instruments(
+                session, market_id, build.securities, today=today, still_listed=others
+            )
+            session.commit()
+        logger.info(
+            "listing refresh: %s created, %s updated (%s reactivated, %s renamed), %s delisted",
+            report.created,
+            report.updated,
+            report.reactivated,
+            report.renamed,
+            report.delisted,
+        )
+        return JobResult(rows=report.created + report.updated + report.delisted)
 
     return body
 

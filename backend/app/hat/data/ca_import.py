@@ -97,7 +97,8 @@ from .corporate_actions import (
     parse_action_text,
 )
 from .isin import voting_equity
-from .store import DataStore
+from .ratios import split_pair_numbers
+from .store import DATASET_BARS, DataStore
 
 SOURCE_FILE = "nse_ca_file"
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
@@ -172,16 +173,40 @@ _AT_PAR = re.compile(r"(?:\bat|@)\s*par\b")
 _NON_SIMPLE = re.compile(r"warrant|ccps|ccd|convertible|debenture|partly|preference|\bncd")
 
 
-def rights_terms(text: str, face_value: str) -> RightsTerms | str:
+FaceValueChange = tuple[date, Fraction]  # a face-value change's ex-date and new/old
+
+
+def face_value_changes(text: str) -> Fraction | None:
+    """The new/old face value of a split or consolidation purpose ("Face Value Split From Rs 10/-
+    To Rs 2/-", "Consolidation From Rs 1/- To Rs 10/-"), from the words that name it on; None
+    when the text names no face-value change or its two numbers do not read."""
+    lowered = re.sub(r"\bfrm\b", "from", text.lower())
+    cut = _SPLIT_START.search(lowered) or re.search(r"consolidat", lowered)
+    pair = None if cut is None else split_pair_numbers(lowered[cut.start() :])
+    return None if pair is None else pair[1] / pair[0]
+
+
+def face_value_on(face_value: Fraction, day: date, changes: Sequence[FaceValueChange]) -> Fraction:
+    """The face value on `day` from today's (the file's `faceVal`) and the company's face-value
+    changes: today's divided by the new/old of each change after `day`."""
+    for ex_date, ratio in changes:
+        if ex_date > day:
+            face_value /= ratio
+    return face_value
+
+
+def rights_terms(text: str, face_value: str | Fraction) -> RightsTerms | str:
     """The terms of an NSE rights purpose ("Rights 1:10 @ Premium Rs 95/-") with the face value
-    of the row, or the reason it cannot be priced: `non_simple` (partly paid shares, warrants,
-    convertibles, debentures), `unparsed` or `no_issue_price`."""
+    on its ex-date, or the reason it cannot be priced: `non_simple` (partly paid shares,
+    warrants, convertibles, debentures), `unparsed` or `no_issue_price`."""
     lowered = text.lower()
     if _NON_SIMPLE.search(lowered):
         return "non_simple"
     ratios = _RIGHTS_RATIO.findall(lowered)
-    fv = exact(face_value.strip(), positive=True)
-    if len(ratios) != 1 or fv is None:
+    fv = (
+        face_value if isinstance(face_value, Fraction) else exact(face_value.strip(), positive=True)
+    )
+    if len(ratios) != 1 or fv is None or fv <= 0:
         return "unparsed"
     new, held = Fraction(ratios[0][0]), Fraction(ratios[0][1])
     if new <= 0 or held <= 0:
@@ -286,7 +311,10 @@ def _split_bonus(row: Mapping[str, str]) -> Proposal:
     return replace(p, legs=legs)
 
 
-def _rights(row: Mapping[str, str]) -> Proposal:
+def _rights(row: Mapping[str, str], changes: Sequence[FaceValueChange] = ()) -> Proposal:
+    """A rights row, priced at the face value on its ex-date: the file's `faceVal` is today's,
+    so a later split (`changes`, the company's face-value changes) would understate the issue
+    price."""
     text = row["subject_raw"]
     p = Proposal(T_RIGHTS, row["rowid"], row["symbol"], row["isin"], nse_date(row["exDate"]), text)
     p = replace(p, hint=f"{row['market']} FV {row['faceVal']}", sme="sme" in row["market"])
@@ -294,15 +322,16 @@ def _rights(row: Mapping[str, str]) -> Proposal:
         return p.ends(SKIPPED, "invit_units")
     if p.ex_date is None:
         return p.ends(REVIEW, "bad_ex_date")
-    terms = rights_terms(text, row["faceVal"])
+    today = exact(row["faceVal"], positive=True)
+    face_value = None if today is None else face_value_on(Fraction(today), p.ex_date, changes)
+    terms = rights_terms(text, face_value if face_value is not None else row["faceVal"])
     if isinstance(terms, str):
         return p.ends(REVIEW, terms)
     parsed = parse_ratio(row["entitlement_ratio_parsed"])
     premium = exact(row["premium_rs_parsed"]) if row["premium_rs_parsed"] else None
-    face_value = exact(row["faceVal"], positive=True)
     if parsed != (terms.new, terms.held) or (
         premium is not None
-        and (face_value is None or Fraction(premium) != terms.price - Fraction(face_value))
+        and (face_value is None or Fraction(premium) != terms.price - face_value)
     ):
         return p.ends(REVIEW, "parse_disagrees")  # the file's own parse reads the text otherwise
     return replace(p, rights=terms)
@@ -339,11 +368,27 @@ def _etf(row: Mapping[str, str]) -> Proposal:
     return replace(p, legs=(Leg(TYPE_SPLIT, Fraction(new) / Fraction(old)),))
 
 
-def proposals(tables: Mapping[str, Sequence[Mapping[str, str]]]) -> list[Proposal]:
-    """What each row of the file proposes, as far as its text goes."""
+def proposals(
+    tables: Mapping[str, Sequence[Mapping[str, str]]], asof: date | None = None
+) -> list[Proposal]:
+    """What each row of the file proposes, as far as its text goes; a rights row is priced at
+    the face value of its ex-date, from the file's own face-value splits of the same company
+    (same ISIN or symbol) that took effect by `asof` (the newest stored session: a split still
+    to come has not changed the file's `faceVal`)."""
+    changes: dict[str, list[FaceValueChange]] = {}
+    for row in tables.get(T_SPLITS, ()):
+        day, ratio = nse_date(row["exDate"]), face_value_changes(row["subject_raw"])
+        if day is not None and ratio is not None and (asof is None or day <= asof):
+            for key in {row["isin"], row["symbol"]} - {""}:
+                changes.setdefault(key, []).append((day, ratio))
+
+    def rights(row: Mapping[str, str]) -> Proposal:
+        keys = {row["isin"], row["symbol"]} - {""}
+        return _rights(row, sorted({c for k in keys for c in changes.get(k, ())}))
+
     readers: dict[str, Callable[[Mapping[str, str]], Proposal]] = {
         T_SPLITS: _split_bonus,
-        T_RIGHTS: _rights,
+        T_RIGHTS: rights,
         T_DEMERGERS: _demerger,
         T_ETF: _etf,
     }
@@ -505,7 +550,8 @@ def evaluate(
     session: Session, store: DataStore, tables: Mapping[str, Sequence[Mapping[str, str]]]
 ) -> list[Outcome]:
     """Every row's outcome; nothing is written."""
-    props = proposals(tables)
+    days = store.days(DATASET_BARS)
+    props = proposals(tables, days[-1] if days else None)
     reference = load_reference(session)
     needs_children = any(p.demerger is not None and not p.status for p in props)
     ctx = Context(

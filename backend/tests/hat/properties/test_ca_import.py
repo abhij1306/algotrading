@@ -13,8 +13,11 @@ from app.hat.data.ca_gate import ALREADY, REVIEW, SKIPPED, STORED, gate, nse_dat
 from app.hat.data.ca_import import (
     _split_bonus,
     demerger_factor,
+    face_value_changes,
+    face_value_on,
     name_key,
     parse_ratio,
+    proposals,
     rights_factor,
     rights_terms,
     split_bonus_legs,
@@ -90,6 +93,43 @@ def test_rights_terms() -> None:
         "Rights 1:5 @ Premium Rs 50/- With 1 Warrants For 5 Equity Shares", "1"
     ) == ("non_simple")
     assert rights_terms("Rights 1:10 @ Premium Rs 95/-", "-") == "unparsed"
+
+
+def test_face_value_on_the_rights_ex_date() -> None:
+    """The file's `faceVal` is today's: a rights issue before a split is priced at the face
+    value of its own day (CANFINHOME 2015: FV 10 then, 2 today)."""
+    split = face_value_changes("Face Value Split (Sub-Division) - From Rs 10/- Per Share To Rs 2/-")
+    assert split == Fraction(1, 5)
+    assert face_value_changes("Consolidation Of Shares From Re 1/- To Rs 10/-") == 10
+    assert face_value_changes("Bonus 1:1") is None
+    changes = [(date(2016, 9, 22), Fraction(1, 5))]
+    assert face_value_on(Fraction(2), date(2015, 1, 23), changes) == 10
+    assert face_value_on(Fraction(2), date(2017, 1, 1), changes) == 2
+
+
+def _rights_row(**cells: str) -> dict[str, str]:
+    row = {"rowid": "1", "symbol": "CANFINHOME", "market": "Equity", "isin": "INE477A01020"}
+    row |= {"subject_raw": "Rights 3:10 @ Premium Rs 440/-", "entitlement_ratio_parsed": "3:10"}
+    row |= {"premium_rs_parsed": "440", "faceVal": "2", "exDate": "23-Jan-2015"}
+    return row | cells
+
+
+def test_proposals_price_rights_at_the_ex_dates_face_value() -> None:
+    split = {"rowid": "2", "symbol": "CANFINHOME", "isin": "INE477A01020", "action_type": "split"}
+    split |= {"subject_raw": "Face Value Split From Rs 10/- To Rs 2/-", "instrument_class": ""}
+    split |= {"exDate": "22-Sep-2016"}
+    (rights,) = [
+        p
+        for p in proposals({"rights_issues": [_rights_row()], "splits_bonus": [split]})
+        if p.table == "rights_issues"
+    ]
+    assert rights.rights == RightsTerms(3, 10, 450)
+    (alone,) = proposals({"rights_issues": [_rights_row()]})
+    assert alone.rights == RightsTerms(3, 10, 442)
+    # a split announced but not yet in effect has not changed the file's faceVal
+    tables = {"rights_issues": [_rights_row()], "splits_bonus": [split]}
+    (early,) = [p for p in proposals(tables, date(2016, 9, 1)) if p.table == "rights_issues"]
+    assert early.rights == RightsTerms(3, 10, 442)
 
 
 def test_subdivision_and_grouped_premium() -> None:

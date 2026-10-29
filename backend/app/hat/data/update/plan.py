@@ -37,6 +37,7 @@ class Step:
 STEPS: tuple[Step, ...] = (
     Step("calendar", about="NSE holiday list into hat_trading_calendar (calendar.refresh)"),
     Step("bars", about="bhavcopy days into bars_daily_raw, index_daily (history_cli --resume)"),
+    Step("listing", ("bars",), about="NSE equity list into the stock instrument master"),
     Step(
         "ingest",
         ("bars",),
