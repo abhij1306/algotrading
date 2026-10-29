@@ -168,7 +168,7 @@ def _filed_order(c: _Candidate) -> tuple[Any, ...]:
 def _announced_at(c: _Candidate, announcements: Sequence[Announcement]) -> datetime | None:
     anchor = anchor_date(c.filing)
     match = match_announcement(announcements, anchor, c.document.period_end) if anchor else None
-    return match.at if match else None
+    return match.public if match else None
 
 
 def nse_versions(

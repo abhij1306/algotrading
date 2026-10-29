@@ -347,22 +347,33 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **Financial results store (owner 2026-10-28).** NSE's quarterly results from the quarter ending
   2020-03-31, parsed from the XBRL filings only (the pre-XBRL HTML pages are not parsed; XBRL is
   complete from 2020, A0 probe), for the NIFTY 500 point-in-time members (any membership on a day
-  from 2021-01-01), on the consolidated basis; standalone only for a quarter a company filed no
+  from 2020-03-31, the first quarter; a company that changed ISIN is covered once, as its latest
+  instrument), on the consolidated basis; standalone only for a quarter a company filed no
   consolidated results for (no subsidiaries), so it still has data (owner scope cut 2026-10-28: the
   EP turnover universe and both bases stay CLI options). One row per filing version, never updated:
   a revision is a new row with the next version superseding the last (`hat_financial_result`,
-  created like every table, no migration tool). `public_at` is the results announcement's broadcast
-  time ('Financial Result Updates', or the board-meeting outcome naming the results in the
-  Integrated Filing era; the one naming the filing's quarter end, never one naming only another
-  quarter), or the XBRL filing time when that is earlier or no announcement matches; never the
+  created like every table, no migration tool). `public_at` is the results announcement's exchange
+  dissemination time (the later of NSE's `an_dt` and `exchdisstime`, owner 2026-10-29: no figure
+  is usable before the exchange published it; 'Financial Result Updates', or the board-meeting
+  outcome naming the results in the Integrated Filing era; the one naming the filing's quarter end,
+  never one naming only another quarter), or the XBRL filing time when that is earlier or no
+  announcement matches (an integrated filing: the later of its creation and broadcast times); never the
   listing's broadcast time, a later re-broadcast for many filings before 2022, and never the XBRL
   file name's clock (12-hour, no AM/PM: only its date is read). A quarter NSE does not list, or
   whose XBRL fails, is filled from the secondary source's public company pages (no login,
   robots.txt honoured, one request every 3 s, pages cached), `source=secondary`, used only where no
   NSE row of the same (instrument, period end, basis) is public; its `public_at` is NSE's results
   announcement for the quarter, else the regulatory deadline (45 days after the quarter end, 60 for
-  March, at 23:59 IST) with `public_at_estimated`; a later change to its figures is a new version
-  public from when the page was fetched (`observed`). The secondary source shows only the latest 13
+  March, at 23:59 IST) with `public_at_estimated`; a quarter that ended before the company listed
+  counts from the results that first carry it (the year-on quarter's, never before the first
+  results after the listing); a quarter with no announcement by its deadline (a late filer, or a
+  company that listed after it) counts from the first results announcement after the deadline,
+  whose results carry it as the preceding quarter; a later change to its figures is a new version public from when the
+  page was fetched (`observed`). A stored row's figures never change; its `public_at` is
+  corrected when a rule fix finds another time (`parse` re-times every row): later, or earlier
+  only onto an announcement's dissemination time, so a late time (an XBRL filed days after the
+  results PDF: the quarter's own results announcement counts) is corrected and an early one never
+  made; the table's trigger refuses anything else. The secondary source shows only the latest 13
   quarters, so older gaps stay gaps. Growth compares like with like: consolidated when both
   quarters have it, else standalone, never mixed (`data/results/growth.py`); under the default
   consolidated-first scope a quarter's standalone row is read only where that quarter has no

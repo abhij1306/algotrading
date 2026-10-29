@@ -360,8 +360,12 @@ again on the next run (raw answers live gzipped by sha256 under `raw/nse-results
 page a week after its fetch or once NSE's cached listing has a newer filing of the company (run
 `fetch` first), an announcement day until fetched after it ended, and `parse` adds only filings not stored
 yet. A new quarter is the four commands again once its results are out. `parse` writes every
-filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`. Rows are append-only (a trigger refuses
-UPDATE and DELETE), so try a change on a scratch database first. Run `parse` only after `fetch` has
+filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`, and re-times every stored row: a row the
+current rules time differently moves, later, or earlier only onto an announcement's dissemination
+(`results/retimed.csv` lists each move; a row whose filing is gone from NSE's listing moves only
+from its announcement's submission to that announcement's dissemination). Rows are otherwise append-only (a trigger refuses DELETE
+and any other UPDATE),
+so try a change on a scratch database first and run `derive` after a re-time. Run `parse` only after `fetch` has
 finished: a quarter not yet fetched would be backfilled from the secondary source.
 
 ### Fundamentals
@@ -404,7 +408,10 @@ parsed notices and archived lists (`--notices`: `changes_parsed.json`, `override
 of stored days compared bar by bar); D5 results `public_at` vs NSE's dissemination times
 (`--ca-data`); D6 calendar, suspensions and ISIN lineage vs NSE's archive (every weekday the
 calendar closes is asked of it) and symbol changes; D7 index, TRI and ETF series vs NSE's files,
-niftyindices' answers and NSE's ETF unit actions. A check without its reference fails
+niftyindices' answers and NSE's ETF unit actions. D5 demands every quarter of each NIFTY 500
+member from 2020-03-31 (its lineage chain judged as one company) and reads its reviewed
+exceptions, each with its reason, from `backend/app/hat/data/verify/d5_exceptions.csv`: an excepted
+finding warns, and an exception no finding needs warns too (`exception_unused`). A check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the
 check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
 seconds apart, into `verify_reference/<group>/`, each file written once (NSE archives, the

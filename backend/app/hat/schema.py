@@ -249,11 +249,22 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
-# A financial result is never changed or removed: a revision is a new row (`data/results/`).
+# A financial result is never removed and its figures never change: a revision is a new row
+# (`data/results/`). Only its timing may move (`ingest.MemberIngest.retime`): later, or earlier
+# only onto an announcement's dissemination time (a time stored late).
 _FINANCIAL_RESULT_APPEND_ONLY_FN = """
 CREATE OR REPLACE FUNCTION hat_financial_result_is_append_only() RETURNS trigger AS $$
+DECLARE
+  timing text[] := ARRAY['public_at', 'public_at_source', 'public_at_estimated', 'xbrl_at',
+                         'xbrl_at_estimated'];
 BEGIN
-  RAISE EXCEPTION 'hat_financial_result is append-only';
+  IF TG_OP = 'UPDATE'
+     AND (NEW.public_at >= OLD.public_at OR NEW.public_at_source = 'announcement')
+     AND (NEW.xbrl_at IS NOT DISTINCT FROM OLD.xbrl_at OR NEW.xbrl_at > OLD.xbrl_at)
+     AND to_jsonb(NEW) - timing = to_jsonb(OLD) - timing THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'hat_financial_result is append-only (only its timing may be corrected)';
 END $$ LANGUAGE plpgsql
 """
 

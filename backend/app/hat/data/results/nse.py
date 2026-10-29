@@ -194,13 +194,21 @@ def parse_integrated_listing(body: bytes) -> tuple[list[Filing], int]:
 @dataclass(frozen=True)
 class Announcement:
     symbol: str
-    at: datetime  # the broadcast time (`an_dt`)
+    at: datetime  # the company's submission time (`an_dt`)
     desc: str
     text: str
+    disseminated: datetime | None = None  # the exchange's dissemination time (`exchdisstime`)
+
+    @property
+    def public(self) -> datetime:
+        """When the market could read it: the later of `at` and the exchange's dissemination
+        (NSE disseminates seconds to days after the submission; a missing one is `at`)."""
+        return max(self.at, self.disseminated or self.at)
 
 
 def parse_announcements(body: bytes) -> list[Announcement]:
-    """The `corporate-announcements` answer (a JSON list); `an_dt` is the broadcast time."""
+    """The `corporate-announcements` answer (a JSON list): `an_dt` is the submission time,
+    `exchdisstime` the dissemination time."""
     items = []
     for row in json.loads(body or b"[]"):
         at = nse_time(row.get("an_dt"))
@@ -211,6 +219,7 @@ def parse_announcements(body: bytes) -> list[Announcement]:
                     at,
                     row.get("desc") or "",
                     row.get("attchmntText") or "",
+                    nse_time(row.get("exchdisstime")),
                 )
             )
     return items
