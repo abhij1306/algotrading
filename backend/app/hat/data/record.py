@@ -46,6 +46,7 @@ REFERENCE = Path("reference")
 HOOKS_PATH = ".githooks"  # the data repo's pre-push secret guard
 PARTITION = re.compile(r"(?:^|/)date=(\d{4}-\d{2}-\d{2})(?:/|$)")
 CHUNK = 1 << 20
+LISTED_PER_STORE = 50  # files named per store and kind in the commit message; the rest counted
 
 # Each reference export: file name -> query (ordered on a key, so the CSV is stable).
 EXPORTS: dict[str, str] = {
@@ -204,12 +205,18 @@ def summary(changes: Mapping[str, Changes]) -> str:
     return ", ".join(parts) if parts else "no change"
 
 
-def commit_message(stamp: str, changes: Mapping[str, Changes]) -> str:
-    """The record commit's message: the summary line, then every rewritten and removed file."""
+def commit_message(
+    stamp: str, changes: Mapping[str, Changes], listed: int = LISTED_PER_STORE
+) -> str:
+    """The record commit's message: the summary line, then each store's rewritten and removed
+    files, at most `listed` of each per store and a count of the rest. Bounded, so a full rebuild
+    (thousands of feature partitions) still commits; the manifests' diff names every file."""
     lines = [f"record {stamp}: {summary(changes)}"]
-    for _, c in sorted(changes.items()):
-        lines += [f"rewritten {path}" for path in c.rewritten]
-        lines += [f"removed {path}" for path in c.removed]
+    for store, c in sorted(changes.items()):
+        for verb, paths in (("rewritten", c.rewritten), ("removed", c.removed)):
+            lines += [f"{verb} {path}" for path in paths[:listed]]
+            if len(paths) > listed:
+                lines.append(f"{verb} {len(paths) - listed} more in {store} (manifest diff)")
     return "\n\n".join([lines[0], "\n".join(lines[1:])]) if len(lines) > 1 else lines[0]
 
 
@@ -338,12 +345,13 @@ def write_reference(clone: Path) -> int:
     return len(EXPORTS)
 
 
-def git(clone: Path, *args: str) -> str:
+def git(clone: Path, *args: str, stdin: str | None = None) -> str:
     result = subprocess.run(  # noqa: S603
         ["git", "-C", str(clone), *args],  # noqa: S607 - the operator's git on PATH
         check=False,
         text=True,
         capture_output=True,
+        input=stdin,
     )
     if result.returncode != 0:
         raise RecordError(f"git {args[0]} failed: {result.stderr.strip()[-300:]}")
@@ -358,7 +366,8 @@ def commit(clone: Path, message: str, *, push: bool) -> bool:
         git(clone, "status", "--porcelain", "--", str(MANIFESTS), str(REFERENCE)).strip()
     )
     if changed:
-        git(clone, "commit", "-q", "-m", message, "--", str(MANIFESTS), str(REFERENCE))
+        # the message goes on stdin: an argument is limited to 128 KB
+        git(clone, "commit", "-q", "-F", "-", "--", str(MANIFESTS), str(REFERENCE), stdin=message)
     # also a commit an earlier run could not push
     if push and git(clone, "rev-list", "origin/main..HEAD").strip():
         try:
