@@ -268,7 +268,8 @@ its `README.md` maps it) keeps what must not be lost silently. `python -m app.ha
 (the update's last step) rewrites, in the clone:
 
 - `manifests/<store>.csv` for `raw`, `bars_daily_raw`, `bars_5m`, `features_daily`,
-  `index_daily`, `breadth_daily` and `etf`: per file its path, rows, date range, bytes and sha256.
+  `index_daily`, `breadth_daily`, `etf` and `verify_reference`: per file its path, rows, date
+  range, bytes and sha256.
   The commit message counts per store the files added (`+`), rewritten (`~`, bytes of an existing
   file changed) and removed (`-`) and lists every rewritten and removed file; the step's detail
   names the first rewrites. A rewrite in `raw`, `bars_daily_raw` or `bars_5m` without a planned
@@ -406,18 +407,21 @@ calendar closes is asked of it) and symbol changes; D7 index, TRI and ETF series
 niftyindices' answers and NSE's ETF unit actions. A check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the
 check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
-seconds apart, into `raw/reference/<group>/` (NSE archives and the closed-day probes, Wayback
-captures, niftyindices, Yahoo); without it only kept files are read. The full window
-(2011-06-22 to the last bar) takes about 40 minutes.
+seconds apart, into `verify_reference/<group>/`, each file written once (NSE archives, the
+closed-day probes as one new file per run, Wayback captures, niftyindices, Yahoo); without it only kept files are read. The full window
+(2011-06-22 to the last bar) takes about 20 minutes.
 
 The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a run of
 fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`; `--report` names a folder
-inside `audits/`, and one outside it is refused); the command exits 2
+`audits/verify-*`, the only folders read, and any other is refused); the command exits 2
 when a check fails. It records the data snapshot it judged (the verified stores' files and the
-reference tables' rows in its window). A backtest's data audit reads the newest report covering
-its window (`verify` check, `docs/backtests/process.md`) and judges each blocking check on the
-run's own window: a failed finding dated in it, a check that does not cover it, or data changed
-since the report leaves the run unverified; rerun the verify after a data correction. Findings
+reference tables' rows in its window) before and after the checks; data that moved during the
+run fails every check. A backtest's data audit judges each blocking check by the newest report
+covering the window that ran the check on data unchanged since (`verify` check,
+`docs/backtests/process.md`), so a narrow run never hides a wider report's other checks. The
+window starts at the first session the run reads (the lookback before its period). A failed
+finding dated in it, a check that does not cover it, or data changed since every report that ran
+the check leaves the run unverified; rerun the verify after a data correction. Findings
 are not corrected here: each goes through its own correction path (`correct-actions`, the
 membership and lineage tools).
 

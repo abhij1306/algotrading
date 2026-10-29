@@ -153,8 +153,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   snapshot, window, 5-minute use, golden file and verification report (`data/audit.py`),
   `audits/golden/` the golden samples and their check results (`data/golden.py`,
   `docs/backtests/golden-sample.md`), `audits/verify-<date>/` the data verification reports
-  (`data/verify/`, each check against an independent reference; `raw/reference/` keeps the
-  public reference files it downloaded, never rewritten), and `backtests/trials.json` the DSR trials of each strategy, universe and window
+  (`data/verify/`, each check against an independent reference; `verify_reference/` keeps the
+  public reference files it downloaded, each written once), and `backtests/trials.json` the DSR trials of each strategy, universe and window
   (`backtest/trials.py`); no backtest writes the database. The process:
   `docs/backtests/process.md`. Promotion and the gates read a completed run whose `audit.json`
   passed or warned, through its `evidence.json` (metrics and trade buckets,

@@ -26,19 +26,22 @@ The checks (one module each; each `run(ctx)` returns an audit check, `audit.chec
 
 Every check is read-only: the database under a read-only transaction, the stores as files. A
 check that needs a public reference file not yet on disk downloads it only with `--fetch`, through
-the data layer's fetchers and pacer, into `raw/reference/`.
+the data layer's fetchers and pacer, into `verify_reference/`.
 
 A missing reference, or a span of the window a reference does not reach, is a failed finding or
 limits the check's `coverage`; never a warning. A warning is something listed for a look, not a
 gap in the proof.
 
 The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a narrower
-run: a folder naming its checks and window) unless `--report` names a folder. It records the data
-snapshot it judged (`snapshot`). A backtest's data audit reads the newest report whose window
-covers its own (`status_for`) and judges each blocking check on the run's own window
-(`check_status`): the check must cover the window and none of its failed findings may concern it
-(a finding's `days` or `window`, else the whole check), and the data snapshot of the report's
-window must be unchanged. Otherwise the run is unverified.
+run: a folder naming its checks and window) unless `--report` names another `audits/verify-*`
+folder. It records the data snapshot it judged (`snapshot`), taken before and after the checks:
+data that moved during the run fails every check (`changed_during`). A backtest's data audit
+judges each blocking check by its own report (`status_for`, `pick_reports`): the newest report
+covering the window that ran the check and whose snapshot of its window is the data now, so a
+narrow run never hides a wider report's other checks. The window starts at the first session the
+run reads (`read_window`: the lookback before its period). On it (`check_status`) the check must
+cover the window and none of its failed findings may concern it (a finding's `days` or `window`,
+else the whole check). Otherwise the run is unverified.
 """
 
 from __future__ import annotations
@@ -47,12 +50,12 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from ..audit import FAIL, PASS, SKIPPED, WARN
+from ..audit import FAIL, PASS, SKIPPED, WARN, finding
 from .snapshot import snapshot as take_snapshot
 
 __all__ = [
@@ -95,6 +98,28 @@ def _canonical(value: object) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), default=str)
 
 
+def changed_during(
+    results: Mapping[str, dict[str, Any]], before: Mapping[str, Any], after: Mapping[str, Any]
+) -> dict[str, dict[str, Any]]:
+    """The check results, each failed by `data_changed_during_run` (undated: every window) when
+    the snapshot taken before the checks differs from the one after (the data moved under them,
+    so no check judged one state of it); unchanged otherwise."""
+    if before.get("digest") == after.get("digest"):
+        return dict(results)
+    moved = sorted(
+        k for k, v in (after.get("parts") or {}).items() if before.get("parts", {}).get(k) != v
+    )
+    out = {}
+    for check_id, result in results.items():
+        found = finding("data_changed_during_run", FAIL, moved)
+        out[check_id] = {
+            **result,
+            "status": FAIL,
+            "findings": [*(result.get("findings") or ()), found],
+        }
+    return out
+
+
 def report_doc(
     checks: Mapping[str, Mapping[str, Any]],
     start: date,
@@ -131,12 +156,14 @@ def report_folder(root: Path, created: date, start: date, end: date, ids: Sequen
 
 
 def report_target(root: Path, folder: Path) -> Path:
-    """`folder` resolved inside the reports folder (the only place `status_for` reads); a folder
-    resolving outside it is refused before anything is written."""
+    """`folder` resolved inside the reports folder as a `verify-*` folder (where `status_for`
+    reads reports); any other folder is refused before anything is written."""
     base = reports_dir(root).resolve()
     target = (base / folder).resolve()
-    if not target.is_relative_to(base) or target == base:
+    if not target.is_relative_to(base) or target.parent != base:
         raise ValueError("report_folder_outside_audits")
+    if not target.name.startswith("verify-"):
+        raise ValueError("report_folder_not_verify")
     return target
 
 
@@ -223,46 +250,80 @@ def check_status(result: Mapping[str, Any] | None, start: date, end: date) -> st
     return "verified"
 
 
-def window_status(  # noqa: PLR0913
-    doc: Mapping[str, Any] | None,
-    path: Path | None,
+def pick_reports(
+    found: Sequence[tuple[Mapping[str, Any], Path | None]],
+    check_id: str,
+    current: Callable[[Mapping[str, Any]], str | None],
+) -> tuple[Mapping[str, Any], Path | None] | None | str:
+    """The report that judges `check_id` for a window: the newest of `found` (newest first) that
+    ran the check and whose snapshot is the data now (`current`, the snapshot digest of the
+    report's window); `"stale"` when every report that ran it judged data since changed, None
+    when none ran it. A narrow run never hides the check of an older, wider report."""
+    ran = [
+        (doc, path)
+        for doc, path in found
+        if ((doc.get("checks") or {}).get(check_id) or {}).get("status") not in (None, SKIPPED)
+    ]
+    for doc, path in ran:
+        if (doc.get("snapshot") or {}).get("digest") == current(doc):
+            return doc, path
+    return "stale" if ran else None
+
+
+def window_status(
+    found: Sequence[tuple[Mapping[str, Any], Path | None]],
     start: date,
     end: date,
-    current: str | None,
+    current: Callable[[Mapping[str, Any]], str | None],
     *,
     used_5m: bool,
 ) -> dict[str, Any]:
-    """What a backtest of `start..end` records of its verification: the report (its file, digest
-    and each check's status), whether the data it judged is unchanged (`current`, the snapshot
-    digest of its window now), each blocking check's verdict on this window
-    (`check_status`), and `verified`: a report on unchanged data in which every blocking check
-    covers the window and nothing in it failed."""
+    """What a backtest of `start..end` records of its verification. Each blocking check is judged
+    by its own report (`pick_reports` over the covering reports `found`, newest first) on this
+    window (`check_status`): `failed`, `not_run` (no report ran it, or its coverage misses the
+    window) or `stale` (every report that ran it judged data since changed). `verified`: every
+    blocking check verified. The digest names the reports used, so a new one changes it."""
     blocking = sorted(BLOCKING | ({"D4"} if used_5m else set()))
-    if doc is None:
+    if not found:
         return {
             "report": None,
             "verified": False,
-            "stale": False,
+            "stale": [],
             "failed": [],
             "not_run": blocking,
         }
-    checks = doc.get("checks") or {}
-    verdicts = {k: check_status(checks.get(k), start, end) for k in blocking}
-    failed = [k for k, v in verdicts.items() if v == "failed"]
-    not_run = [k for k, v in verdicts.items() if v == "not_run"]
-    stale = (doc.get("snapshot") or {}).get("digest") != current
+    verdicts: dict[str, str] = {}
+    used: dict[str, tuple[Mapping[str, Any], Path | None]] = {}
+    for check_id in blocking:
+        pick = pick_reports(found, check_id, current)
+        if pick is None or pick == "stale":
+            verdicts[check_id] = pick or "not_run"
+            continue
+        assert not isinstance(pick, str)
+        used[check_id] = pick
+        verdicts[check_id] = check_status(pick[0]["checks"][check_id], start, end)
+    named = sorted(f"{k}={doc.get('digest')}" for k, (doc, _) in used.items())
+    newest_doc, newest_path = found[0]
     return {
-        "report": None if path is None else str(path),
-        "digest": doc.get("digest"),
-        "created": doc.get("created"),
-        "window": doc.get("window"),
-        "checks": {k: (v or {}).get("status") for k, v in checks.items()},
+        "report": str(newest_path) if newest_path is not None else newest_doc.get("digest"),
+        "reports": {k: None if p is None else str(p) for k, (_, p) in used.items()},
+        "digest": hashlib.sha256("\n".join(named).encode()).hexdigest() if used else None,
+        "created": max((str(doc.get("created")) for doc, _ in used.values()), default=None),
+        "checks": {k: doc["checks"][k].get("status") for k, (doc, _) in used.items()},
         "verdicts": verdicts,
-        "stale": stale,
-        "verified": not failed and not not_run and not stale,
-        "failed": failed,
-        "not_run": not_run,
+        "stale": [k for k, v in verdicts.items() if v == "stale"],
+        "verified": all(v == "verified" for v in verdicts.values()),
+        "failed": [k for k, v in verdicts.items() if v == "failed"],
+        "not_run": [k for k, v in verdicts.items() if v == "not_run"],
     }
+
+
+def read_window(snapshot: Mapping[str, Any], start: date, end: date) -> tuple[date, date]:
+    """The sessions a backtest of `start..end` reads: from the first session its market loads
+    (`store_first`, the lookback before `start`), so data it reads before its period is judged
+    too."""
+    first = snapshot.get("store_first")
+    return (min(date.fromisoformat(first), start) if first else start), end
 
 
 def status_for(
@@ -273,15 +334,18 @@ def status_for(
     *,
     used_5m: bool,
 ) -> dict[str, Any]:
-    """`window_status` of the newest report under `root` that covers `start..end`, against the
-    snapshot of that report's window taken now."""
+    """`window_status` of the reports under `root` covering `start..end`, each against the
+    snapshot of its own window taken now (once a window)."""
     found = covering_reports(root, start, end)
-    if not found:
-        return window_status(None, None, start, end, None, used_5m=used_5m)
-    doc, path = found[0]
-    first, last = _span(doc["window"]) or (start, end)
-    current = take_snapshot(root, session, first, last)["digest"]
-    return window_status(doc, path, start, end, current, used_5m=used_5m)
+    taken: dict[tuple[date, date], str] = {}
+
+    def current(doc: Mapping[str, Any]) -> str | None:
+        first, last = _span(doc.get("window")) or (start, end)
+        if (first, last) not in taken:
+            taken[first, last] = take_snapshot(root, session, first, last)["digest"]
+        return taken[first, last]
+
+    return window_status(found, start, end, current, used_5m=used_5m)
 
 
 def seeded_sample(items: Sequence[Any], size: int, seed: int) -> list[Any]:

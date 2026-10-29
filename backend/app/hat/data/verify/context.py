@@ -18,7 +18,8 @@ if TYPE_CHECKING:
 
     from ..store import DataStore
 
-REFERENCE_DIR = Path("raw") / "reference"  # public reference files a check downloaded
+# public reference files a check downloaded: a store of its own (in the data record), never raw/
+REFERENCE_DIR = Path("verify_reference")
 
 
 @dataclass

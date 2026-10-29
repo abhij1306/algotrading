@@ -39,11 +39,12 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   `DEMERGER_GAP_PCT`, and whose factor is not the close gap (no correction took it there), warns;
   the summary counts the member demergers in the period with no `announced_on` (the run cannot
   exit before them, `demerger_notice.exit_day`), which run.json `data` carries too.
-- `verify`: the data verification report covering the window (`data/verify`, `status_for`): no
-  report, a blocking check of it that failed or did not cover the window, or data changed since
-  it was judged warns `verify_report_missing`, `verify_blocking_failed`,
-  `verify_blocking_not_run` or `verify_report_stale`, and the run is unverified (run.json
-  `data.verified`); a run is not refused for it.
+- `verify`: the data verification reports covering the window, each blocking check judged by the
+  newest that ran it on unchanged data (`data/verify`, `status_for`): no report, a blocking check
+  that failed or did not cover the window, or data changed since every report that ran it warns
+  `verify_report_missing`, `verify_blocking_failed`, `verify_blocking_not_run` or
+  `verify_report_stale`, and the run is unverified (run.json `data.verified`); a run is not
+  refused for it.
 - `golden`: the newest golden sample (`data/golden.py`, docs/backtests/golden-sample.md) looked up
   in the current stores: a drifted or missing value fails, as does an unreadable golden file; an
   unresolvable key, a recorded mismatch still open, or no golden file yet warns.
@@ -815,8 +816,8 @@ def _golden(
 
 def check_verify(status: Mapping[str, Any]) -> dict[str, Any]:
     """The window's data verification (`verify.window_status`): no report, a blocking check that
-    failed or did not cover the window, or a report on data since changed, warns; the summary
-    says whether the window is verified."""
+    failed or did not cover the window, or a check whose reports all judged data since changed,
+    warns; the summary says whether the window is verified."""
     findings = []
     if status.get("report") is None:
         findings.append(finding("verify_report_missing", WARN, list(status.get("not_run") or ())))
@@ -826,10 +827,11 @@ def check_verify(status: Mapping[str, Any]) -> dict[str, Any]:
         if status.get("not_run"):
             findings.append(finding("verify_blocking_not_run", WARN, list(status["not_run"])))
         if status.get("stale"):
-            findings.append(finding("verify_report_stale", WARN, [status.get("report")]))
+            findings.append(finding("verify_report_stale", WARN, list(status["stale"])))
     summary = {
         "verified": bool(status.get("verified")),
         "report": status.get("report"),
+        "reports": status.get("reports") or {},
         "digest": status.get("digest"),
         "created": status.get("created"),
         "checks": status.get("checks") or {},
@@ -1362,7 +1364,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..engine.portfolio import regime  # noqa: PLC0415
     from ..models import HatUniverse  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
-    from .verify import status_for  # noqa: PLC0415
+    from .verify import read_window, status_for  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.audit")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
@@ -1396,7 +1398,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except BacktestError as exc:
             sys.stderr.write(f"data audit refused: {exc.code}\n")
             return 2
-        verified = status_for(settings.data_root, session, args.start, args.end, used_5m=False)
+        read = read_window(snapshot, args.start, args.end)
+        verified = status_for(settings.data_root, session, *read, used_5m=False)
         key = cache_key(
             str(snapshot["content_digest"]),
             args.start,

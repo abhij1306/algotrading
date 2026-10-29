@@ -4,7 +4,7 @@
   reader of its own: every stored level of a day with a file equals the file's open, high, low
   and close, and every wanted index the file holds is stored. A stored day without a kept file
   (filled from niftyindices or the MCP when NSE's archive had none) is compared with
-  niftyindices' copy of the file (kept under `raw/reference/index/`, fetched with `--fetch`);
+  niftyindices' copy of the file (kept under `verify_reference/index/`, fetched with `--fetch`);
   with no copy either it fails (unproven). Every calendar session from an index's first day
   (`INDEX_STARTS`) must hold that index: a session missing it fails, so a whole absent day is
   seen. The check covers sessions from the first index day on.
@@ -276,7 +276,7 @@ GROUP BY ALL
 
 def _index_file(ctx: Context, day: date) -> bytes | None:  # pragma: no cover - files
     """NSE's daily index file of `day`: the kept archive file, else niftyindices' copy of it
-    kept (or, with `--fetch`, downloaded) under `raw/reference/index/`. A copy niftyindices
+    kept (or, with `--fetch`, downloaded) under `verify_reference/index/`. A copy niftyindices
     lacks comes back as an HTML page, which holds no index row and so reads as no file."""
     name = index_archive_name(day)
     if ctx.store.raw_exists(name):

@@ -17,7 +17,15 @@ from pathlib import Path
 from typing import Any
 
 from ..audit import FAIL, SKIPPED, check_result, finding
-from . import CHECKS, FIRST_DAY, report_doc, report_folder, report_target, write_report
+from . import (
+    CHECKS,
+    FIRST_DAY,
+    changed_during,
+    report_doc,
+    report_folder,
+    report_target,
+    write_report,
+)
 from .context import Context
 from .markdown import render
 from .references import kept_bytes
@@ -111,12 +119,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             kotak=args.kotak,
             fetch=args.fetch,
         )
+        before = snapshot(settings.data_root, session, args.start, end)
         results = run_checks(ctx, ids)
         judged = snapshot(settings.data_root, session, args.start, end)
+        results = changed_during(results, before, judged)
         session.rollback()
     for group, n in sorted(ctx.unfetched.items()):
-        ctx.note(f"{n} reference file(s) of raw/reference/{group}/ could not be fetched")
-    ctx.note(f"raw/reference/ holds {kept_bytes(ctx) / 1e6:.1f} MB")
+        ctx.note(f"{n} reference file(s) of verify_reference/{group}/ could not be fetched")
+    ctx.note(f"verify_reference/ holds {kept_bytes(ctx) / 1e6:.1f} MB")
     created = datetime.now(UTC)
     doc = report_doc(results, args.start, end, created, judged)
     folder = args.report or report_folder(settings.data_root, created.date(), args.start, end, ids)

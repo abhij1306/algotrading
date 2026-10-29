@@ -427,7 +427,9 @@ def _load(
     used_5m = data.intraday is not None and any(
         s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
     )
-    verified = verify.status_for(root, session, *period, used_5m=used_5m)
+    # judged from the first session the run reads (the lookback before its period)
+    read = verify.read_window(snapshot, *period)
+    verified = verify.status_for(root, session, *read, used_5m=used_5m)
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,

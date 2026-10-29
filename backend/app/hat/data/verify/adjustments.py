@@ -22,8 +22,11 @@
    `deleted`), which warns, as does a demerger the owner's gap rule leaves out. A rights issue
    with no price or close, and a bonus of a class nobody checked that is not stored, fail
    (unproven). A reference action whose ISIN and symbol HAT has no instrument for, and the
-   reference rows that could not be read, are counted (warn). No reference fails. Non-equity
-   bonuses (preference, debentures, warrants) are not price actions and are skipped.
+   reference rows that could not be read, are counted (warn). No reference fails, as does a
+   kind with no reference action. Each kind's reference starts with the month of its first
+   action (`reference_starts`); stored actions before it are not judged, so the check covers
+   only from the latest kind's start (`factor_coverage`) and a window before it is not run.
+   Non-equity bonuses (preference, debentures, warrants) are not price actions and are skipped.
 2. Moves: the price-basis series (`bars_daily_cap`) scanned for close-to-close moves over
    `audit.JUMP_PCT` between adjacent sessions (`audit.jumps`). A move on an ex-date (the factor
    changed and the move stays) fails; a move shaped like a split or bonus ratio
@@ -32,7 +35,7 @@
 3. Second source (with `--fetch`, else what is kept): `SAMPLE_SIZE` NIFTY 500 stocks, seeded,
    each calendar year's total return on `bars_daily` (adjusted) against Yahoo Finance's
    adjusted close (monthly bars, split- and dividend-adjusted; no login), kept under
-   `raw/reference/yahoo/`. Yahoo's known limits: its own dividend method and occasional missed
+   `verify_reference/yahoo/`. Yahoo's known limits: its own dividend method and occasional missed
    or misdated actions, no demerger adjustment, history under today's symbol only, and it
    rate-limits (HTTP 429) a client that asks often. A year off by more than
    `SECOND_SOURCE_PP` percentage points warns, as does a symbol with no answer; no answer at
@@ -58,7 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...money import exact
 from ..audit import FAIL, WARN, action_shaped, check_result, finding, jumps
-from . import dated, seeded_sample
+from . import covered, dated, seeded_sample
 from .context import Context
 from .filings import Announcement, read_announcements
 from .references import reference_file
@@ -486,17 +489,40 @@ def judge_ref(
     }
 
 
+KINDS = ("split_bonus", "rights", "demerger", "dividend")
+
+
+def reference_starts(refs: Iterable[RefAction], start: date) -> dict[str, date]:
+    """Where each kind's reference starts: the first day of the month of its first action (the
+    pulls run by month), never before `start`; a kind the reference has no action of is absent."""
+    firsts: dict[str, date] = {}
+    for ref in refs:
+        if ref.kind not in firsts or ref.ex_date < firsts[ref.kind]:
+            firsts[ref.kind] = ref.ex_date
+    return {k: max(start, d.replace(day=1)) for k, d in firsts.items()}
+
+
+def factor_coverage(starts: Mapping[str, date], end: date) -> tuple[date, date] | None:
+    """The span every kind's reference covers (from the latest start), None when a kind has no
+    reference: a stored action before its kind's reference starts is not judged, so a window
+    reaching before the span finds D2 not run."""
+    if any(k not in starts for k in KINDS):
+        return None
+    return max(starts.values()), end
+
+
 def compare_factors(
     refs: Sequence[RefAction],
     stored: Sequence[StoredAction],
     keys_of: Mapping[str, frozenset[str]],
     prev_close: Mapping[tuple[str, date], Decimal],
     deleted: Iterable[tuple[str, date, str]],
-    reference_from: date,
+    starts: Mapping[str, date],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The reference actions against the stored ones (each stored action's instrument known by
-    `keys_of[instrument_id]`: its ISINs and symbols), and the stored actions from
-    `reference_from` that no reference holds, by kind: the counts and the findings."""
+    `keys_of[instrument_id]`: its ISINs and symbols), and the stored actions from where their
+    kind's reference starts (`reference_starts`) that no reference holds, by kind: the counts
+    and the findings."""
     by_key: dict[str, set[str]] = defaultdict(set)
     for instrument, keys in keys_of.items():
         for key in keys:
@@ -551,9 +577,10 @@ def compare_factors(
             note("not_stored" if ref.equity else "not_stored_class_unknown", ref)
     for a in stored:
         if (
-            a.ex_date < reference_from
-            or a in used
+            a in used
             or a.action_type not in {*PRICE_TYPES, "other", "dividend"}
+            or _kind(a) not in starts
+            or a.ex_date < starts[_kind(a)]
         ):
             continue
         code = f"{_kind(a)}:stored_not_in_reference"
@@ -804,6 +831,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     ):
         members[i].append((a, b))
     announcements: tuple[Mapping, Mapping] = ({}, {})
+    coverage = None
     if ctx.ca_data is not None and ctx.ca_data.is_dir():
         refs, skipped = read_reference(ctx.ca_data)
         refs = [r for r in refs if ctx.start <= r.ex_date <= ctx.end]
@@ -828,11 +856,16 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         prev = _prev_closes(
             ctx, [(i, r.ex_date) for r in refs if r.kind == "rights" for i in _ids(keys_of, r)]
         )
-        reference_from = min((r.ex_date for r in refs if r.kind != "dividend"), default=ctx.start)
+        starts = reference_starts(refs, ctx.start)
         factor_summary, factor_findings = compare_factors(
-            refs, stored, keys_of, prev, deleted, reference_from
+            refs, stored, keys_of, prev, deleted, starts
         )
+        coverage = factor_coverage(starts, ctx.end)
         summary["factors"] = factor_summary
+        summary["reference_starts"] = {k: d.isoformat() for k, d in sorted(starts.items())}
+        for kind in KINDS:
+            if kind not in starts:
+                findings.append(finding(f"{kind}_reference_missing", FAIL, [kind]))
         summary["reference_rows_unread"] = dict(skipped)
         findings += factor_findings
         for kind, n in sorted(skipped.items()):
@@ -849,7 +882,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings += move_findings
         summary["second_source"], second = _second_source(ctx, con, members)
         findings += second
-    return check_result("D2", summary, findings)
+    result = check_result("D2", summary, findings)
+    return result if coverage is None else covered(result, *coverage)
 
 
 def _identities(ctx: Context) -> dict[str, frozenset[str]]:  # pragma: no cover - the database

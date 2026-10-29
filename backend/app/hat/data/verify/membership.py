@@ -14,7 +14,7 @@ constituent lists.
   And every notice's inclusion and exclusion effective in the cover must be applied in the store
   on that session. Each traced change cites its notice. No notices, or no symbol-change file,
   fails.
-- Lists: each archived constituent list (`raw/reference/nifty500/<YYYYMMDDhhmmss>_*.csv`, kept
+- Lists: each archived constituent list (`verify_reference/nifty500/<YYYYMMDDhhmmss>_*.csv`, kept
   from the Wayback Machine's captures of NSE's and niftyindices' `ind_nifty500list.csv`, and
   today's list from NSE's archive, fetched with `--fetch`) against the stored members of its
   capture's session, by ISIN. A difference that is a demerger dummy warns, as does one within a
@@ -34,6 +34,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
 from ..nse_files import INDUSTRY_LIST_URL
 from . import dated
@@ -343,7 +344,7 @@ def renamed_forms(changes: Iterable[tuple[str, str]], symbols: Collection[str]) 
 
 
 def symbol_renames(ctx: Context) -> tuple[list[tuple[str, str]], int] | None:  # pragma: no cover
-    """NSE's symbol changes (`symbolchange.csv`, kept under `raw/reference/nse/`) and the rows
+    """NSE's symbol changes (`symbolchange.csv`, kept under `verify_reference/nse/`) and the rows
     that could not be read; None when there is no file."""
     data = reference_file(ctx, "nse", SYMBOL_CHANGES, SYMBOL_CHANGES_URL)
     if data is None:
@@ -361,9 +362,9 @@ def capture_day(name: str) -> date | None:
         return None
 
 
-def _fetch_lists(ctx: Context) -> None:  # pragma: no cover - the network
+def _fetch_lists(ctx: Context, last_session: date | None) -> None:  # pragma: no cover
     """With `--fetch`: every Wayback capture of the list URLs (one per distinct content) and
-    today's list from NSE's archive, kept under `raw/reference/nifty500/`."""
+    today's list from NSE's archive (`live_list_name`), kept under `verify_reference/nifty500/`."""
     for url in LIST_URLS:
         found = reference_file(
             ctx, LIST_GROUP, f"cdx-{url.replace('/', '_')}.json", CDX_URL.format(url=url)
@@ -380,14 +381,20 @@ def _fetch_lists(ctx: Context) -> None:  # pragma: no cover - the network
                 CAPTURE_URL.format(stamp=stamp, original=original),
                 valid=lambda data: b"ISIN" in data[:300],
             )
-    today = ctx.end.strftime("%Y%m%d")
-    reference_file(
-        ctx,
-        LIST_GROUP,
-        f"{today}000000_nsearchives-live.csv",
-        INDUSTRY_LIST_URL,
-        valid=lambda data: b"ISIN" in data[:300],
-    )
+    name = live_list_name(datetime.now(IST).date(), ctx.end, last_session)
+    if name is not None:
+        reference_file(
+            ctx, LIST_GROUP, name, INDUSTRY_LIST_URL, valid=lambda data: b"ISIN" in data[:300]
+        )
+
+
+def live_list_name(today: date, end: date, last_session: date | None) -> str | None:
+    """The name NSE's live list is kept under: today's date (the day it was fetched, so the list
+    is compared with the membership of the day it states); None, so nothing is fetched, when
+    the run ends before the last session (a past window never stores today's list)."""
+    if last_session is None or end < last_session:
+        return None
+    return f"{today:%Y%m%d}000000_nsearchives-live.csv"
 
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
@@ -471,7 +478,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         ctx.note("D3: no --notices folder with changes_parsed.json; changes not traced")
         findings.append(finding("notices_missing", FAIL, ["changes_parsed.json"]))
     if ctx.fetch:
-        _fetch_lists(ctx)
+        _fetch_lists(ctx, sessions_all[-1] if sessions_all else None)
     known = {isin for (isin,) in ctx.rows("SELECT isin FROM hat_instrument")}
     lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     compared = []

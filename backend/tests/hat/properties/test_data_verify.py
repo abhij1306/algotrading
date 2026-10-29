@@ -35,6 +35,7 @@ D1, D2, D3 = date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)
 
 
 SNAP = {"digest": "data-1", "parts": {}}
+ALL_KINDS = dict.fromkeys(("split_bonus", "rights", "demerger", "dividend"), D1)
 
 
 def _check(status: str, *findings: dict, coverage: tuple[date, date] | None = None) -> dict:
@@ -50,9 +51,12 @@ def _report(statuses: dict[str, str], start: date = D1, end: date = D3) -> dict:
     return verify.report_doc(checks, start, end, datetime(2026, 10, 29, tzinfo=UTC), SNAP)
 
 
-def _status(doc: dict | None, start: date = D1, end: date = D3, **kw: object) -> dict:
-    args = {"current": "data-1", "used_5m": False} | kw
-    return verify.window_status(doc, None, start, end, **args)  # type: ignore[arg-type]
+def _status(
+    doc: dict | None, start: date = D1, end: date = D3, current: str = "data-1", **kw: object
+) -> dict:
+    found = [] if doc is None else [(doc, None)]
+    args = {"used_5m": False} | kw
+    return verify.window_status(found, start, end, lambda _: current, **args)  # type: ignore[arg-type]
 
 
 def test_the_digest_ignores_the_creation_time() -> None:
@@ -119,9 +123,64 @@ def test_a_report_on_changed_data_does_not_verify() -> None:
     doc = _report(dict.fromkeys(verify.CHECKS, "pass"))
     assert _status(doc)["verified"]
     stale = _status(doc, current="data-2")
-    assert (stale["verified"], stale["stale"]) == (False, True)
-    found = verify.window_status(doc, Path("v.json"), D1, D3, "data-2", used_5m=False)
+    assert not stale["verified"]
+    assert stale["stale"] == sorted(verify.BLOCKING)
+    found = verify.window_status([(doc, Path("v.json"))], D1, D3, lambda _: "data-2", used_5m=False)
     assert audit.check_verify(found)["findings"][0]["code"] == "verify_report_stale"
+
+
+def test_a_narrow_run_never_hides_a_wider_reports_checks() -> None:
+    # second review item 1: a newer D1-only run covers every window; the other checks are judged
+    # by the older full report, and a check is judged by the newest fresh report that ran it
+    full = _report(dict.fromkeys(verify.CHECKS, "pass"))
+    narrow = verify.report_doc(
+        {"D1": _check("pass")}, verify.FIRST_DAY, D3, datetime(2026, 10, 31, tzinfo=UTC), SNAP
+    )
+    both = [(narrow, Path("narrow.json")), (full, Path("full.json"))]
+    status = verify.window_status(both, D1, D3, lambda _: "data-1", used_5m=False)
+    assert status["verified"]
+    assert status["reports"]["D1"] == "narrow.json"
+    assert status["reports"]["D2"] == "full.json"
+    # a newer failing D2 run decides D2, even with the older passing one
+    failing = verify.report_doc(
+        {"D2": _check("fail", audit.finding("x", audit.FAIL, []))},
+        verify.FIRST_DAY,
+        D3,
+        datetime(2026, 11, 1, tzinfo=UTC),
+        SNAP,
+    )
+    status = verify.window_status(
+        [(failing, None), *both], D1, D3, lambda _: "data-1", used_5m=False
+    )
+    assert status["failed"] == ["D2"]
+    # a newer report on changed data is passed over for an older one on the data now
+    fresh = verify.report_doc(
+        {"D2": _check("pass")},
+        verify.FIRST_DAY,
+        D3,
+        datetime(2026, 10, 30, tzinfo=UTC),
+        {"digest": "data-old"},
+    )
+    pick = verify.pick_reports([(fresh, None), (full, None)], "D2", lambda d: "data-1")
+    assert pick == (full, None)
+    assert verify.pick_reports([(fresh, None)], "D2", lambda d: "data-1") == "stale"
+
+
+def test_a_run_is_judged_from_the_first_session_it_reads() -> None:
+    # second review item 2: the market loads LOOKBACK_SESSIONS before the period; a failure in
+    # the lookback leaves the run unverified
+    early = date(2014, 6, 2)
+    assert verify.read_window({"store_first": early.isoformat()}, D2, D3) == (early, D3)
+    assert verify.read_window({}, D2, D3) == (D2, D3)
+    gap = verify.dated(audit.finding("sessions_without_membership", audit.FAIL, []), [early])
+    every = {k: _check("pass") for k in verify.CHECKS}
+    doc = verify.report_doc(
+        every | {"D3": _check("fail", gap)}, early, D3, datetime(2026, 10, 29, tzinfo=UTC), SNAP
+    )
+    assert _status(doc, D2, D3)["verified"]
+    assert _status(doc, *verify.read_window({"store_first": early.isoformat()}, D2, D3))[
+        "failed"
+    ] == ["D3"]
 
 
 def test_the_snapshot_reads_each_store_files_day() -> None:
@@ -130,9 +189,38 @@ def test_the_snapshot_reads_each_store_files_day() -> None:
     assert snapshot.file_day("raw/ind_close_all_01032024.csv") == D1
     assert snapshot.file_day("raw/BhavCopy_NSE_CM_0_0_0_20240301_F_0000.csv.zip") == D1
     assert snapshot.file_day("raw/reference/nse/symbolchange.csv") is None
-    a = snapshot.files_digest([("p", 1, 2)])
-    assert a == snapshot.files_digest([("p", 1, 2)])
-    assert a != snapshot.files_digest([("p", 1, 3)])  # rewritten in place
+    a = snapshot.files_digest([("p", "h1")])
+    assert a == snapshot.files_digest([("p", "h1")])
+    assert a != snapshot.files_digest([("p", "h2")])  # rewritten in place
+
+
+def test_the_snapshot_trusts_the_manifest_only_for_files_unchanged_since() -> None:
+    # second review item 6: content, never size and time; the manifest's sha256 spares reading
+    # a file only when the file has not changed since the manifest was written
+    row = {"bytes": "10", "sha256": "recorded"}
+
+    def read() -> str:
+        return "read"
+
+    assert snapshot.file_entry(10, 100, row, 200, read) == "recorded"
+    assert snapshot.file_entry(10, 300, row, 200, read) == "read"  # changed after the record
+    assert snapshot.file_entry(11, 100, row, 200, read) == "read"  # another size
+    assert snapshot.file_entry(10, 100, None, 200, read) == "read"  # not recorded
+    windows = {"ABC": (date(2025, 10, 22), date(2026, 10, 21))}
+    cut = snapshot.windows_digest(windows, D1, D3)
+    assert cut == snapshot.windows_digest(windows | {"NEW": (date(2026, 10, 22), D3)}, D1, D3)
+    assert cut != snapshot.windows_digest({"ABC": (D1, D3)}, D1, D3)
+
+
+def test_a_report_on_data_that_moved_during_the_run_verifies_nothing() -> None:
+    results = {"D1": _check("pass")}
+    same = verify.changed_during(results, SNAP, SNAP)
+    assert same == results
+    moved = verify.changed_during(
+        results, SNAP, {"digest": "data-2", "parts": {"files:bars_daily_raw": "x"}}
+    )
+    assert moved["D1"]["status"] == audit.FAIL
+    assert verify.check_status(moved["D1"], D1, D3) == "failed"
 
 
 def test_the_newest_report_covering_the_window_is_read(tmp_path: Path) -> None:
@@ -160,8 +248,10 @@ def test_a_narrow_run_never_replaces_the_full_report(tmp_path: Path) -> None:
 
 
 def test_a_report_folder_outside_the_reports_folder_is_refused(tmp_path: Path) -> None:
-    inside = verify.report_target(tmp_path, Path("mine"))
-    assert inside == (verify.reports_dir(tmp_path) / "mine").resolve()
+    inside = verify.report_target(tmp_path, Path("verify-mine"))
+    assert inside == (verify.reports_dir(tmp_path) / "verify-mine").resolve()
+    with pytest.raises(ValueError, match="report_folder_not_verify"):
+        verify.report_target(tmp_path, Path("mine"))  # written, but never read
     full = verify.report_folder(tmp_path, D1, D2, D3, ["D2"])
     assert verify.report_target(tmp_path, full) == full.resolve()
     for outside in (Path("../x"), tmp_path.parent / "x", Path(".")):
@@ -175,7 +265,7 @@ def test_the_audit_warns_an_unverified_window_and_never_fails_it() -> None:
     assert missing["findings"][0]["code"] == "verify_report_missing"
     failed = audit.check_verify(
         verify.window_status(
-            _report({"D1": "fail"}), Path("v.json"), D1, D3, "data-1", used_5m=False
+            [(_report({"D1": "fail"}), Path("v.json"))], D1, D3, lambda _: "data-1", used_5m=False
         )
     )
     codes = {f["code"] for f in failed["findings"]}
@@ -194,6 +284,24 @@ def test_run_json_carries_the_verification() -> None:
 def test_a_new_report_changes_the_audit_key() -> None:
     key = audit.cache_key("s", D1, D3, used_5m=False, golden_digest=None, verify_digest="a")
     assert key != audit.cache_key("s", D1, D3, used_5m=False, golden_digest=None)
+
+
+def test_d3_keeps_todays_list_under_today_only_for_a_run_to_the_last_session() -> None:
+    # second review item 5: a past window never stores today's list under its own end date
+    today, last = date(2026, 10, 29), date(2026, 10, 28)
+    assert membership.live_list_name(today, last, last) == "20261029000000_nsearchives-live.csv"
+    assert membership.live_list_name(today, date(2024, 12, 31), last) is None
+    assert membership.live_list_name(today, last, None) is None
+
+
+def test_probe_answers_merge_across_the_runs_files() -> None:
+    # second review item 7: each run writes its new answers once; nothing is rewritten
+    first = json.dumps({"2024-03-02": references.NOT_FOUND})
+    second = json.dumps({"2024-03-09": references.FOUND, "x": "maybe"})
+    assert references.merge_probes([first, second, "not json"]) == {
+        "2024-03-02": references.NOT_FOUND,
+        "2024-03-09": references.FOUND,
+    }
 
 
 # --- D1 -----------------------------------------------------------------------------------------
@@ -316,21 +424,42 @@ def test_d2_two_distinct_dividends_need_both_stored() -> None:
         "dividend", D2, frozenset({"ABC"}), cash=Decimal(15), amounts=(Decimal(5), Decimal(10))
     )
     stored = [_stored_action("a", "dividend", "1", "5")]
-    summary, _ = adjustments.compare_factors([two], stored, keys, {}, [], D1)
+    summary, _ = adjustments.compare_factors([two], stored, keys, {}, [], ALL_KINDS)
     assert summary == {"dividend:cash_mismatch": 1}
     repeated = RefAction(
         "dividend", D2, frozenset({"ABC"}), cash=Decimal(10), amounts=(Decimal(5), Decimal(5))
     )
-    summary, _ = adjustments.compare_factors([repeated], stored, keys, {}, [], D1)
+    summary, _ = adjustments.compare_factors([repeated], stored, keys, {}, [], ALL_KINDS)
     assert summary == {"dividend:equal_one_row": 1}
 
 
 def test_d2_a_reference_action_of_no_instrument_is_a_counted_finding() -> None:
     ref = RefAction("split_bonus", D2, frozenset({"NOHAT"}), Fraction(1, 2))
-    _, findings = adjustments.compare_factors([ref], [], {}, {}, [], D1)
+    _, findings = adjustments.compare_factors([ref], [], {}, {}, [], ALL_KINDS)
     assert [(f["code"], f["severity"], f["count"]) for f in findings] == [
         ("split_bonus_no_instrument", audit.WARN, 1)
     ]
+
+
+def test_d2_stored_actions_before_their_references_start_are_not_run() -> None:
+    # second review item 4: a reference pull starting in 2014 leaves 2011-13 not run, never
+    # verified; a stored action before its kind's start is not judged
+    refs = [
+        RefAction("split_bonus", date(2014, 3, 12), frozenset({"ABC"}), Fraction(1, 2)),
+        RefAction("rights", date(2015, 6, 1), frozenset({"ABC"}), Fraction(9, 10)),
+    ]
+    starts = adjustments.reference_starts(refs, date(2011, 6, 22))
+    assert starts == {"split_bonus": date(2014, 3, 1), "rights": date(2015, 6, 1)}
+    assert adjustments.factor_coverage(starts, D3) is None  # no demerger or dividend reference
+    every = dict.fromkeys(adjustments.KINDS, date(2014, 3, 1)) | starts
+    span = adjustments.factor_coverage(every, D3)
+    assert span == (date(2015, 6, 1), D3)
+    result = verify.covered(_check("pass"), *span)
+    assert verify.check_status(result, date(2012, 1, 2), D3) == "not_run"
+    assert verify.check_status(result, D1, D3) == "verified"
+    early = StoredAction("a", date(2012, 5, 2), "split", Fraction(1, 2), None, False, "mcp")
+    summary, _ = adjustments.compare_factors([], [early], {"a": frozenset({"ABC"})}, {}, [], every)
+    assert summary == {}
 
 
 def _stored_action(
@@ -357,7 +486,7 @@ def test_d2_a_days_split_and_bonus_are_judged_as_one_product_once_per_chain() ->
     stored = [  # the same legs on both ISINs of the chain: applied once, not squared
         _stored_action(i, t, "0.5") for i in ("old", "new") for t in ("split", "bonus")
     ]
-    summary, findings = adjustments.compare_factors([ref], stored, keys, {}, [], D1)
+    summary, findings = adjustments.compare_factors([ref], stored, keys, {}, [], ALL_KINDS)
     assert summary == {"split_bonus:equal": 1}
     assert findings == []
 
@@ -371,7 +500,7 @@ def test_d2_a_wrong_or_missing_action_fails_and_an_owner_deletion_warns() -> Non
     ]
     stored = [_stored_action("a", "bonus", "0.9705")]
     summary, findings = adjustments.compare_factors(
-        refs, stored, keys, {}, [("b", D2, "split")], D1
+        refs, stored, keys, {}, [("b", D2, "split")], ALL_KINDS
     )
     assert summary["split_bonus:factor_mismatch"] == 1
     assert summary["split_bonus:deleted_by_owner"] == 1
@@ -558,6 +687,23 @@ def test_d4_stored_bars_match_the_source_bar_by_bar() -> None:
     assert wrong.price == 1
 
 
+def test_d4_bars_stored_a_bar_off_fail_and_never_pair_up() -> None:
+    # second review item 3: a day whose stored labels are all 5 minutes late pairs up perfectly
+    # under the other alignment; it fails the rule and its bars differ
+    prices = (100.0, 120.0, 90.0, 130.0, 95.0, 125.0)
+    ends = [datetime(2024, 3, 1, 9, m).time() for m in range(20, 50, 5)]
+    source = [_src("09:15", 1, 0), _src("15:30", 99)]
+    source += [_src(f"{t:%H:%M}", p) for t, p in zip(ends, prices, strict=True)]
+    starts = [(datetime.combine(D1, t) - timedelta(minutes=5)).time() for t in ends]
+    on_rule = {t: (p, p, p, p, 10) for t, p in zip(starts, prices, strict=True)}
+    late = {t: (p, p, p, p, 10) for t, p in zip(ends, prices, strict=True)}
+    assert bars5m.compare_bars(D1, on_rule, source).rule
+    off = bars5m.compare_bars(D1, late, source)
+    assert off.shift == 5
+    assert not off.rule
+    assert off.price > 0
+
+
 def test_d4_reads_the_fyers_download_windows() -> None:
     windows = bars5m.fyers_windows({"done": {"NSE:ABC-EQ": ["2025-10-22", "2026-10-21"], "X": 1}})
     assert windows == {"ABC": (date(2025, 10, 22), date(2026, 10, 21))}
@@ -632,6 +778,43 @@ def test_d5_a_filing_public_before_any_announcement_fails() -> None:
     assert filings.SEVERITY["between_announcements"] == audit.WARN
 
 
+def test_d5_only_an_announcement_of_results_proves_they_were_public() -> None:
+    # second review item 8: a clarification is no announcement; a board meeting's other outcome
+    # is matched but never excuses a filing as between announcements
+    kind = filings.announcement_kind
+    assert kind("Clarification - Financial Results", "", "") is None
+    assert kind("Reply to Clarification- Financial results", "", "") is None
+    assert kind("Financial Result Updates", "", "") == "results"
+    assert kind("Outcome of Board Meeting", "", "X_OutcomewithFR.pdf") == "results"
+    assert kind("Outcome of Board Meeting", "held for business matters", "x.pdf") == "meeting"
+    announced = datetime(2024, 2, 10, 15, 0, tzinfo=IST)
+    meeting = filings.Announcement(announced, announced, results=False)
+    later = filings.Announcement(announced + timedelta(days=15), None, results=False)
+    between = _filing(announced + timedelta(days=8), "xbrl")
+    assert filings.judge(between, [meeting, later])[0] == "before_any_announcement"
+    named = filings.Announcement(announced, announced)
+    assert filings.judge(between, [named, later])[0] == "between_announcements"
+    estimate = _filing(announced + timedelta(days=8), "deadline")
+    assert filings.judge(estimate, [meeting])[0] == "estimate_unproven"
+    assert filings.judge(estimate, [named])[0] == "late_vs_announcement"
+
+
+def test_d5_a_quarter_announced_inside_the_stored_history_must_be_stored() -> None:
+    # second review item 8: holes inside the history, not only the years before it
+    quarters = [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]
+    stored = {"INE1": quarters}
+    say = [
+        filings.Announcement(datetime(2023, 5, 20, tzinfo=IST), None),
+        filings.Announcement(datetime(2023, 8, 10, tzinfo=IST), None),
+        filings.Announcement(datetime(2023, 11, 9, tzinfo=IST), None),  # Sep quarter: missing
+        filings.Announcement(datetime(2023, 11, 10, tzinfo=IST), None, results=False),
+        filings.Announcement(datetime(2024, 2, 8, tzinfo=IST), None),
+    ]
+    end = datetime(2024, 12, 31, tzinfo=IST)
+    holes = filings.missing_quarters(stored, {"INE1": say}, end)
+    assert holes == [("INE1", datetime(2023, 11, 9, tzinfo=IST))]
+
+
 def test_d5_parses_nse_times_and_matches_inside_the_period_window() -> None:
     assert filings.parse_time("30-Oct-2021 23:06:07") == datetime(
         2021, 10, 30, 23, 6, 7, tzinfo=IST
@@ -654,6 +837,18 @@ def test_d6_the_calendar_against_the_files_and_the_store() -> None:
     codes = {f["code"]: f["items"] for f in findings}
     assert codes["session_without_bhavcopy"] == [D3.isoformat()]
     assert codes["session_not_stored"] == [D2.isoformat()]
+
+
+def test_d6_a_weekday_with_no_calendar_row_fails_and_is_asked_of_nse() -> None:
+    # second review item 8: D1 Fri, D2 Mon, D3 Tue; the calendar has no row for D3
+    assert sessions.weekdays_between(D1, D3) == [D1, D2, D3]
+    summary, findings = sessions.check_sessions(
+        {D1, D2}, set(), {D1, D2}, {D1, D2}, {D3: references.FOUND}, D1, D3
+    )
+    codes = {f["code"]: f["items"] for f in findings}
+    assert codes["weekday_without_calendar_row"] == [D3.isoformat()]
+    assert codes["closed_weekday_has_bhavcopy"] == [D3.isoformat()]
+    assert summary["closed_weekdays"] == 1
 
 
 def test_d6_a_closed_weekday_is_asked_of_nse_not_of_the_calendars_own_list() -> None:

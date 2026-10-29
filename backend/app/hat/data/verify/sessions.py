@@ -11,7 +11,7 @@
 - Lineage: the linked chains must not fork or loop; an older ISIN's bars must end before its
   successor's begin (else a chain has two bars a day) and the link's date must be the
   successor's first bar; a link between two symbols must be in NSE's symbol-change list
-  (`symbolchange.csv`, kept under `raw/reference/nse/`, read here by `read_symbol_changes`),
+  (`symbolchange.csv`, kept under `verify_reference/nse/`, read here by `read_symbol_changes`),
   else it fails; no list fails too, and rows of it that cannot be read are counted (warn).
 - Suspensions: an instrument the master calls active must have traded in the window's last
   `STALE_SESSIONS` sessions (or be the old ISIN of a chain); one called inactive should not trade on
@@ -26,7 +26,7 @@ from bisect import bisect_left
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from ..audit import FAIL, WARN, check_result, finding
@@ -62,16 +62,19 @@ def check_sessions(  # noqa: PLR0913
     end: date,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The calendar's sessions of `start..end` against the days a bhavcopy is under `raw/`, the
-    store's days, and NSE's archive asked about each weekday the calendar closes (`probes`:
-    `FOUND` or `NOT_FOUND`; a day missing from it is unproven). Every finding fails, dated."""
+    store's days, and NSE's archive asked about each weekday the calendar closes or has no row
+    for (`probes`: `FOUND` or `NOT_FOUND`; a day missing from it is unproven). A weekday with
+    no calendar row fails too. Every finding fails, dated."""
 
     def window(days: Collection[date]) -> set[date]:
         return {d for d in days if start <= d <= end}
 
     opened, closed = window(calendar_open), window(calendar_closed)
     files, stored = window(bhavcopy_days), window(store_days)
-    weekdays = {d for d in closed if d.weekday() < 5}  # noqa: PLR2004 - Saturday is 5
+    unlisted = set(weekdays_between(start, end)) - opened - closed
+    weekdays = {d for d in closed if d.weekday() < 5} | unlisted  # noqa: PLR2004 - Saturday is 5
     rules = (
+        ("weekday_without_calendar_row", unlisted),
         ("session_without_bhavcopy", opened - files),
         ("bhavcopy_on_closed_day", files - opened),
         ("session_not_stored", (opened & files) - stored),
@@ -89,6 +92,12 @@ def check_sessions(  # noqa: PLR0913
         "closed_weekdays_without_archive_file": sum(probes.get(d) == NOT_FOUND for d in weekdays),
     }
     return summary, findings
+
+
+def weekdays_between(start: date, end: date) -> list[date]:
+    """Monday to Friday from `start` to `end`."""
+    days = (start + timedelta(days=n) for n in range((end - start).days + 1))
+    return [d for d in days if d.weekday() < 5]  # noqa: PLR2004 - Saturday is 5
 
 
 @dataclass(frozen=True)
@@ -277,7 +286,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     closed = {d for d, t in calendar if not t}
     files = set(find_raw_days(ctx, start))
     store_days = ctx.store.days(DATASET_BARS)
-    asked = {d for d in closed if start <= d <= ctx.end and d.weekday() < 5}  # noqa: PLR2004
+    # every weekday the calendar does not open: closed, or with no row at all
+    asked = set(weekdays_between(start, ctx.end)) - opened
     probes = probe_days(ctx, asked)
     sessions_summary, findings = check_sessions(
         opened, closed, files, store_days, probes, start, ctx.end

@@ -1,4 +1,4 @@
-"""Public reference files the checks read: kept once under `raw/reference/<group>/<name>`
+"""Public reference files the checks read: kept once under `verify_reference/<group>/<name>`
 (`store.keep_once`, never overwritten), downloaded only when the run allows it (`--fetch`),
 through the data layer's fetcher (`bhavcopy.http_fetcher`) and one pacer for the run."""
 
@@ -7,11 +7,9 @@ from __future__ import annotations
 import csv
 import io
 import json
-import os
-import uuid
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from ..bhavcopy import BhavcopyError, FetchResult, archive_url
@@ -70,7 +68,7 @@ def reference_file(
     fetch: Fetch | None = None,
     valid: Callable[[bytes], bool] = bool,
 ) -> bytes | None:
-    """The kept file `raw/reference/<group>/<name>`; when absent and the run may fetch, `url`
+    """The kept file `verify_reference/<group>/<name>`; when absent and the run may fetch, `url`
     downloaded once and kept when `valid` (a site's "not found" page is not kept). None when
     there is no file (and none could be fetched)."""
     if not safe_name(group) or not safe_name(name):
@@ -94,13 +92,27 @@ def reference_file(
 
 
 def kept_bytes(ctx: Context) -> int:
-    """The bytes kept under `raw/reference/` (the report says what the downloads cost)."""
+    """The bytes kept under `verify_reference/` (the report says what the downloads cost)."""
     base = ctx.root / "raw" / "reference"
     return sum(p.stat().st_size for p in base.rglob("*") if p.is_file()) if base.is_dir() else 0
 
 
-PROBES = "bhavcopy_probes.json"
+PROBES = "bhavcopy_probes-*.json"  # one file a run that asked, written once
 FOUND, NOT_FOUND = "found", "not_found"
+
+
+def merge_probes(texts: Iterable[str]) -> dict[str, str]:
+    """The kept probe answers (day -> `FOUND`/`NOT_FOUND`) of every run's file; an unreadable
+    file adds nothing."""
+    kept: dict[str, str] = {}
+    for text in texts:
+        try:
+            answers = json.loads(text)
+        except ValueError:
+            continue
+        if isinstance(answers, dict):
+            kept |= {k: v for k, v in answers.items() if v in (FOUND, NOT_FOUND)}
+    return kept
 
 
 def probe_days(
@@ -108,20 +120,20 @@ def probe_days(
 ) -> dict[date, str]:  # pragma: no cover - the network
     """Whether NSE's archive holds a bhavcopy for each of `days` (`FOUND` or `NOT_FOUND`), asked
     of the archive itself (`bhavcopy.archive_url`), not read from `raw/`: the answers are kept
-    in `raw/reference/nse/bhavcopy_probes.json` and only the unasked days are requested, with
-    `--fetch`, one every `MIN_INTERVAL_S`. A day with no answer (not fetched, a network error,
-    a day before the archive's formats) is left out."""
-    path = ctx.reference_dir("nse") / PROBES
-    try:
-        kept = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        kept = {}
+    under `verify_reference/nse/` and only the unasked days are requested, with `--fetch`, one
+    every `MIN_INTERVAL_S`; a run's new answers go to a new file of their own
+    (`bhavcopy_probes-<UTC time>.json`, written once), so a kept file is never rewritten. A
+    day with no answer (not fetched, a network error, a day before the archive's formats) is
+    left out."""
+    folder = ctx.reference_dir("nse")
+    kept = merge_probes(p.read_text(encoding="utf-8") for p in sorted(folder.glob(PROBES)))
     todo = sorted(d for d in days if d.isoformat() not in kept)
     if ctx.fetch and todo:
         if fetch is None:
             from ..bhavcopy import http_fetcher  # noqa: PLC0415 - the network, only when fetching
 
             fetch = http_fetcher()
+        new: dict[str, str] = {}
         for day in todo:
             try:
                 url = archive_url(day)
@@ -130,13 +142,13 @@ def probe_days(
             _PACER.wait()
             result = fetch(url)
             if result.status == "ok":
-                kept[day.isoformat()] = FOUND
+                new[day.isoformat()] = FOUND
             elif result.status == "not_found":
-                kept[day.isoformat()] = NOT_FOUND
+                new[day.isoformat()] = NOT_FOUND
             else:
                 ctx.unfetched["nse"] += 1
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-        tmp.write_text(json.dumps(dict(sorted(kept.items())), indent=0), encoding="utf-8")
-        os.replace(tmp, path)
+        if new:
+            name = PROBES.replace("*", f"{datetime.now(UTC):%Y%m%dT%H%M%S%fZ}")
+            keep_once(folder / name, json.dumps(new, indent=0).encode())
+            kept |= new
     return {d: kept[d.isoformat()] for d in days if d.isoformat() in kept}

@@ -19,7 +19,8 @@ rebuilt. "Snapshot" means it is in the data repo's releases (runbook, Snapshot a
 | `etf/` | ETF overlay data (`daily`, `indices`, `liquid_tr`, `bars_5m`, `manifest.json`) | `overlay_etf.py` | From the overlay's raw files; manifest |
 | `ca_bc/` | NSE book-closure files | `ca.adjust` | From NSE |
 | `admin/` | Config store (`admin/config/`), owner rulings and review TSVs | admin commands, configs | No: snapshot |
-| `audits/` | Golden and data audit reports | `golden`, audits | Rerun |
+| `audits/` | Golden, data audit and data verification (`verify-*/`) reports | `golden`, audits, `data.verify` | Rerun |
+| `verify_reference/` | Public reference files the data verification downloaded (NSE archives and probes, Wayback lists, niftyindices, Yahoo), each written once | `data.verify --fetch` | From the sources; manifest |
 | `backtests/` | Backtest runs, `trials.json`, data audits | backtest jobs | Rerun |
 | `results/`, `fundamentals/` | Results and fundamentals run logs and backups | results, fundamentals | Logs only |
 | `build/`, `history_build/` | Build state and history build reports | `history_cli` | Reports only |

@@ -35,13 +35,14 @@ raw evidence, and the rule this evidence recommends. Stored days that fail the e
 (`bars_basis.misfit_days`) fail the check.
 
 Stored bars bar by bar: a seeded sample of `COMPARE_SAMPLE` stored (instrument, day) pairs is
-compared with the raw file's bars of that day (`compare_bars`): the alignment (start- or
-end-labelled) and the day's scale (the stored history is the source divided by the factors it
-carries, one number a day) are found from the bars themselves, and then every stored bar must be
-a source bar at that scale (prices within `PRICE_TICK` of a tick, volume within one share or
-`VOLUME_SLACK`), and every traded source bar in the session must be stored. A stored day with no
-raw file, a bar that differs, or a bar on one side only fails (dated). The envelope check above
-holds each scaled day to the raw daily bar, so the scale itself is checked there. The store's
+compared with the raw file's bars of that day (`compare_bars`): bars pair by the labelling rule
+(`end_labelled`), and a day the other alignment fits better fails (`bar_alignment_not_rule`: the
+stored labels are a bar off); the day's scale (the stored history is the source divided by the
+factors it carries, one number a day) is found from the bars themselves, and then every stored
+bar must be a source bar at that scale (prices within `PRICE_TICK` of a tick, volume within one
+share or `VOLUME_SLACK`), and every traded source bar in the session must be stored. A stored day
+with no raw file, a bar that differs, or a bar on one side only fails (dated). The envelope check
+above holds each scaled day to the raw daily bar, so the scale itself is checked there. The store's
 bars came from Fyers' minute history inside its download windows (`minute_history/progress.json`)
 and from the Kotak import outside them; the summary splits the compare by that writer
 (`by_writer`): inside a Fyers window Kotak is a second vendor, not the bars' own source, and a
@@ -158,7 +159,7 @@ class BarCompare:
     volume: int
     stored_only: int
     source_only: int
-    rule: bool  # the alignment agrees with `end_labelled`
+    rule: bool  # no other alignment matches more bars than `end_labelled`'s
 
 
 def _matches(stored: Sequence[float], source: SourceBar, scale: float) -> bool:
@@ -190,22 +191,21 @@ def compare_bars(
     day: date, stored: Mapping[time, Sequence[float]], source: Sequence[SourceBar]
 ) -> BarCompare:
     """A day's stored bars (start time -> open, high, low, close, volume) against the source's
-    rows of that day. The alignment (0 or 5 minutes from start to label) and the scale (the
-    median of stored close over source close) are the ones under which the most bars match
-    (ties: `end_labelled`); then each stored bar's prices and volume against the scaled source
-    bar, and the bars on one side only (a source bar counts when it is traded and starts in the
-    session)."""
+    rows of that day. The bars pair by the labelling rule (`end_labelled`: 0 or 5 minutes from
+    start to label), never by the alignment that fits best, so bars stored a bar off still differ;
+    `rule` is False when the other alignment would match more bars (the stored labels are off).
+    The scale is the median of stored close over source close; then each stored bar's prices and
+    volume against the scaled source bar, and the bars on one side only (a source bar counts
+    when it is traded and starts in the session)."""
     by_label = {b.label.time(): b for b in source if b.label.date() == day}
-    rule = 5 if end_labelled(by_label.values()) else 0
-    best = None
-    for shift in (rule, 5 - rule):
-        pairs = _pairs(stored, by_label, day, shift)
-        scale = _scale(pairs)
-        score = sum(_matches(v, b, scale) for v, b in pairs)
-        if best is None or score > best[0]:
-            best = (score, shift, scale, pairs)
-    assert best is not None
-    _, shift, scale, pairs = best
+    shift = 5 if end_labelled(by_label.values()) else 0
+    scores = []
+    for move in (shift, 5 - shift):
+        found = _pairs(stored, by_label, day, move)
+        found_scale = _scale(found)
+        scores.append(sum(_matches(v, b, found_scale) for v, b in found))
+    pairs = _pairs(stored, by_label, day, shift)
+    scale = _scale(pairs)
     price = sum(not _matches(v, b, scale) for v, b in pairs)
     volume = sum(
         abs(v[4] - b.volume / scale) > max(1.0, VOLUME_SLACK * abs(v[4])) for v, b in pairs
@@ -221,7 +221,7 @@ def compare_bars(
         volume,
         len(stored) - len(pairs),
         source_only,
-        shift == rule,
+        scores[0] >= scores[1],
     )
 
 
@@ -631,7 +631,11 @@ def _compare_sample(
             counts["bars"] += result.bars
             year[f"shift_{result.shift}"] += 1
             counts["scaled_days"] += abs(result.scale - 1) > PRICE_SLACK
-            counts["alignment_not_rule"] += not result.rule
+            if not result.rule:
+                counts["bar_alignment_not_rule"] += 1
+                year["bar_alignment_not_rule"] += 1
+                writer["bar_alignment_not_rule"] += 1
+                items["bar_alignment_not_rule"].append(item)
             for code, n in (
                 ("bar_price_differs", result.price),
                 ("bar_volume_differs", result.volume),
@@ -654,6 +658,7 @@ def _compare_sample(
         )
         for code in (
             "stored_day_without_source",
+            "bar_alignment_not_rule",
             "bar_price_differs",
             "bar_volume_differs",
             "stored_bar_not_in_source",
@@ -664,7 +669,7 @@ def _compare_sample(
     summary = {
         "sample": len(sample),
         "of_stored_days": len(pool),
-        **{k: counts[k] for k in ("days", "bars", "scaled_days", "alignment_not_rule")},
+        **{k: counts[k] for k in ("days", "bars", "scaled_days")},
         "by_year": {y: dict(c) for y, c in sorted(by_year.items())},
         "by_writer": {w: dict(c) for w, c in sorted(by_writer.items())},
     }
