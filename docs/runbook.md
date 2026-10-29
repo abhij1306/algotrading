@@ -272,7 +272,8 @@ its `README.md` maps it) keeps what must not be lost silently. `python -m app.ha
   `index_daily`, `breadth_daily`, `etf` and `verify_reference`: per file its path, rows, date
   range, bytes and sha256.
   The commit message counts per store the files added (`+`), rewritten (`~`, bytes of an existing
-  file changed) and removed (`-`) and lists every rewritten and removed file; the step's detail
+  file changed) and removed (`-`) and lists the first 50 rewritten and removed files of each store
+(the rest are counted; the manifests' diff names every one); the step's detail
   names the first rewrites. A rewrite in `raw`, `bars_daily_raw` or `bars_5m` without a planned
   repair is a data incident; `features_daily` partitions are rewritten when an adjustment
   changes.
