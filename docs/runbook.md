@@ -268,7 +268,8 @@ its `README.md` maps it) keeps what must not be lost silently. `python -m app.ha
 (the update's last step) rewrites, in the clone:
 
 - `manifests/<store>.csv` for `raw`, `bars_daily_raw`, `bars_5m`, `features_daily`,
-  `index_daily`, `breadth_daily` and `etf`: per file its path, rows, date range, bytes and sha256.
+  `index_daily`, `breadth_daily`, `etf` and `verify_reference`: per file its path, rows, date
+  range, bytes and sha256.
   The commit message counts per store the files added (`+`), rewritten (`~`, bytes of an existing
   file changed) and removed (`-`) and lists every rewritten and removed file; the step's detail
   names the first rewrites. A rewrite in `raw`, `bars_daily_raw` or `bars_5m` without a planned
@@ -383,6 +384,46 @@ reads the stored filings, the daily closes and the split and bonus factors, and 
 metrics. `report` writes the coverage report (default
 `<HAT_DATA_ROOT>/fundamentals/coverage-<date>.md`). Every step is rerunnable: the same cache
 gives the same rows.
+
+### Data verification
+
+Compares the stored data with independent references (`app/hat/data/verify`, read-only: the
+database under a read-only transaction). From `backend/`, with `HAT_DATA_ROOT` and the database set:
+
+```bash
+python -m app.hat.data.verify [--check D1 ...] [--from YYYY-MM-DD] [--to YYYY-MM-DD] \
+    [--ca-data DIR] [--notices DIR] [--kotak DIR] [--fetch] [--report DIR]
+```
+
+D1 daily bars vs the bhavcopy files under `raw/`; D2 corporate actions vs NSE's corporate-action
+pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_unit_actions_*`,
+`dividends/ca_*.json`, `results_announcements_*`), the adjusted series' moves over 20% and a
+seeded sample of yearly total returns against Yahoo Finance; D3 NIFTY 500 membership vs the
+parsed notices and archived lists (`--notices`: `changes_parsed.json`, `overrides.json`); D4 the
+5-minute bars vs the Kotak raw files (`--kotak`: the refused days classified, and a seeded sample
+of stored days compared bar by bar); D5 results `public_at` vs NSE's dissemination times
+(`--ca-data`); D6 calendar, suspensions and ISIN lineage vs NSE's archive (every weekday the
+calendar closes is asked of it) and symbol changes; D7 index, TRI and ETF series vs NSE's files,
+niftyindices' answers and NSE's ETF unit actions. A check without its reference fails
+(`reference_missing` and the like); a span a reference does not reach fails or limits the
+check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
+seconds apart, into `verify_reference/<group>/`, each file written once (NSE archives, the
+closed-day probes as one new file per run, Wayback captures, niftyindices, Yahoo); without it only kept files are read. The full window
+(2011-06-22 to the last bar) takes about 20 minutes.
+
+The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a run of
+fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`; `--report` names a folder
+`audits/verify-*`, the only folders read, and any other is refused); the command exits 2
+when a check fails. It records the data snapshot it judged (the verified stores' files and the
+reference tables' rows in its window) before and after the checks; data that moved during the
+run fails every check. A backtest's data audit judges each blocking check by the newest report
+covering the window that ran the check on data unchanged since (`verify` check,
+`docs/backtests/process.md`), so a narrow run never hides a wider report's other checks. The
+window starts at the first session the run reads (the lookback before its period). A failed
+finding dated in it, a check that does not cover it, or data changed since every report that ran
+the check leaves the run unverified; rerun the verify after a data correction. Findings
+are not corrected here: each goes through its own correction path (`correct-actions`, the
+membership and lineage tools).
 
 ### First live session checks (O2 day)
 

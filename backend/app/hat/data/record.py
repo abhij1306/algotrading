@@ -38,6 +38,7 @@ STORES = (
     "index_daily",
     "breadth_daily",
     "etf",
+    "verify_reference",
 )
 MANIFEST_FIELDS = ("path", "rows", "min_date", "max_date", "bytes", "sha256")
 MANIFESTS = Path("manifests")
@@ -215,7 +216,7 @@ def commit_message(stamp: str, changes: Mapping[str, Changes]) -> str:
 # --- IO -------------------------------------------------------------------------------------
 
 
-def _sha256(path: Path) -> str:
+def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(CHUNK), b""):
@@ -223,7 +224,7 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _parquet_facts(path: Path) -> tuple[int, date | None, date | None]:
+def parquet_facts(path: Path) -> tuple[int, date | None, date | None]:
     """Rows, and the range of the first date or timestamp column from the row-group stats."""
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -268,8 +269,8 @@ def store_rows(root: Path, store: str) -> list[dict[str, str]]:
             if not path.is_file() or path.is_symlink():
                 continue
             rel = path.relative_to(root).as_posix()
-            facts = _parquet_facts(path) if path.suffix == ".parquet" else (None, None, None)
-            rows.append(manifest_row(rel, *facts, path.stat().st_size, _sha256(path)))
+            facts = parquet_facts(path) if path.suffix == ".parquet" else (None, None, None)
+            rows.append(manifest_row(rel, *facts, path.stat().st_size, file_sha256(path)))
         except FileNotFoundError:
             continue
     return rows
