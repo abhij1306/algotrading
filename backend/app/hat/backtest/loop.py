@@ -170,7 +170,7 @@ from sqlalchemy import select
 
 from ..configs.records import Bot
 from ..configs.unit import configs_of
-from ..costs import CostModel
+from ..costs import BacktestFills, CostModel
 from ..data.bars import Bar as DataBar
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
@@ -201,6 +201,7 @@ from . import ep_log
 from .auction_days import auction_risk_days
 from .data import (
     HINDSIGHT_DELISTED_EXIT,
+    HINDSIGHT_EP_CLOSE,
     HINDSIGHT_EP_VOLUME,
     HINDSIGHT_FULL_DAY_PACE,
     Bar,
@@ -601,8 +602,17 @@ class _Run:
         self.leg = self.legs[0]  # the strategy the entry phase is deciding (`_use`)
         versions = [spec.strategy_version_id, *(c.strategy_version_id for c in spec.co_sleeves)]
         # each rotation strategy's book (`rotation`), by leg: it trades outside the ledger
+        # the account's (day, instrument) sales so far: one DP charge per scrip per sell day
+        self.dp_sold: set[tuple[date, str]] = set()
         self.books = {
-            n: RotationBook(leg.config, versions[n], spec.policy.version_id, spec.fills, leg.prefix)
+            n: RotationBook(
+                leg.config,
+                versions[n],
+                spec.policy.version_id,
+                spec.fills,
+                leg.prefix,
+                self.dp_sold,
+            )
             for n, leg in enumerate(self.legs)
             if leg.config.rotation is not None
         }
@@ -796,7 +806,7 @@ class _Run:
             at,
             high=held.high,
             low=held.low,
-            fills=self.spec.fills,
+            fills=AccountFills(self.spec.fills, self.dp_sold, held.instrument_id),
         )
 
     def _down_leg(self, position: HatPosition, bar: Bar, at: datetime) -> None:
@@ -1666,6 +1676,8 @@ class _Run:
         evaluation = trigger.evaluate_trigger(
             playbook.model_copy(update={"trigger": rest}), ctx, NO_CATALYST_MODE, daily_results
         )
+        # the session's whole bar at the estimate's trigger: the known gap `EP_TRIGGER_ESTIMATED`
+        self.view.count_hindsight(HINDSIGHT_EP_CLOSE)
         fires = EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close)
         record = self._ep_of(row)
         if record is not None:
@@ -2001,7 +2013,7 @@ class _Run:
             at,
             high=held.high,
             low=held.low,
-            fills=self.spec.fills,
+            fills=AccountFills(self.spec.fills, self.dp_sold, held.instrument_id),
         )
 
     def _demergers(self, day: date) -> None:
@@ -2413,6 +2425,26 @@ class _Run:
         )
         self.session.close()
         return result
+
+
+@dataclass(frozen=True)
+class AccountFills:
+    """The run's fills for one instrument's strategy sales, sharing the account's DP set with
+    the rotation books: the depository charges one debit per scrip per sell day per demat,
+    whichever book sold it (`shadow.FillModel`)."""
+
+    fills: BacktestFills
+    sold: set[tuple[date, str]]
+    instrument_id: str
+
+    def fill(
+        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+    ) -> tuple[Decimal, Decimal]:
+        key = (day, self.instrument_id)
+        found = self.fills.fill(side, qty, price, day, sold_today=sold_today or key in self.sold)
+        if side == "sell":
+            self.sold.add(key)
+        return found
 
 
 def _journal(overlay: Overlay) -> OverlayJournal:

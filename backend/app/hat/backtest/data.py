@@ -81,6 +81,7 @@ from .spec import BacktestError, membership_key
 __all__ = [
     "HINDSIGHT_BREAKOUT_VOL_RATIO",
     "HINDSIGHT_DELISTED_EXIT",
+    "HINDSIGHT_EP_CLOSE",
     "HINDSIGHT_EP_VOLUME",
     "HINDSIGHT_FULL_DAY_PACE",
     "JUMP_SKIP_SESSIONS",
@@ -107,6 +108,7 @@ LOOKAHEAD = "backtest_lookahead"  # a decision read data stamped after its insta
 # the reads `MarketView.hindsight` counts, by reason: the run audit warns `lookahead_hindsight`
 HINDSIGHT_FULL_DAY_PACE = "volume_pace_full_day"  # a 5m session paced on the day's whole volume
 HINDSIGHT_EP_VOLUME = "ep_estimate_volume"  # a daily EP estimate gated on the day's own volume
+HINDSIGHT_EP_CLOSE = "ep_estimate_close"  # a daily EP estimate fired on the day's high, low, close
 HINDSIGHT_BREAKOUT_VOL_RATIO = "breakout_vol_ratio"  # a feature column, read by no rule
 HINDSIGHT_DELISTED_EXIT = "delisted_exit"  # a delisting known from the registry, not on the day
 

@@ -484,17 +484,28 @@ reads only sessions whose close is public, a fill only the session in progress; 
 fails the run (`backtest_lookahead`). The close phase decides on the session's own close
 (decisions.md). Under the clock too: the results filings (`MarketView.results_on`, those public
 by the session's end; the trigger reads only those public by its instant), the 5-minute store
-(the session in progress, its bars replayed in order; a session's bars are used when its first
-open is within 5% of the daily open, never by its close), the rotation's total-return closes
+(the session in progress, its bars replayed in order; a session's bars are used when the stored
+file holds every bar of its 09:15-15:25 grid and its first open is within 5% of the daily open,
+never by its close), the rotation's total-return closes
 (through the decision's close) and the ETF overlay's prices, closes, band states and
-LIQUIDBEES' index (`Overlay.clock`). The clock is per session, not per instant: within the
-session in progress a read may see its whole daily bar, and the rules that read it (the fills,
-the daily estimates) are the approximations below.
+LIQUIDBEES' index (`Overlay.clock`).
+
+The guard's limit: the clock is per session, not per instant. From the session's open,
+`MarketView.bar` returns the whole daily bar (open, high, low, close), so the guard cannot
+refuse a read of the day's high, low or close at the open. The reads that rely on it are the
+daily bar's simulation of the day, not decisions on its outcome: the exits' path through the bar
+(`FILL_PATH`: a stop at the low, a target at the high, the lower band locked all day as open =
+high = low = close), a resting buy-stop's break (the high reaching the level), the entry day's
+low before the break (`entry_day_low_estimated`) and the upper band at the entry (the high). One
+decision reads the close: the EP daily estimate fires only when the close is in the upper half
+of the day's range (`EP_ESTIMATE.fires`, calibrated on 5-minute sessions); each such read is
+counted `ep_estimate_close`. An entry decided on a 5-minute session reads none of these: the
+replay sees each bar only once it has ended (the exits still take the daily bar's path).
 
 The reads the run makes past the clock on purpose go through `MarketView.hindsight` and are
 counted by reason (`BacktestResult.hindsight`); the run audit's `lookahead` check warns
-`lookahead_hindsight` with the counts of those a decision made: `ep_estimate_volume` (the day's
-volume for the EP daily estimate, `episodic_pivot_trigger_estimated`; a daily bar has no earlier
+`lookahead_hindsight` with the counts of those a decision made: `ep_estimate_close` (above),
+`ep_estimate_volume` (the day's volume for the EP daily estimate, `episodic_pivot_trigger_estimated`; a daily bar has no earlier
 volume, so there is no point-in-time alternative), `volume_pace_full_day` (a session paced on
 its full day's volume: on a daily estimate always, the same reason; on 5-minute bars only under
 the opt-in `volume_pace: full_day` convention, the default `live` paces on the bars) and
@@ -510,7 +521,8 @@ too). The stored features and breadth are point in time: the data audit's `looka
 recomputes a sample from the bars dated on or before each day.
 `scripts/research/bt_truncation.py` checks a run to T against one to T + N on real data: the
 watchlists, signals, skips and funnel by session, EP log, rotation orders and fills up to T must
-agree; a delisting the registry dates after T is reported apart (`delisting_known_later`).
+agree; a delisting the registry dates after T is reported apart (`delisting_known_later`):
+the runs are compared exactly up to the session before its exit and reported diverged from it.
 
 **Fills: what a daily bar cannot show and the run assumes.**
 

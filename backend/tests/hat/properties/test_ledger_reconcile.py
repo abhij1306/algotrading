@@ -132,13 +132,28 @@ def test_a_charge_under_another_days_schedule_is_caught() -> None:
 
 
 def test_the_dp_charge_is_once_per_instrument_per_day() -> None:
-    """Two sales of one instrument on one day pay one DP charge: the first 15.32, the second
-    0.57; a second DP debit fails `charges`."""
-    split = (FILLS[0], replace(FILLS[1], qty=5, fees=D("15.32")))
-    once = (*split, replace(FILLS[1], qty=5, fees=D("0.57")))
-    twice = (*split, replace(FILLS[1], qty=5, fees=D("15.32")))
-    assert "charges" not in _codes(_run(fills=once))
-    assert "charges" in _codes(_run(fills=twice))
+    """Two sales of one instrument on one day pay one DP charge (15.32 with it, 0.57 without),
+    whichever sale carried it: the fill rows' order (exit_full sorts before exit_partial) is not
+    the order of the sales. None or two fail `dp_charge`. Harm: a correct run failed, or a
+    double DP debit passed."""
+    partial = replace(FILLS[1], purpose="exit_partial", qty=5, fees=D("15.32"))  # first in time
+    full = replace(FILLS[1], purpose="exit_full", qty=5, fees=D("0.57"))
+    assert _run(fills=(FILLS[0], full, partial))["status"] == "pass"
+    assert _run(fills=(FILLS[0], partial, full))["status"] == "pass"
+    twice = (FILLS[0], replace(full, fees=D("15.32")), partial)
+    assert _codes(_run(fills=twice)) >= {"dp_charge"}
+    never = (FILLS[0], full, replace(partial, fees=D("0.57")))
+    assert _codes(_run(fills=never)) >= {"dp_charge"}
+
+
+def test_one_dp_charge_across_a_strategy_and_a_rotation_book() -> None:
+    """A strategy position and a rotation holding of one stock sold on one day are one demat's
+    sales: one DP debit between them, as the broker charges."""
+    rotation = replace(FILLS[1], purpose="exit", qty=5, fees=D("0.57"))
+    strategy = replace(FILLS[1], purpose="exit_full", qty=5, fees=D("15.32"))
+    assert _run(fills=(FILLS[0], rotation, strategy))["status"] == "pass"
+    both = (FILLS[0], replace(rotation, fees=D("15.32")), strategy)
+    assert "dp_charge" in _codes(_run(fills=both))
 
 
 def test_a_fill_outside_its_bar_is_caught() -> None:

@@ -13,8 +13,9 @@ something stamped after the decision (or a loader that reads past its window) an
 One difference is known and reported apart, `delisting_known_later`: an instrument the registry
 delists after T whose last bar is on or before T. The longer run closes it at that last close
 (`MarketData.last_traded`, counted `delisted_exit` in its hindsight reads); the shorter one cannot
-know it is delisted. Its fills from that exit on, and the equity rows from the first such exit,
-are left out of the comparison and listed.
+know it is delisted, and the cash that exit frees can change the later decisions of other names.
+The comparison is then exact up to the session before the first such exit, and the report says
+`diverged_after_delisting_hindsight_on` that day: the later days are neither passed nor failed.
 
 `fingerprint`: one run's resolved-config hash, trade-list hash (as `run.json` `binding` hashes
 it), and hashes of its fills, signals and equity curve, to show a change left a run's results
@@ -206,19 +207,23 @@ def delisted_later(short: BacktestResult, long: BacktestResult, at: date) -> dic
 
 
 def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, dict[str, Any]]:
-    """The decisions of the run to `at` against those of the longer run, up to `at`."""
+    """The decisions of the run to `at` against those of the longer run, up to `at`; with a
+    delisting known later (the module docstring), exactly up to the session before the first
+    such exit, and reported diverged from it on."""
     checks: dict[str, dict[str, Any]] = {}
     later = delisted_later(short, long, at)
     cut = min(later.values(), default=None)
-
-    def kept(f: Any) -> bool:  # noqa: ANN401 - a FillRow
-        return f.instrument_id not in later or f.day < later[f.instrument_id]
-
     checks["delisting_known_later"] = {
         "pass": True,
         "instruments": {k: v.isoformat() for k, v in sorted(later.items())},
-        "equity_compared_before": None if cut is None else cut.isoformat(),
+        "diverged_after_delisting_hindsight_on": None if cut is None else cut.isoformat(),
     }
+
+    def through(day: date) -> bool:  # a decision of `day` is compared
+        return day <= at if cut is None else day < cut
+
+    def before(day: date) -> bool:  # a fill, an equity or overlay row of `day` is compared
+        return day < at if cut is None else day < cut
 
     def record(name: str, diff: tuple[list[str], list[str]], compared: int) -> None:
         only_short, only_long = diff
@@ -234,23 +239,48 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
         ("watchlists", short.watchlists, long.watchlists, _watch_key, lambda r: r.trade_date),
         ("signals", short.signals, long.signals, _signal_key, lambda r: r.trade_date),
     ):
-        a = [key(r) for r in rows_s if day(r) <= at]
-        b = [key(r) for r in rows_l if day(r) <= at]
+        a = [key(r) for r in rows_s if through(day(r))]
+        b = [key(r) for r in rows_l if through(day(r))]
         record(name, _multiset_diff(a, b), len(a))
     for name, rows_s, rows_l in (
         ("skips_funnel", short.decisions, long.decisions),
         ("ep_log", _ep(short), _ep(long)),
     ):
-        a = [",".join(map(_text, r)) for r in rows_s if r[0] <= at]
-        b = [",".join(map(_text, r)) for r in rows_l if r[0] <= at]
+        a = [",".join(map(_text, r)) for r in rows_s if through(r[0])]
+        b = [",".join(map(_text, r)) for r in rows_l if through(r[0])]
         record(name, _multiset_diff(a, b), len(a))
-    before_s = [_fill_key(f) for f in short.fills if f.day < at and kept(f)]
-    before_l = [_fill_key(f) for f in long.fills if f.day < at and kept(f)]
+    before_s = [_fill_key(f) for f in short.fills if before(f.day)]
+    before_l = [_fill_key(f) for f in long.fills if before(f.day)]
     record("fills_before_t", _multiset_diff(before_s, before_l), len(before_s))
-    # on T the shorter run also closes what it holds at the period end: only sales, at most one
-    # per position it closed there, of that position's instrument
-    on_s = [_fill_key(f) for f in short.fills if f.day == at and kept(f)]
-    on_l = [_fill_key(f) for f in long.fills if f.day == at and kept(f)]
+    if cut is None:
+        checks["fills_on_t"] = _fills_on(short, long, at)
+    else:
+        checks["fills_on_t"] = {"compared": 0, "pass": True, "not_compared": "diverged"}
+    reb_s = [_rebalance_key(r) for r in short.rebalances if through(_day(r))]
+    reb_l = [_rebalance_key(r) for r in long.rebalances if through(_day(r))]
+    # the shorter run's period-end sales of its rotation holdings are its own
+    reb_s = [k for k in reb_s if '"reason": "end_of_period"' not in k]
+    reb_l = [k for k in reb_l if '"reason": "end_of_period"' not in k]
+    record("rebalances", _multiset_diff(reb_s, reb_l), len(reb_s))
+    eq_s = [f"{d},{_text(e)}" for d, e in short.equity if before(d)]
+    eq_l = [f"{d},{_text(e)}" for d, e in long.equity if before(d)]
+    record("equity_before_t", _multiset_diff(eq_s, eq_l), len(eq_s))
+    ov_s = [",".join(r) for r in short.overlay_rows if r and before(date.fromisoformat(r[0]))]
+    ov_l = [",".join(r) for r in long.overlay_rows if r and before(date.fromisoformat(r[0]))]
+    record("overlay_before_t", _multiset_diff(ov_s, ov_l), len(ov_s))
+    return checks
+
+
+def _day(row: Mapping[str, Any]) -> date:
+    found = row.get("date")
+    return found if isinstance(found, date) else date.fromisoformat(str(found))
+
+
+def _fills_on(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, Any]:
+    """Every fill of `at` the longer run makes also in the shorter one, whose extra fills are
+    only its period-end sales: at most one per position it closed there, of its instrument."""
+    on_s = [_fill_key(f) for f in short.fills if f.day == at]
+    on_l = [_fill_key(f) for f in long.fills if f.day == at]
     extra_s, missing = _multiset_diff(on_s, on_l)
     closed = Counter(
         t.instrument_id
@@ -264,7 +294,7 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
             closed[instrument_id] -= 1
         else:
             stray.append(key)
-    checks["fills_on_t"] = {
+    return {
         "compared": len(on_l),
         "pass": not missing and not stray,
         "only_long": missing[:MAX_LISTED],
@@ -272,26 +302,6 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
         "short_extra_not_period_end": stray[:MAX_LISTED],
         "differences": len(missing) + len(stray),
     }
-
-    def reb_kept(r: Mapping[str, Any]) -> bool:
-        day = str(r.get("date"))
-        known = later.get(str(r.get("instrument_id")))
-        return day <= at.isoformat() and (known is None or day < known.isoformat())
-
-    reb_s = [_rebalance_key(r) for r in short.rebalances if reb_kept(r)]
-    reb_l = [_rebalance_key(r) for r in long.rebalances if reb_kept(r)]
-    # the shorter run's period-end sales of its rotation holdings are its own
-    reb_s = [k for k in reb_s if '"reason": "end_of_period"' not in k]
-    reb_l = [k for k in reb_l if '"reason": "end_of_period"' not in k]
-    record("rebalances", _multiset_diff(reb_s, reb_l), len(reb_s))
-    eq_end = at if cut is None else min(at, cut)
-    eq_s = [f"{d},{_text(e)}" for d, e in short.equity if d < eq_end]
-    eq_l = [f"{d},{_text(e)}" for d, e in long.equity if d < eq_end]
-    record("equity_before_t", _multiset_diff(eq_s, eq_l), len(eq_s))
-    ov_s = [",".join(r) for r in short.overlay_rows if r and r[0] < at.isoformat()]
-    ov_l = [",".join(r) for r in long.overlay_rows if r and r[0] < at.isoformat()]
-    record("overlay_before_t", _multiset_diff(ov_s, ov_l), len(ov_s))
-    return checks
 
 
 def _ep(result: BacktestResult) -> list[tuple[Any, ...]]:

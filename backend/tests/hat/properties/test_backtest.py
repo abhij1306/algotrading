@@ -44,6 +44,7 @@ from app.hat.backtest.fills import (
     stop_fill,
 )
 from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis, traded_low_after
+from app.hat.backtest.loop import AccountFills
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
     CATALYST_NOT_EVALUATED,
@@ -227,18 +228,22 @@ def test_after_trigger() -> None:
 
 
 def test_on_basis() -> None:
-    """A session's 5-minute bars are read only when they fit its daily bar, the data audit's
-    rule read at the open: on the IST 5-minute grid inside the session, the first open within
-    5% of the daily open (never the close, unknown when the run decides). Harm: an entry decided
-    on bars of another price basis or another day, or a session chosen by its close."""
+    """A session's 5-minute bars are read only when they fit its daily bar, by what is known at
+    the open: every bar of the IST 5-minute grid of the session present (09:15 to 15:25), none
+    off it, and the first open within 5% of the daily open (never the close). Harm: an entry
+    decided on bars of another price basis or another day, a session chosen by its close, or a
+    truncated day replayed without its later lows."""
     day = date(2024, 3, 1)
-    bars = (_bar(0, "101", "99"), _bar(5, "104", "100"))  # the first bar opens at 99
+    bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))  # 75 bars, each opening at 99
     assert on_basis(day, bars, D(99))
     assert on_basis(day, bars, D("94.3"))  # 4.98% off
     assert not on_basis(day, bars, D("104.5"))  # the first open 5.3% off
     assert not on_basis(day, (), D(99))
-    assert not on_basis(day, (*bars, _bar(7, "104", "100")), D(99))  # off the grid
-    assert not on_basis(day, (*bars, _bar(375, "104", "100")), D(99))  # 15:30, after the session
+    assert not on_basis(day, bars[:-1], D(99))  # no 15:25 bar: a truncated day
+    assert not on_basis(day, bars[:10] + bars[11:], D(99))  # a bar missing inside
+    assert not on_basis(day, (*bars, bars[3]), D(99))  # a bar twice
+    assert not on_basis(day, (*bars[:-1], _bar(7, "104", "100")), D(99))  # off the grid
+    assert not on_basis(day, (*bars[:-1], _bar(375, "104", "100")), D(99))  # 15:30
     assert not on_basis(date(2024, 3, 2), bars, D(99))  # another day's bars
 
 
@@ -770,3 +775,19 @@ def test_research_run_sizes_an_unweighted_sleeve_and_promotion_refuses_it() -> N
             conventions=PROMOTED,
             for_promotion=True,
         )
+
+
+def test_strategy_and_rotation_sales_share_one_dp_charge_per_day() -> None:
+    """The account's strategy sales and its rotation books share one set of (day, instrument)
+    sales, so a stock sold by both on one day pays one DP charge, as the depository debits once
+    per scrip per sell day per demat; another day or stock pays again."""
+    fills = BacktestFills(load_cost_schedule(), D(0))
+    sold: set[tuple[date, str]] = set()
+    day = date(2024, 3, 1)
+    first = AccountFills(fills, sold, "X").fill("sell", 5, D(110), day)
+    sold.add((day, "Y"))  # a rotation book's sale of Y
+    again = AccountFills(fills, sold, "X").fill("sell", 5, D(110), day)
+    rotated = AccountFills(fills, sold, "Y").fill("sell", 5, D(110), day)
+    other_day = AccountFills(fills, sold, "X").fill("sell", 5, D(110), date(2024, 3, 4))
+    assert first[1] == other_day[1] == D("15.32")
+    assert again[1] == rotated[1] == D("0.57")

@@ -128,8 +128,9 @@ def session_bars(
 
 
 def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
-    """Whether a session's 5-minute bars fit its daily bar, known at its open: every bar on the
-    IST 5-minute grid inside `day`'s regular session (a property of the stored file), and the
+    """Whether a session's 5-minute bars fit its daily bar: every bar of the IST 5-minute grid
+    of `day`'s regular session present (09:15 to 15:25, each once, none off it: a property of
+    the stored file, so a truncated day is never replayed to miss its later lows), and the
     first bar's open within `CLOSE_5M_PCT` of the daily open (both on one price basis). The data
     audit judges the last close (`audit.basis_of`); a run decides before the close, so it reads
     the open. A session that does not fit is decided on the daily estimate, so no run reads bars
@@ -138,10 +139,14 @@ def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
         return False
     opens = datetime.combine(day, SESSION_OPEN, tzinfo=IST)
     closes = datetime.combine(day, SESSION_CLOSE, tzinfo=IST)
+    starts = set()
     for bar in bars:
         start = bar.start.astimezone(IST)
         if not opens <= start < closes or (start - opens) % BAR_WIDTH:
             return False
+        starts.add(start)
+    if len(starts) != len(bars) or len(starts) != (closes - opens) // BAR_WIDTH:
+        return False
     return abs(bars[0].open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
 
 

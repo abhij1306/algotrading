@@ -168,6 +168,7 @@ class RotationBook:
         risk_policy_version_id: uuid.UUID,
         fills: BacktestFills,
         prefix: str = "",
+        sold: set[tuple[date, str]] | None = None,
     ) -> None:
         if config.rotation is None:
             raise ValueError("not_a_rotation")
@@ -183,7 +184,8 @@ class RotationBook:
         self.trades: list[TradeRow] = []
         self.signals: list[SignalRow] = []
         self.rows: list[dict[str, Any]] = []
-        self._sold: set[tuple[date, str]] = set()  # one DP charge per name per sell day
+        # one DP charge per name per sell day: the account's set, shared with its other books
+        self._sold: set[tuple[date, str]] = set() if sold is None else sold
 
     # --- what the loop reads ---------------------------------------------------------------
 

@@ -7,9 +7,10 @@ ETF fills, tax payments and distributed units, `OverlayJournal`) and the market 
 cost schedule, the slippage, each day's bar, last traded close, NSE tick and dividends), never
 the engine's accounts, and rebuilds:
 
-- each fill's charges, `charges(schedule.on(day), ...)` on the fill's price, the DP charge on
-  an instrument's first sale of the day only (one debit per scrip per sell day): it must equal
-  the fill's fees;
+- each fill's charges, `charges(schedule.on(day), ...)` on the fill's price: a buy's must equal
+  its fees, a sale's equal them with or without the DP charge, and of an instrument's sales on
+  a day, across the strategies and the rotation books, exactly one carries it (one debit per
+  scrip per sell day per demat; which one is the engine's order of sales, not the fills');
 - each fill's price against its day's bar. Slippage moves a fill against the trade from a price
   inside the bar, so a buy prints between the low and the high after slippage and a sell between
   the low after slippage and the high (`slipped`; a LIMIT buy caps at its limit, inside that).
@@ -45,7 +46,7 @@ from decimal import Decimal
 from typing import Any, Protocol
 
 from ..costs import CostModel, charges, slipped
-from ..money import dividend_credit
+from ..money import dividend_credit, to_money
 from .fills import SUSPENSION_BAND_PCT, suspended_mark
 from .report import FillRow, TradeRow
 
@@ -142,7 +143,6 @@ class _Walk:
     cash: Decimal
     shares: Counter[str] = field(default_factory=Counter)
     units: Counter[str] = field(default_factory=Counter)
-    sold: set[tuple[date, str]] = field(default_factory=set)
     worst: Decimal = _ZERO
     dividends: Decimal = _ZERO
     found: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
@@ -206,15 +206,23 @@ def price_range(market: Market, fill: FillRow) -> tuple[Decimal, Decimal] | None
     return slipped(mark, "sell", bps), slipped(last[1], "sell", bps)
 
 
-def _fill(walk: _Walk, market: Market, fill: FillRow, *, checked: bool = True) -> Decimal:
+def _fill(
+    walk: _Walk, market: Market, fill: FillRow, dp: Counter[str], *, checked: bool = True
+) -> Decimal:
     """Check `fill`'s charges and (if `checked`) its price; its cash flow on the recomputed
-    charges."""
-    key = (fill.day, fill.instrument_id)
-    dp = fill.side == "sell" and key not in walk.sold
+    charges without the DP charge, which `_dp` adds once per instrument and day. A sale's fees
+    are its charges with or without the DP charge; which sale of the day carries it is the
+    engine's order of sales, so `dp` counts the sales that did, by instrument."""
+    model = market.model(fill.day)
+    fees = charges(model, fill.side, fill.qty, fill.price).total
     if fill.side == "sell":
-        walk.sold.add(key)
-    fees = charges(market.model(fill.day), fill.side, fill.qty, fill.price, dp=dp).total
-    if fees != fill.fees:
+        dp[fill.instrument_id] += 0
+        with_dp = charges(model, "sell", fill.qty, fill.price, dp=True).total
+        if fill.fees == with_dp != fees:
+            dp[fill.instrument_id] += 1
+        elif fill.fees != fees:
+            walk.found["charges"].append(_fill_item(fill, fees=fill.fees, recomputed=with_dp))
+    elif fees != fill.fees:
         walk.found["charges"].append(_fill_item(fill, fees=fill.fees, recomputed=fees))
     if checked:
         bounds = price_range(market, fill)
@@ -224,6 +232,18 @@ def _fill(walk: _Walk, market: Market, fill: FillRow, *, checked: bool = True) -
             walk.found["fill_outside_bar"].append(_fill_item(fill, low=bounds[0], high=bounds[1]))
     value = fill.qty * fill.price
     return (value if fill.side == "sell" else -value) - fees
+
+
+def _dp(walk: _Walk, market: Market, day: date, dp: Counter[str]) -> Decimal:
+    """The day's DP charges: one per instrument sold (one debit per scrip per sell day per
+    demat, however many sales and books); an instrument whose sales carry it other than once
+    is a finding."""
+    for instrument_id, count in sorted(dp.items()):
+        if count != 1:
+            walk.found["dp_charge"].append(
+                {"date": day.isoformat(), "instrument_id": instrument_id, "charged": count}
+            )
+    return len(dp) * to_money(market.model(day).dp_per_sell_day)
 
 
 def _held_diff(shares: Counter[str], book: SessionBook) -> dict[str, Any] | None:
@@ -282,12 +302,14 @@ def _session(
             {"date": day, "recomputed": str(dividends), "engine": str(book.dividends)}
         )
     walk.cash += dividends
+    dp: Counter[str] = Counter()
     for fill in fills:
-        walk.cash += _fill(walk, market, fill)
+        walk.cash += _fill(walk, market, fill, dp)
         walk.shares[fill.instrument_id] += fill.qty if fill.side == "buy" else -fill.qty
     for fill, estimated in journal.fills:
-        walk.cash += _fill(walk, market, fill, checked=not estimated)
+        walk.cash += _fill(walk, market, fill, dp, checked=not estimated)
         walk.units[fill.instrument_id] += fill.qty if fill.side == "buy" else -fill.qty
+    walk.cash -= _dp(walk, market, book.day, dp)
     for asset, units in journal.distributions:
         walk.units[asset] += units
     walk.cash -= journal.tax
