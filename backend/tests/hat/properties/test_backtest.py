@@ -229,10 +229,11 @@ def test_after_trigger() -> None:
 
 def test_on_basis() -> None:
     """A session's 5-minute bars are read only when they fit its daily bar, by what is known at
-    the open: every bar of the IST 5-minute grid of the session present (09:15 to 15:25), none
-    off it, and the first open within 5% of the daily open (never the close). Harm: an entry
-    decided on bars of another price basis or another day, a session chosen by its close, or a
-    truncated day replayed without its later lows."""
+    the open: the 09:15 and 15:25 bars present, every bar on the IST 5-minute grid of the
+    session once, and the 09:15 open within 5% of the daily open (never the close). An empty
+    interior bucket is a window without a trade, as live's bar builder sees it. Harm: an entry
+    decided on bars of another price basis or another day, a session chosen by its close, a
+    truncated day replayed without its later lows, or a quiet day refused for its quiet."""
     day = date(2024, 3, 1)
     bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))  # 75 bars, each opening at 99
     assert on_basis(day, bars, D(99))
@@ -240,7 +241,11 @@ def test_on_basis() -> None:
     assert not on_basis(day, bars, D("104.5"))  # the first open 5.3% off
     assert not on_basis(day, (), D(99))
     assert not on_basis(day, bars[:-1], D(99))  # no 15:25 bar: a truncated day
-    assert not on_basis(day, bars[:10] + bars[11:], D(99))  # a bar missing inside
+    assert on_basis(day, bars[:10] + bars[11:], D(99))  # no trade in 10:05-10:10
+    assert on_basis(day, (bars[0], bars[-1]), D(99))  # traded only at the open and the close
+    assert not on_basis(day, bars[1:], D(99))  # no 09:15 bar
+    assert on_basis(day, bars[::-1], D(99))  # in any order: the 09:15 bar's open is read
+    assert not on_basis(day, (*bars[:-1], _bar(0, "104", "105")), D(99))  # 09:15 twice
     assert not on_basis(day, (*bars, bars[3]), D(99))  # a bar twice
     assert not on_basis(day, (*bars[:-1], _bar(7, "104", "100")), D(99))  # off the grid
     assert not on_basis(day, (*bars[:-1], _bar(375, "104", "100")), D(99))  # 15:30

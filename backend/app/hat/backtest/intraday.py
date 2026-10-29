@@ -128,26 +128,28 @@ def session_bars(
 
 
 def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
-    """Whether a session's 5-minute bars fit its daily bar: every bar of the IST 5-minute grid
-    of `day`'s regular session present (09:15 to 15:25, each once, none off it: a property of
-    the stored file, so a truncated day is never replayed to miss its later lows), and the
-    first bar's open within `CLOSE_5M_PCT` of the daily open (both on one price basis). The data
-    audit judges the last close (`audit.basis_of`); a run decides before the close, so it reads
-    the open. A session that does not fit is decided on the daily estimate, so no run reads bars
-    off their day."""
+    """Whether a session's 5-minute bars fit its daily bar: the regular session's first (09:15)
+    and last (15:25) bars present, every bar on the IST 5-minute grid of `day` and each once,
+    and the 09:15 open within `CLOSE_5M_PCT` of the daily open (both on one price basis). An
+    interior bucket may be empty: live's bar builder makes no bar for a window without a trade
+    (`data.bars`), so the replay sees what live saw; the 15:25 bar keeps a truncated day from
+    being replayed to miss its later lows. The data audit judges the last close
+    (`audit.basis_of`); a run decides before the close, so it reads the open. A session that
+    does not fit is decided on the daily estimate, so no run reads bars off their day."""
     if not bars or daily_open <= 0:
         return False
     opens = datetime.combine(day, SESSION_OPEN, tzinfo=IST)
     closes = datetime.combine(day, SESSION_CLOSE, tzinfo=IST)
-    starts = set()
+    starts: dict[datetime, Bar] = {}
     for bar in bars:
         start = bar.start.astimezone(IST)
-        if not opens <= start < closes or (start - opens) % BAR_WIDTH:
+        if not opens <= start < closes or (start - opens) % BAR_WIDTH or start in starts:
             return False
-        starts.add(start)
-    if len(starts) != len(bars) or len(starts) != (closes - opens) // BAR_WIDTH:
+        starts[start] = bar
+    first = starts.get(opens)
+    if first is None or closes - BAR_WIDTH not in starts:
         return False
-    return abs(bars[0].open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
+    return abs(first.open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
 
 
 class _ReplayView:
