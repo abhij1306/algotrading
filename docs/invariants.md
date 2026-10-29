@@ -250,7 +250,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
   deadline, XBRL-date or observed time (`hat_financial_result` refuses DELETE and any other
   UPDATE). `public_at` is never before the exchange disseminated the figures; an announcement
   without a dissemination time counts from 15 minutes after its submission (99.7% of those with
-  one are disseminated by then); an estimated one is late, never early. A filing made more than
+  one are disseminated by then); an estimated one is late, never early, and never times a
+  catalyst: `earnings_catalyst` reads only filings with a real announcement instant, live and
+  in the backtest. A filing made more than
   a day after another filing of its quarter (a revision) never takes the original's
   announcement time. An integrated filing whose listing gives no broadcast time is public from
   its results announcement, else from the end of its creation day (estimated), never from the

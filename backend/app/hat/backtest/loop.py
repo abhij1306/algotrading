@@ -1532,7 +1532,9 @@ class _Run:
         if not preopen or floor is None:
             return []
         bot = configs_of(self.session).get(Bot, self.bot_id)
-        members = () if bot is None else watchlist.bot_universe_members(self.session, bot, day)
+        # the run's universe rows are the scan nights' (`data.scan_night_members`): read on
+        # `prev` they are the members of `day`; read on `day` they would be the next session's
+        members = () if bot is None else watchlist.bot_universe_members(self.session, bot, prev)
         series = series_as_of(self.data.series, prev)
         found: list[_Row] = []
         for member in sorted(members, key=str):

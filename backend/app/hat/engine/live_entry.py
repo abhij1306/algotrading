@@ -360,8 +360,15 @@ def ep_results(
     session: Session, instrument_id: uuid.UUID, since: datetime, at: datetime
 ) -> tuple[ResultEvent, ...]:
     """The instrument's results filings known at `at` (`results_as_of`) public after `since`,
-    each with the growth of its quarter as known when it became public."""
-    rows = [r for r in results_as_of(session, instrument_id, at) if as_utc(r.public_at) > since]
+    each with the growth of its quarter as known when it became public. A filing whose
+    `public_at` is a regulatory deadline standing in for an unknown instant
+    (`public_at_estimated`) is no announcement and cannot time a catalyst: left out, as the
+    backtest leaves it out."""
+    rows = [
+        r
+        for r in results_as_of(session, instrument_id, at)
+        if as_utc(r.public_at) > since and not r.public_at_estimated
+    ]
     growth = growth_by_result(session, [r.id for r in rows])
     return tuple(result_event(r.public_at, r.period_end, growth.get(r.id)) for r in rows)
 
