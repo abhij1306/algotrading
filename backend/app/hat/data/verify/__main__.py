@@ -17,10 +17,11 @@ from pathlib import Path
 from typing import Any
 
 from ..audit import FAIL, SKIPPED, check_result, finding
-from . import CHECKS, report_doc, reports_dir, write_report
+from . import CHECKS, FIRST_DAY, report_doc, report_folder, write_report
 from .context import Context
 from .markdown import render
 from .references import kept_bytes
+from .snapshot import snapshot
 
 MODULES = {
     "D1": "rawbars",
@@ -31,7 +32,6 @@ MODULES = {
     "D6": "sessions",
     "D7": "series",
 }
-FIRST_DAY = date(2011, 6, 22)  # the first bhavcopy with ISINs: the store's first session
 
 logger = logging.getLogger(__name__)
 
@@ -106,13 +106,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             fetch=args.fetch,
         )
         results = run_checks(ctx, ids)
+        judged = snapshot(settings.data_root, session, args.start, end)
         session.rollback()
     for group, n in sorted(ctx.unfetched.items()):
         ctx.note(f"{n} reference file(s) of raw/reference/{group}/ could not be fetched")
     ctx.note(f"raw/reference/ holds {kept_bytes(ctx) / 1e6:.1f} MB")
     created = datetime.now(UTC)
-    doc = report_doc(results, args.start, end, created)
-    folder = args.report or reports_dir(settings.data_root) / f"verify-{created:%Y-%m-%d}"
+    doc = report_doc(results, args.start, end, created, judged)
+    folder = args.report or report_folder(settings.data_root, created.date(), args.start, end, ids)
     _, md_path = write_report(folder, doc, render(doc, ctx.log))
     sys.stdout.write(
         json.dumps(

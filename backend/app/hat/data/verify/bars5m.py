@@ -1,10 +1,13 @@
 """D4: the 5-minute history's refused days (`bars_5m_rejects`, rule `basis_mismatch`) traced
 back to the Kotak raw files they came from (`--kotak`), and the stored days checked again.
 
-Each refused (instrument, day) is aggregated here from the raw candles on its own (the session's
-5-minute bars from 09:15 to 15:30 IST, labelled by their end through `END_LABELLED_UNTIL`), and
-held against the raw daily bar with the import's envelope (`bars_basis.check_day`, tolerance
-`history_envelope_tol`, never loosened here). The first class that fits, in this order:
+The raw files are read here on their own, with their own time labelling: a day whose traded bars
+include one labelled 15:30 and none 09:15 is labelled by bar end (each bar starts five minutes
+before its label), any other by bar start (`end_labelled`); the importer's switch date is not
+used. Each refused (instrument, day) is aggregated from those candles (the session's 5-minute
+bars from 09:15 to 15:30 IST), and held against the raw daily bar with the import's envelope
+(`bars_basis.check_day`, tolerance `history_envelope_tol`, never loosened here). The first class
+that fits, in this order:
 
 - `no_daily_now`: no raw daily bar for the day now (ours: the bar or the ISIN map);
 - `stored_now`: the day is stored now (a later run let it in: the ledger row is stale);
@@ -30,10 +33,24 @@ over the raw daily bars of the instruments it covers), the bias of the refusals 
 (an open more than `GAP_PCT` off the previous close), a seeded sample to check by hand with the
 raw evidence, and the rule this evidence recommends. Stored days that fail the envelope now
 (`bars_basis.misfit_days`) fail the check.
+
+Stored bars bar by bar: a seeded sample of `COMPARE_SAMPLE` stored (instrument, day) pairs is
+compared with the raw file's bars of that day (`compare_bars`): the alignment (start- or
+end-labelled) and the day's scale (the stored history is the source divided by the factors it
+carries, one number a day) are found from the bars themselves, and then every stored bar must be
+a source bar at that scale (prices within `PRICE_TICK` of a tick, volume within one share or
+`VOLUME_SLACK`), and every traded source bar in the session must be stored. A stored day with no
+raw file, a bar that differs, or a bar on one side only fails (dated). The envelope check above
+holds each scaled day to the raw daily bar, so the scale itself is checked there. The store's
+bars came from Fyers' minute history inside its download windows (`minute_history/progress.json`)
+and from the Kotak import outside them; the summary splits the compare by that writer
+(`by_writer`): inside a Fyers window Kotak is a second vendor, not the bars' own source, and a
+difference there still fails (the stored bars are not proven).
 """
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
@@ -46,9 +63,8 @@ from typing import Any
 from ...money import require_exact
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
-from ..bars5m_import import start_epoch
 from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
-from . import seeded_sample
+from . import dated, seeded_sample
 from .context import Context
 
 BASIS_STEP = 0.03  # a factor's mark: both extremes off by 3% or more, the same way and ratio
@@ -57,6 +73,10 @@ GAP_PCT = 4.0
 SAMPLE = 20
 SAMPLE_SEED = 20261029
 SESSION = (time(9, 15), time(15, 30))
+COMPARE_SAMPLE = 3000
+PRICE_TICK = 0.0105  # rupees at the source's scale: a 0.01 tick and its rounding
+PRICE_SLACK = 0.0005  # relative: the scaled source rounded to the store's four places
+VOLUME_SLACK = 0.001  # relative: the scaled volume rounded to whole shares
 CAUSE = {
     "no_source": "source",
     "bad_source_exceeds": "source",
@@ -93,6 +113,116 @@ class DayBars:
     candles: int
     high_at: str
     low_at: str
+
+
+@dataclass(frozen=True)
+class SourceBar:
+    """One raw file row as the file labels it (IST wall clock)."""
+
+    label: datetime
+    open: float
+    high: float
+    low: float
+    close: float
+    volume: int
+
+
+def end_labelled(bars: Iterable[SourceBar]) -> bool:
+    """Whether a day's rows label each bar by its end: a traded bar labelled 15:30 (the last
+    bar's end) and none at 09:15 (the first bar's start)."""
+    traded = {b.label.time() for b in bars if b.volume > 0}
+    return time(15, 30) in traded and time(9, 15) not in traded
+
+
+def candles_of(rows: Iterable[SourceBar]) -> list[Candle]:
+    """The rows as candles by start: each day's labels moved back five minutes when the day is
+    `end_labelled`."""
+    by_day: dict[date, list[SourceBar]] = defaultdict(list)
+    for row in rows:
+        by_day[row.label.date()].append(row)
+    out = []
+    for group in by_day.values():
+        shift = _WIDTH if end_labelled(group) else timedelta(0)
+        out += [Candle(b.label - shift, b.open, b.high, b.low, b.close) for b in group]
+    return out
+
+
+@dataclass(frozen=True)
+class BarCompare:
+    """One stored day against its source bars."""
+
+    shift: int  # minutes from a stored start to the source's label
+    scale: float  # stored / source
+    bars: int
+    price: int  # bars with a price off the scaled source
+    volume: int
+    stored_only: int
+    source_only: int
+    rule: bool  # the alignment agrees with `end_labelled`
+
+
+def _matches(stored: Sequence[float], source: SourceBar, scale: float) -> bool:
+    return all(
+        abs(mine - theirs * scale) <= max(PRICE_TICK * scale, PRICE_SLACK * abs(mine))
+        for mine, theirs in zip(
+            stored[:4], (source.open, source.high, source.low, source.close), strict=True
+        )
+    )
+
+
+def _pairs(
+    stored: Mapping[time, Sequence[float]],
+    by_label: Mapping[time, SourceBar],
+    day: date,
+    shift: int,
+) -> list[tuple[Sequence[float], SourceBar]]:
+    move = timedelta(minutes=shift)
+    found = ((v, by_label.get((datetime.combine(day, t) + move).time())) for t, v in stored.items())
+    return [(v, b) for v, b in found if b is not None]
+
+
+def _scale(pairs: Sequence[tuple[Sequence[float], SourceBar]]) -> float:
+    ratios = sorted(v[3] / b.close for v, b in pairs if b.close)
+    return ratios[len(ratios) // 2] if ratios else 1.0
+
+
+def compare_bars(
+    day: date, stored: Mapping[time, Sequence[float]], source: Sequence[SourceBar]
+) -> BarCompare:
+    """A day's stored bars (start time -> open, high, low, close, volume) against the source's
+    rows of that day. The alignment (0 or 5 minutes from start to label) and the scale (the
+    median of stored close over source close) are the ones under which the most bars match
+    (ties: `end_labelled`); then each stored bar's prices and volume against the scaled source
+    bar, and the bars on one side only (a source bar counts when it is traded and starts in the
+    session)."""
+    by_label = {b.label.time(): b for b in source if b.label.date() == day}
+    rule = 5 if end_labelled(by_label.values()) else 0
+    best = None
+    for shift in (rule, 5 - rule):
+        pairs = _pairs(stored, by_label, day, shift)
+        scale = _scale(pairs)
+        score = sum(_matches(v, b, scale) for v, b in pairs)
+        if best is None or score > best[0]:
+            best = (score, shift, scale, pairs)
+    assert best is not None
+    _, shift, scale, pairs = best
+    price = sum(not _matches(v, b, scale) for v, b in pairs)
+    volume = sum(
+        abs(v[4] - b.volume / scale) > max(1.0, VOLUME_SLACK * abs(v[4])) for v, b in pairs
+    )
+    move = timedelta(minutes=shift)
+    starts = {(datetime.combine(day, t) - move).time() for t, b in by_label.items() if b.volume > 0}
+    source_only = sum(1 for t in starts if SESSION[0] <= t < SESSION[1] and t not in stored)
+    return BarCompare(
+        shift,
+        scale,
+        len(stored),
+        price,
+        volume,
+        len(stored) - len(pairs),
+        source_only,
+        shift == rule,
+    )
 
 
 def session_days(candles: Iterable[Candle]) -> dict[date, DayBars]:
@@ -229,22 +359,29 @@ RECOMMENDATION = (
 # --- the real data ------------------------------------------------------------------------------
 
 
-def _candles(path: Path) -> list[Candle]:  # pragma: no cover - files
+def source_rows(
+    path: Path, days: Iterable[date] | None = None
+) -> list[SourceBar]:  # pragma: no cover
+    """A raw file's rows (`ts`, IST, as the file labels them), of `days` only when given."""
     import pyarrow as pa  # noqa: PLC0415
     import pyarrow.compute as pc  # noqa: PLC0415
     import pyarrow.parquet as pq  # noqa: PLC0415
 
-    table = pq.read_table(path, columns=["ts", "open", "high", "low", "close"])
-    seconds = pc.divide(pc.cast(pc.cast(table["ts"], pa.timestamp("ns", "UTC")), pa.int64()), 10**9)
-    columns = [
-        seconds.to_pylist(),
-        *(table[c].to_pylist() for c in ("open", "high", "low", "close")),
-    ]
-    return [
-        Candle(datetime.fromtimestamp(start_epoch(s), IST), float(o), float(h), float(lo), float(c))
-        for s, o, h, lo, c in zip(*columns, strict=True)
-        if None not in (o, h, lo, c)
-    ]
+    table = pq.read_table(path, columns=["ts", "open", "high", "low", "close", "volume"])
+    table = table.set_column(0, "ts", pc.cast(table["ts"], pa.timestamp("us", "Asia/Kolkata")))
+    wanted = None if days is None else set(days)
+    out = []
+    for ts, o, h, lo, c, v in zip(*(table[c].to_pylist() for c in table.column_names), strict=True):
+        if None in (ts, o, h, lo, c):
+            continue
+        label = ts.astimezone(IST)
+        if wanted is None or label.date() in wanted:
+            out.append(SourceBar(label, float(o), float(h), float(lo), float(c), int(v or 0)))
+    return out
+
+
+def _candles(path: Path) -> list[Candle]:  # pragma: no cover - files
+    return candles_of(source_rows(path))
 
 
 _DAILY_SQL = """
@@ -339,7 +476,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     first5m = min((d for _, d in stored), default=ctx.start)
     if ctx.kotak is None or not (ctx.kotak / "raw_5m").is_dir():
         ctx.note("D4: no --kotak folder; refusals not classified")
-        findings.append(finding("reference_missing", WARN, ["kotak"]))
+        findings.append(finding("reference_missing", FAIL, ["kotak"]))
     else:
         fetched_on = _folder_date(ctx.kotak) or ctx.end
         actions: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
@@ -355,6 +492,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         summary["causes"] = dict(causes.most_common())
         summary["classes_by_year"] = {str(y): dict(c) for y, c in sorted(by_year.items())}
         summary["hand_check_sample"] = seeded_sample(sample_pool, SAMPLE, SAMPLE_SEED)
+        summary["bar_compare"], compare_findings = _compare_sample(ctx, stored)
+        findings += compare_findings
         for code, level in (
             ("basis_factor", WARN),
             ("fits_now", WARN),
@@ -398,6 +537,138 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     if summary["gap_bias"]["gap"]["refused_pct"] > 2 * summary["gap_bias"]["other"]["refused_pct"]:
         findings.append(finding("refusals_biased_to_gap_days", WARN, [summary["gap_bias"]]))
     return check_result("D4", summary, findings)
+
+
+_DAY_BARS_SQL = """
+SELECT CAST(instrument_id AS VARCHAR), bar_start, open, high, low, close, volume
+FROM read_parquet(?) WHERE CAST(instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
+"""
+
+
+def _symbols(ctx: Context) -> dict[str, list[str]]:  # pragma: no cover - the database
+    """Every symbol each instrument has had (the raw files are named by symbol)."""
+    out: dict[str, list[str]] = defaultdict(list)
+    for i, symbol in ctx.rows(
+        "SELECT CAST(instrument_id AS TEXT), symbol FROM hat_instrument_symbol_history "
+        "UNION SELECT CAST(id AS TEXT), symbol FROM hat_instrument"
+    ):
+        out[i].append(symbol)
+    return out
+
+
+def fyers_windows(progress: Mapping[str, Any]) -> dict[str, tuple[date, date]]:
+    """The Fyers minute-history download windows by symbol (`minute_history/progress.json`
+    `done`: `NSE:ABC-EQ` -> [from, to]): the days the store's bars came from Fyers, which Kotak
+    can only check as a second vendor."""
+    out = {}
+    for key, span in (progress.get("done") or {}).items():
+        symbol = str(key).removeprefix("NSE:").rsplit("-", 1)[0]
+        try:
+            out[symbol] = (date.fromisoformat(span[0]), date.fromisoformat(span[1]))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return out
+
+
+def _compare_sample(
+    ctx: Context, stored: set[tuple[str, date]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+    """`compare_bars` on a seeded sample of the stored days: the summary and the findings."""
+    from ..bars_store import DATASET, FILE_NAME  # noqa: PLC0415
+
+    assert ctx.kotak is not None
+    pool = sorted((i, d) for i, d in stored if ctx.start <= d <= ctx.end)
+    sample = seeded_sample(pool, COMPARE_SAMPLE, SAMPLE_SEED)
+    by_day: dict[date, list[str]] = defaultdict(list)
+    for instrument, day in sample:
+        by_day[day].append(instrument)
+    bars: dict[tuple[str, date], dict[time, tuple[float, ...]]] = defaultdict(dict)
+    with closing(ctx.store.connect()) as con:
+        for day, instruments in sorted(by_day.items()):
+            path = ctx.root / DATASET / f"date={day.isoformat()}" / FILE_NAME
+            for i, start, o, h, lo, c, v in con.execute(
+                _DAY_BARS_SQL, [str(path), instruments]
+            ).fetchall():
+                at = start.astimezone(IST)
+                bars[(i, at.date())][at.time()] = (float(o), float(h), float(lo), float(c), int(v))
+    names = _symbols(ctx)
+    try:
+        progress = json.loads((ctx.root / "minute_history" / "progress.json").read_text())
+    except (OSError, ValueError):
+        progress = {}
+    windows = fyers_windows(progress)
+    by_writer: dict[str, Counter[str]] = defaultdict(Counter)
+    by_instrument: dict[str, list[date]] = defaultdict(list)
+    for instrument, day in sample:
+        by_instrument[instrument].append(day)
+    counts: Counter[str] = Counter()
+    by_year: dict[str, Counter[str]] = defaultdict(Counter)
+    items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for instrument, days in sorted(by_instrument.items()):
+        rows: list[SourceBar] = []
+        for symbol in names.get(instrument, ()):
+            for folder in ("raw_5m", "raw_5m_former"):
+                path = ctx.kotak / folder / f"{symbol}.parquet"
+                if path.is_file():
+                    rows += source_rows(path, days)
+        for day in days:
+            year = by_year[str(day.year)]
+            fyers = any(
+                (w := windows.get(n)) is not None and w[0] <= day <= w[1]
+                for n in names.get(instrument, ())
+            )
+            writer = by_writer["fyers_window" if fyers else "kotak_import"]
+            source = [r for r in rows if r.label.date() == day]
+            item = {"instrument_id": instrument, "day": day.isoformat()}
+            writer["days"] += 1
+            if not source:
+                writer["stored_day_without_source"] += 1
+                counts["stored_day_without_source"] += 1
+                items["stored_day_without_source"].append(item)
+                continue
+            result = compare_bars(day, bars[(instrument, day)], source)
+            counts["days"] += 1
+            counts["bars"] += result.bars
+            year[f"shift_{result.shift}"] += 1
+            counts["scaled_days"] += abs(result.scale - 1) > PRICE_SLACK
+            counts["alignment_not_rule"] += not result.rule
+            for code, n in (
+                ("bar_price_differs", result.price),
+                ("bar_volume_differs", result.volume),
+                ("stored_bar_not_in_source", result.stored_only),
+                ("source_bar_not_stored", result.source_only),
+            ):
+                if n:
+                    counts[code] += n
+                    year[code] += n
+                    writer[code] += n
+                    items[code].append({**item, "bars": n, "scale": round(result.scale, 6)})
+    findings = [
+        dated(
+            {
+                **finding(code, FAIL, items[code]),
+                "count": counts[code],
+                "days_with": len(items[code]),
+            },
+            [i["day"] for i in items[code]],
+        )
+        for code in (
+            "stored_day_without_source",
+            "bar_price_differs",
+            "bar_volume_differs",
+            "stored_bar_not_in_source",
+            "source_bar_not_stored",
+        )
+        if items[code]
+    ]
+    summary = {
+        "sample": len(sample),
+        "of_stored_days": len(pool),
+        **{k: counts[k] for k in ("days", "bars", "scaled_days", "alignment_not_rule")},
+        "by_year": {y: dict(c) for y, c in sorted(by_year.items())},
+        "by_writer": {w: dict(c) for w, c in sorted(by_writer.items())},
+    }
+    return summary, findings
 
 
 def _folder_date(path: Path) -> date | None:

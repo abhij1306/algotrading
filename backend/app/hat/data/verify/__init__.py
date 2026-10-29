@@ -28,9 +28,17 @@ Every check is read-only: the database under a read-only transaction, the stores
 check that needs a public reference file not yet on disk downloads it only with `--fetch`, through
 the data layer's fetchers and pacer, into `raw/reference/`.
 
-The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` unless
-`--report` names a folder. A backtest's data audit reads the newest report whose window covers its
-own (`status_for`): a blocking check that failed, or none run, marks the run unverified.
+A missing reference, or a span of the window a reference does not reach, is a failed finding or
+limits the check's `coverage`; never a warning. A warning is something listed for a look, not a
+gap in the proof.
+
+The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a narrower
+run: a folder naming its checks and window) unless `--report` names a folder. It records the data
+snapshot it judged (`snapshot`). A backtest's data audit reads the newest report whose window
+covers its own (`status_for`) and judges each blocking check on the run's own window
+(`check_status`): the check must cover the window and none of its failed findings may concern it
+(a finding's `days` or `window`, else the whole check), and the data snapshot of the report's
+window must be unchanged. Otherwise the run is unverified.
 """
 
 from __future__ import annotations
@@ -39,26 +47,32 @@ import hashlib
 import json
 import os
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from ..audit import FAIL, PASS, SKIPPED, WARN
+from .snapshot import snapshot as take_snapshot
 
 __all__ = [
     "BLOCKING",
     "CHECKS",
     "REPORT_FORMAT",
+    "check_status",
+    "covered",
     "covering_reports",
+    "dated",
     "report_doc",
+    "report_folder",
     "reports_dir",
+    "spanning",
     "status_for",
     "window_status",
     "write_report",
 ]
 
-REPORT_FORMAT = "data-verify/1"
+REPORT_FORMAT = "data-verify/2"
 REPORT_JSON = "verify.json"
 REPORT_MD = "verify.md"
 CHECKS = {
@@ -74,6 +88,7 @@ CHECKS = {
 # 5-minute bars, D5 only one that reads results filings (the data audit cannot tell, so it counts).
 BLOCKING = frozenset({"D1", "D2", "D3", "D5", "D6", "D7"})
 _RANK = {PASS: 0, SKIPPED: 0, WARN: 1, FAIL: 2}
+FIRST_DAY = date(2011, 6, 22)  # the first bhavcopy with ISINs: the store's first session
 
 
 def _canonical(value: object) -> str:
@@ -81,14 +96,20 @@ def _canonical(value: object) -> str:
 
 
 def report_doc(
-    checks: Mapping[str, Mapping[str, Any]], start: date, end: date, created: datetime
+    checks: Mapping[str, Mapping[str, Any]],
+    start: date,
+    end: date,
+    created: datetime,
+    snapshot: Mapping[str, Any],
 ) -> dict[str, Any]:
-    """The report: its window, each check's result under its id, the worst status and the
-    digest (sha256 of everything but the creation time)."""
+    """The report: its window, the data snapshot it judged (`snapshot.snapshot`), each check's
+    result under its id, the worst status and the digest (sha256 of everything but the creation
+    time)."""
     status = max((c["status"] for c in checks.values()), key=_RANK.__getitem__, default=PASS)
     body = {
         "format": REPORT_FORMAT,
         "window": {"from": start.isoformat(), "to": end.isoformat()},
+        "snapshot": dict(snapshot),
         "status": status,
         "checks": {k: dict(checks[k]) for k in sorted(checks)},
     }
@@ -98,6 +119,15 @@ def report_doc(
 
 def reports_dir(root: Path) -> Path:
     return root / "audits"
+
+
+def report_folder(root: Path, created: date, start: date, end: date, ids: Sequence[str]) -> Path:
+    """The default report folder: `verify-<date>` for every check over the whole history, a
+    distinct name for a narrower run (its checks and window) so it never replaces the full one."""
+    if set(ids) == set(CHECKS) and start <= FIRST_DAY:
+        return reports_dir(root) / f"verify-{created.isoformat()}"
+    scope = "-".join(sorted(ids))
+    return reports_dir(root) / f"verify-{created.isoformat()}-{scope}-{start:%Y%m%d}-{end:%Y%m%d}"
 
 
 def write_report(folder: Path, doc: Mapping[str, Any], markdown: str) -> tuple[Path, Path]:
@@ -120,52 +150,125 @@ def _read(path: Path) -> dict[str, Any] | None:
     return doc if isinstance(doc, dict) and doc.get("format") == REPORT_FORMAT else None
 
 
+def _span(value: object) -> tuple[date, date] | None:
+    try:
+        return date.fromisoformat(value["from"]), date.fromisoformat(value["to"])  # type: ignore[index]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
 def covering_reports(root: Path, start: date, end: date) -> list[tuple[dict[str, Any], Path]]:
     """The reports under `audits/verify-*/` whose window holds `start..end`, newest first (by
     creation time)."""
     found = []
     for path in reports_dir(root).glob(f"verify-*/{REPORT_JSON}"):
         doc = _read(path)
-        window = (doc or {}).get("window") or {}
-        try:
-            first, last = date.fromisoformat(window["from"]), date.fromisoformat(window["to"])
-        except (KeyError, TypeError, ValueError):
-            continue
-        if first <= start and end <= last:
+        span = _span((doc or {}).get("window"))
+        if span is not None and span[0] <= start and end <= span[1]:
             found.append((doc, path))
     return sorted(found, key=lambda f: str(f[0].get("created")), reverse=True)
 
 
-def window_status(
-    doc: Mapping[str, Any] | None, path: Path | None, *, used_5m: bool
+def dated(found: dict[str, Any], days: Iterable[date | str]) -> dict[str, Any]:
+    """A finding with the days it concerns (`days`, ISO, every one of them, not only the listed
+    items), so a backtest is failed by it only when one of them is in its window."""
+    return {**found, "days": sorted({d if isinstance(d, str) else d.isoformat() for d in days})}
+
+
+def spanning(found: dict[str, Any], start: date, end: date) -> dict[str, Any]:
+    """A finding about `start..end` only (`window`): a gap in a reference's or the data's span."""
+    return {**found, "window": {"from": start.isoformat(), "to": end.isoformat()}}
+
+
+def covered(result: dict[str, Any], start: date, end: date) -> dict[str, Any]:
+    """A check result that judged only `start..end` (`coverage`): a backtest reaching outside it
+    finds the check not run."""
+    return {**result, "coverage": {"from": start.isoformat(), "to": end.isoformat()}}
+
+
+def failing_in(found: Mapping[str, Any], start: date, end: date) -> bool:
+    """Whether a failed finding concerns `start..end`: one of its days is in it, its window meets
+    it, or it names neither (it concerns the whole check)."""
+    if found.get("severity") != FAIL:
+        return False
+    if "days" in found:
+        return any(start.isoformat() <= d <= end.isoformat() for d in found["days"])
+    span = _span(found.get("window"))
+    return span is None or (span[0] <= end and start <= span[1])
+
+
+def check_status(result: Mapping[str, Any] | None, start: date, end: date) -> str:
+    """One check's verdict on `start..end`: `not_run` (absent, skipped, or its coverage does not
+    hold the window), `failed` (a failed finding concerns the window) or `verified`."""
+    if not result or result.get("status") == SKIPPED:
+        return "not_run"
+    span = _span(result.get("coverage"))
+    if span is not None and not (span[0] <= start and end <= span[1]):
+        return "not_run"
+    if any(failing_in(f, start, end) for f in result.get("findings") or ()):
+        return "failed"
+    return "verified"
+
+
+def window_status(  # noqa: PLR0913
+    doc: Mapping[str, Any] | None,
+    path: Path | None,
+    start: date,
+    end: date,
+    current: str | None,
+    *,
+    used_5m: bool,
 ) -> dict[str, Any]:
-    """What a backtest of a window records of its verification: the report (its file, digest and
-    each check's status), the blocking checks that failed or were not run, and `verified`: a
-    report exists and every blocking check ran and did not fail."""
+    """What a backtest of `start..end` records of its verification: the report (its file, digest
+    and each check's status), whether the data it judged is unchanged (`current`, the snapshot
+    digest of its window now), each blocking check's verdict on this window
+    (`check_status`), and `verified`: a report on unchanged data in which every blocking check
+    covers the window and nothing in it failed."""
     blocking = sorted(BLOCKING | ({"D4"} if used_5m else set()))
     if doc is None:
-        return {"report": None, "verified": False, "failed": [], "not_run": blocking}
+        return {
+            "report": None,
+            "verified": False,
+            "stale": False,
+            "failed": [],
+            "not_run": blocking,
+        }
     checks = doc.get("checks") or {}
-    statuses = {k: (v or {}).get("status") for k, v in checks.items()}
-    failed = [k for k in blocking if statuses.get(k) == FAIL]
-    not_run = [k for k in blocking if statuses.get(k) in (None, SKIPPED)]
+    verdicts = {k: check_status(checks.get(k), start, end) for k in blocking}
+    failed = [k for k, v in verdicts.items() if v == "failed"]
+    not_run = [k for k, v in verdicts.items() if v == "not_run"]
+    stale = (doc.get("snapshot") or {}).get("digest") != current
     return {
         "report": None if path is None else str(path),
         "digest": doc.get("digest"),
         "created": doc.get("created"),
         "window": doc.get("window"),
-        "checks": statuses,
-        "verified": not failed and not not_run,
+        "checks": {k: (v or {}).get("status") for k, v in checks.items()},
+        "verdicts": verdicts,
+        "stale": stale,
+        "verified": not failed and not not_run and not stale,
         "failed": failed,
         "not_run": not_run,
     }
 
 
-def status_for(root: Path, start: date, end: date, *, used_5m: bool) -> dict[str, Any]:
-    """`window_status` of the newest report under `root` that covers `start..end`."""
+def status_for(
+    root: Path,
+    session: Any,  # noqa: ANN401 - a SQLAlchemy session
+    start: date,
+    end: date,
+    *,
+    used_5m: bool,
+) -> dict[str, Any]:
+    """`window_status` of the newest report under `root` that covers `start..end`, against the
+    snapshot of that report's window taken now."""
     found = covering_reports(root, start, end)
-    doc, path = found[0] if found else (None, None)
-    return window_status(doc, path, used_5m=used_5m)
+    if not found:
+        return window_status(None, None, start, end, None, used_5m=used_5m)
+    doc, path = found[0]
+    first, last = _span(doc["window"]) or (start, end)
+    current = take_snapshot(root, session, first, last)["digest"]
+    return window_status(doc, path, start, end, current, used_5m=used_5m)
 
 
 def seeded_sample(items: Sequence[Any], size: int, seed: int) -> list[Any]:

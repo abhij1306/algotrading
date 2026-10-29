@@ -427,13 +427,13 @@ def _load(
     used_5m = data.intraday is not None and any(
         s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
     )
-    verified = verify.status_for(root, *period, used_5m=used_5m)
+    verified = verify.status_for(root, session, *period, used_5m=used_5m)
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,
         used_5m=used_5m,
         golden_digest=golden.current(root),
-        verify_digest=verified.get("digest"),
+        verify_digest=f"{verified.get('digest')}|{verified.get('verified')}",
     )
     audit, _ = data_audit.cached(
         root,

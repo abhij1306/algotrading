@@ -7,12 +7,22 @@
      the instrument and day must match within `FACTOR_TOLERANCE`;
    - rights (`rights_issues_*.csv`): the theoretical ex-rights factor (N*P + M*S) / ((N+M)*P)
      for M new shares per N held at S = face value + premium, P the raw close before the ex-date
-     (1 when S >= P), within `RIGHTS_TOLERANCE` of the stored one;
+     (1 when S >= P). The face value is the reference's (`faceVal`, today's) taken back through
+     the reference's later face-value splits to the issue day (`issue_face_value`), or the
+     subject's `@ Rs X`. The tolerance is on the discount, 1 - factor: the stored discount
+     within `RIGHTS_TOLERANCE` of the expected one (relative), so a 1:100 issue stored as 1.0
+     fails;
    - demergers (`demergers_*.csv`): a stored demerger on the day (the factor is the market's gap
      by the owner's rule, so its size is not compared);
-   - dividends (`dividends/ca_YYYY-MM.json`): the cash per share of the day's dividends.
-   A stored action no reference holds warns; a reference action not stored fails unless the
-   owner deleted it (`hat_corporate_action_version`, status `deleted`), which warns. Non-equity
+   - dividends (`dividends/ca_YYYY-MM.json`): the cash per share of the day's dividends; the
+     stored cash must equal their total, or one row's amount only when every row of the day
+     names the same amount (NSE repeats a revised purpose).
+   A stored action no reference holds fails (its factor or cash is unproven); a reference
+   action not stored fails unless the owner deleted it (`hat_corporate_action_version`, status
+   `deleted`), which warns, as does a demerger the owner's gap rule leaves out. A rights issue
+   with no price or close, and a bonus of a class nobody checked that is not stored, fail
+   (unproven). A reference action whose ISIN and symbol HAT has no instrument for, and the
+   reference rows that could not be read, are counted (warn). No reference fails. Non-equity
    bonuses (preference, debentures, warrants) are not price actions and are skipped.
 2. Moves: the price-basis series (`bars_daily_cap`) scanned for close-to-close moves over
    `audit.JUMP_PCT` between adjacent sessions (`audit.jumps`). A move on an ex-date (the factor
@@ -25,7 +35,9 @@
    `raw/reference/yahoo/`. Yahoo's known limits: its own dividend method and occasional missed
    or misdated actions, no demerger adjustment, history under today's symbol only, and it
    rate-limits (HTTP 429) a client that asks often. A year off by more than
-   `SECOND_SOURCE_PP` percentage points warns.
+   `SECOND_SOURCE_PP` percentage points warns, as does a symbol with no answer; no answer at
+   all fails (the second source did not run).
+Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
 """
@@ -46,7 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...money import exact
 from ..audit import FAIL, WARN, action_shaped, check_result, finding, jumps
-from . import seeded_sample
+from . import dated, seeded_sample
 from .context import Context
 from .filings import Announcement, read_announcements
 from .references import reference_file
@@ -55,7 +67,8 @@ if TYPE_CHECKING:
     import duckdb
 
 FACTOR_TOLERANCE = Fraction(1, 1000)  # relative; HAT's MCP bonus factors are rounded to 4 places
-RIGHTS_TOLERANCE = Fraction(5, 1000)  # P is one close; NSE's and HAT's may round it differently
+RIGHTS_TOLERANCE = Fraction(2, 100)  # of the discount 1 - factor: P is one close, rounded
+RIGHTS_FLOOR = Fraction(1, 10**6)  # an issue at or above the close: the factor is exactly 1
 RESULTS_DAYS = 3  # a results announcement up to this many days before a move explains it
 SAMPLE_SIZE = 100
 SAMPLE_SEED = 20261029
@@ -150,24 +163,34 @@ def dividend_cash(subject: str) -> Decimal | None:
 
 _PREMIUM = re.compile(r"prem[a-z]*[.\s]*(?:of\s+)?(?:(?:rs|re|inr)[.\s]*)?(\d+(?:\.\d+)?)")
 _PRICE = re.compile(r"@\s*(?:rs|re|inr)\.?\s*(\d+(?:\.\d+)?)")
-FACE_VALUES = (Decimal(1), Decimal(2), Decimal(5), Decimal(10))
 
 
-def issue_prices(subject: str, premium: str, face_value: str) -> list[Decimal]:
-    """A rights issue's price per share, the reference's reading first: face value plus the
-    premium (the subject's, else the parsed column's), or the subject's `@ Rs X`; after it the
-    premium on the other usual face values, as the reference's face value is today's, not the
-    issue day's. Empty when the reference states no price."""
+def issue_face_value(
+    face_value: Decimal | None, ex_date: date, splits: Sequence[tuple[date, Fraction]]
+) -> Decimal | None:
+    """The face value on a rights issue's ex-date from the reference's (today's) face value and
+    its later face-value splits (ex date, new/old): today's divided by each later split's
+    new/old."""
+    if face_value is None:
+        return None
+    value = Fraction(face_value)
+    for day, ratio in splits:
+        if day > ex_date:
+            value /= ratio
+    return Decimal(value.numerator) / Decimal(value.denominator)
+
+
+def issue_price(subject: str, premium: str, face_value: Decimal | None) -> Decimal | None:
+    """A rights issue's price per share as the reference states it: the issue day's face value
+    plus the premium (the subject's, else the parsed column's), or the subject's `@ Rs X`; None
+    when it states no price."""
     text = (subject or "").lower()
     m = _PREMIUM.search(text)
     prem = exact(m[1] if m else premium)
-    fv = exact(face_value)
     if prem is None:
         m = _PRICE.search(text)
-        price = exact(m[1]) if m else None
-        return [] if price is None else [price]
-    first = [fv + prem] if fv is not None else []
-    return first + [f + prem for f in FACE_VALUES if f != fv]
+        return exact(m[1]) if m else None
+    return None if face_value is None else face_value + prem
 
 
 def rights_factor(new: int, held: int, paid: Decimal, prev_close: Decimal) -> Fraction:
@@ -183,21 +206,19 @@ def close_enough(stored: Fraction, expected: Fraction, tolerance: Fraction) -> b
     return abs(stored / expected - 1) <= tolerance
 
 
+def discount_close(stored: Fraction, expected: Fraction) -> bool:
+    """Whether a stored rights factor's discount (1 - factor) is within `RIGHTS_TOLERANCE` of
+    the expected discount, relative to it (an expected factor of 1 must be stored as 1)."""
+    want = 1 - expected
+    return abs((1 - stored) - want) <= max(RIGHTS_TOLERANCE * abs(want), RIGHTS_FLOOR)
+
+
 def judge_rights(
-    stored: Fraction, new: int, held: int, prices: Sequence[Decimal], prev_close: Decimal
+    stored: Fraction, new: int, held: int, price: Decimal, prev_close: Decimal
 ) -> tuple[str, Fraction]:
-    """`equal` (at the reference's own price), `equal_other_face_value` (at the premium on
-    another face value), `not_below_market` (no price below the close: no factor due) or
-    `factor_mismatch`, with the expected factor at the reference's own price."""
-    expected = rights_factor(new, held, prices[0], prev_close)
-    if close_enough(stored, expected, RIGHTS_TOLERANCE):
-        return "equal", expected
-    if any(
-        close_enough(stored, rights_factor(new, held, p, prev_close), RIGHTS_TOLERANCE)
-        for p in prices[1:]
-    ):
-        return "equal_other_face_value", expected
-    return "factor_mismatch", expected
+    """`equal` or `factor_mismatch` at the reference's price, with the expected factor."""
+    expected = rights_factor(new, held, price, prev_close)
+    return ("equal" if discount_close(stored, expected) else "factor_mismatch"), expected
 
 
 # --- the reference and the store, joined --------------------------------------------------------
@@ -212,7 +233,7 @@ class RefAction:
     cash: Decimal | None = None  # dividend: the total of its rows
     amounts: tuple[Decimal, ...] = ()  # dividend: each row's (NSE repeats a revised purpose)
     entitlement: tuple[int, int] | None = None  # rights: new shares per held
-    prices: tuple[Decimal, ...] = ()  # rights: `issue_prices`
+    price: Decimal | None = None  # rights: `issue_price` on the issue day's face value
     text: str = ""
     equity: bool = True  # False: a class nobody checked (a plain bonus without evidence)
 
@@ -261,20 +282,23 @@ def _split_bonus(row: Mapping[str, str]) -> RefAction | None:
     )
 
 
-def _rights(row: Mapping[str, str]) -> RefAction | None:
+def _rights(
+    row: Mapping[str, str], splits: Mapping[frozenset[str], Sequence[tuple[date, Fraction]]]
+) -> RefAction | None:
     day = ref_date(row.get("exDate", ""))
     m = re.fullmatch(r"\s*(\d+)\s*:\s*(\d+)\s*", row.get("entitlement_ratio_parsed", ""))
     if day is None or not m:
         return None
-    prices = issue_prices(
-        row.get("subject_raw", ""), row.get("premium_rs_parsed", ""), row.get("faceVal", "")
-    )
+    keys = _keys(row)
+    later = [s for k, items in splits.items() if k & keys for s in items]
+    fv = issue_face_value(exact(row.get("faceVal", "")), day, later)
+    price = issue_price(row.get("subject_raw", ""), row.get("premium_rs_parsed", ""), fv)
     return RefAction(
         "rights",
         day,
-        _keys(row),
+        keys,
         entitlement=(int(m[1]), int(m[2])),
-        prices=tuple(prices),
+        price=price,
         text=row.get("subject_raw", ""),
     )
 
@@ -322,8 +346,14 @@ def read_reference(
         for p in sorted(folder.glob("rights_issues_*.csv"))
         if not {"invit", "sme"} & set(p.stem.split("_"))  # equities only
     ]
+    splits: dict[frozenset[str], list[tuple[date, Fraction]]] = defaultdict(list)
+    for row in _rows(sorted(folder.glob("splits_bonus_*.csv"))):  # face-value changes only
+        day = ref_date(row.get("exDate", ""))
+        ratio = split_factor(row.get("subject_raw", ""), row.get("fv_change", ""))
+        if "split" in row.get("action_type", "") and day is not None and ratio is not None:
+            splits[_keys(row)].append((day, ratio))
     for row in _rows(paths):
-        action = _rights(row)
+        action = _rights(row, splits)
         if action is None:
             skipped["rights"] += 1
         else:
@@ -381,12 +411,13 @@ SEVERITY = {
     "factor_mismatch": FAIL,
     "cash_mismatch": FAIL,
     "not_stored": FAIL,
-    "not_stored_class_unknown": WARN,
+    "not_stored_class_unknown": FAIL,
+    "stored_not_in_reference": FAIL,
+    "no_prev_close": FAIL,
+    "no_issue_price": FAIL,
     "demerger_not_stored": WARN,
     "deleted_by_owner": WARN,
-    "stored_not_in_reference": WARN,
-    "no_prev_close": WARN,
-    "no_issue_price": WARN,
+    "no_instrument": WARN,
 }
 
 
@@ -414,11 +445,12 @@ def judge_ref(
             for acts in per_instrument.values()
         ]
         best = min(totals, key=lambda t: abs(t - ref.cash))  # type: ignore[operator]
+        repeated = len(ref.amounts) > 1 and len(set(ref.amounts)) == 1  # one purpose, revised
         code = (
             "equal"
             if best == ref.cash
             else "equal_one_row"
-            if len(ref.amounts) > 1 and best in ref.amounts
+            if repeated and best == ref.amounts[0]
             else "cash_mismatch"
         )
         return code, {"stored": str(best), "expected": str(ref.cash)}
@@ -440,18 +472,17 @@ def judge_ref(
             "source": ",".join(sources),
         }
     assert ref.entitlement is not None
-    if not ref.prices:
+    if ref.price is None:
         return "no_issue_price", {"stored": str(float(products[0]))}
     if prev_close is None:
         return "no_prev_close", {"stored": str(float(products[0]))}
-    judged = [judge_rights(p, *ref.entitlement, ref.prices, prev_close) for p in products]
-    order = ("equal", "equal_other_face_value", "factor_mismatch")
-    n, (code, expected) = min(enumerate(judged), key=lambda j: order.index(j[1][0]))
+    judged = [judge_rights(p, *ref.entitlement, ref.price, prev_close) for p in products]
+    n, (code, expected) = min(enumerate(judged), key=lambda j: j[1][0] != "equal")
     return code, {
         "stored": str(float(products[n])),
         "expected": str(float(expected)),
         "prev_close": str(prev_close),
-        "issue_price": str(ref.prices[0]),
+        "issue_price": str(ref.price),
     }
 
 
@@ -509,12 +540,9 @@ def compare_factors(
             note("deleted_by_owner", ref)
         elif (
             ref.kind == "rights"
-            and ref.prices
+            and ref.price is not None
             and close is not None
-            and all(
-                rights_factor(*ref.entitlement, p, close) == 1
-                for p in ref.prices  # type: ignore[misc]
-            )
+            and rights_factor(*ref.entitlement, ref.price, close) == 1  # type: ignore[misc]
         ):
             note("not_below_market", ref)
         elif ref.kind == "demerger":
@@ -547,9 +575,14 @@ def compare_factors(
         if level is not None:
             name = code.replace(":", "_").replace("demerger_demerger", "demerger")
             by_year = dict(sorted(years[code].items()))
-            findings.append(
-                {**finding(name, level, items[code]), "count": counts[code], "by_year": by_year}
-            )
+            found = {
+                **finding(name, level, items[code]),
+                "count": counts[code],
+                "by_year": by_year,
+            }
+            if level == FAIL:
+                found = dated(found, [i["ex_date"] for i in items[code]])
+            findings.append(found)
     return {k: counts[k] for k in sorted(counts)}, findings
 
 
@@ -638,13 +671,14 @@ def _moves(
     findings = []
     for code, level in (("ex_date_jump", FAIL), ("action_shaped", FAIL), ("unexplained", WARN)):
         if counts[code]:
-            findings.append(
-                {
-                    **finding(f"move_{code}", level, items[code]),
-                    "count": counts[code],
-                    "nifty500": counts[f"{code}_nifty500"],
-                }
-            )
+            found = {
+                **finding(f"move_{code}", level, items[code]),
+                "count": counts[code],
+                "nifty500": counts[f"{code}_nifty500"],
+            }
+            if level == FAIL:
+                found = dated(found, [m["date"] for m in items[code]])
+            findings.append(found)
     return {
         "moves_over_pct": dict(counts),
         "by_year": {k: dict(v) for k, v in sorted(years.items())},
@@ -753,6 +787,8 @@ def _second_source(
         findings.append(finding("second_source_year_off", WARN, off))
     if missing:
         findings.append(finding("second_source_missing", WARN, missing))
+    if sample and len(missing) == len(sample):
+        findings.append(finding("second_source_not_run", FAIL, [summary["source"]]))
     return summary, findings
 
 
@@ -799,13 +835,15 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         summary["factors"] = factor_summary
         summary["reference_rows_unread"] = dict(skipped)
         findings += factor_findings
+        for kind, n in sorted(skipped.items()):
+            findings.append({**finding(f"{kind}_reference_rows_unread", WARN, []), "count": n})
         by_isin, by_symbol, _ = read_announcements(
             sorted(ctx.ca_data.glob("results_announcements_*.csv"))
         )
         announcements = (by_isin, by_symbol)
     else:
         ctx.note("D2: no --ca-data folder; factors unchecked and moves not explained by results")
-        findings.append(finding("reference_missing", WARN, ["ca-data"]))
+        findings.append(finding("reference_missing", FAIL, ["ca-data"]))
     with ctx.store.connect(stored_adjustment(ctx.session)) as con:
         summary["moves"], move_findings = _moves(ctx, con, announcements, members)
         findings += move_findings

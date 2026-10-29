@@ -399,17 +399,26 @@ pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_uni
 `dividends/ca_*.json`, `results_announcements_*`), the adjusted series' moves over 20% and a
 seeded sample of yearly total returns against Yahoo Finance; D3 NIFTY 500 membership vs the
 parsed notices and archived lists (`--notices`: `changes_parsed.json`, `overrides.json`); D4 the
-5-minute refused days vs the Kotak raw files (`--kotak`); D5 results `public_at` vs NSE's
-dissemination times (`--ca-data`); D6 calendar, suspensions and ISIN lineage vs NSE's symbol
-changes; D7 index, TRI and ETF series vs NSE's files. A check without its folder warns
-`reference_missing`. `--fetch` downloads a missing public reference file once, two seconds apart,
-into `raw/reference/<group>/` (NSE archives, Wayback captures, niftyindices, Yahoo); without it
-only kept files are read. The full window (2011-06-22 to the last bar) takes about 25 minutes.
+5-minute bars vs the Kotak raw files (`--kotak`: the refused days classified, and a seeded sample
+of stored days compared bar by bar); D5 results `public_at` vs NSE's dissemination times
+(`--ca-data`); D6 calendar, suspensions and ISIN lineage vs NSE's archive (every weekday the
+calendar closes is asked of it) and symbol changes; D7 index, TRI and ETF series vs NSE's files,
+niftyindices' answers and NSE's ETF unit actions. A check without its reference fails
+(`reference_missing` and the like); a span a reference does not reach fails or limits the
+check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
+seconds apart, into `raw/reference/<group>/` (NSE archives and the closed-day probes, Wayback
+captures, niftyindices, Yahoo); without it only kept files are read. The full window
+(2011-06-22 to the last bar) takes about 40 minutes.
 
-The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/`; the
-command exits 2 when a check fails. A backtest's data audit reads the newest report covering its
-window (`verify` check, `docs/backtests/process.md`). Findings are not corrected here: each goes
-through its own correction path (`correct-actions`, the membership and lineage tools).
+The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a run of
+fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`); the command exits 2
+when a check fails. It records the data snapshot it judged (the verified stores' files and the
+reference tables' rows in its window). A backtest's data audit reads the newest report covering
+its window (`verify` check, `docs/backtests/process.md`) and judges each blocking check on the
+run's own window: a failed finding dated in it, a check that does not cover it, or data changed
+since the report leaves the run unverified; rerun the verify after a data correction. Findings
+are not corrected here: each goes through its own correction path (`correct-actions`, the
+membership and lineage tools).
 
 ### First live session checks (O2 day)
 

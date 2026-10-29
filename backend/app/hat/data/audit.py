@@ -40,8 +40,9 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   the summary counts the member demergers in the period with no `announced_on` (the run cannot
   exit before them, `demerger_notice.exit_day`), which run.json `data` carries too.
 - `verify`: the data verification report covering the window (`data/verify`, `status_for`): no
-  report, or a blocking check of it that failed or did not run, warns `verify_report_missing`,
-  `verify_blocking_failed` or `verify_blocking_not_run`, and the run is unverified (run.json
+  report, a blocking check of it that failed or did not cover the window, or data changed since
+  it was judged warns `verify_report_missing`, `verify_blocking_failed`,
+  `verify_blocking_not_run` or `verify_report_stale`, and the run is unverified (run.json
   `data.verified`); a run is not refused for it.
 - `golden`: the newest golden sample (`data/golden.py`, docs/backtests/golden-sample.md) looked up
   in the current stores: a drifted or missing value fails, as does an unreadable golden file; an
@@ -813,8 +814,9 @@ def _golden(
 
 
 def check_verify(status: Mapping[str, Any]) -> dict[str, Any]:
-    """The window's data verification (`verify.window_status`): no report, or a blocking check
-    that failed or did not run, warns; the summary says whether the window is verified."""
+    """The window's data verification (`verify.window_status`): no report, a blocking check that
+    failed or did not cover the window, or a report on data since changed, warns; the summary
+    says whether the window is verified."""
     findings = []
     if status.get("report") is None:
         findings.append(finding("verify_report_missing", WARN, list(status.get("not_run") or ())))
@@ -823,6 +825,8 @@ def check_verify(status: Mapping[str, Any]) -> dict[str, Any]:
             findings.append(finding("verify_blocking_failed", WARN, list(status["failed"])))
         if status.get("not_run"):
             findings.append(finding("verify_blocking_not_run", WARN, list(status["not_run"])))
+        if status.get("stale"):
+            findings.append(finding("verify_report_stale", WARN, [status.get("report")]))
     summary = {
         "verified": bool(status.get("verified")),
         "report": status.get("report"),
@@ -1222,7 +1226,7 @@ def gather(
     if verified is None:
         from .verify import status_for  # noqa: PLC0415 - verify imports this module
 
-        verified = status_for(store.root, start, end, used_5m=used_5m)
+        verified = status_for(store.root, session, start, end, used_5m=used_5m)
     sessions = sorted(market.days)
     in_window = [d for d in sessions if start <= d <= end]
     names = _names(market)
@@ -1392,14 +1396,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except BacktestError as exc:
             sys.stderr.write(f"data audit refused: {exc.code}\n")
             return 2
-        verified = status_for(settings.data_root, args.start, args.end, used_5m=False)
+        verified = status_for(settings.data_root, session, args.start, args.end, used_5m=False)
         key = cache_key(
             str(snapshot["content_digest"]),
             args.start,
             args.end,
             used_5m=False,
             golden_digest=golden.current(settings.data_root),
-            verify_digest=verified.get("digest"),
+            verify_digest=f"{verified.get('digest')}|{verified.get('verified')}",
         )
         doc, path = cached(
             settings.data_root,

@@ -3,10 +3,12 @@
 The file is read here by a reader of its own (zip, CSV, the format's column names), not by
 `bhavcopy.parse_bhavcopy`, so a parser bug cannot hide in both sides. Each stored row is matched
 to the file's row of its ISIN and series; its symbol, OHLC, previous close, volume and traded
-value must equal the file's exactly. Each equity row of the file that is not stored is counted by
-why: its ISIN is stored that day under a better-ranked series (one row per ISIN,
-`identity.best_per_isin`), the row fails the row check (`rowcheck.row_ok`), its ISIN has no
-instrument, or none of these (a defect).
+value must equal the file's exactly. A file row dated other than the day the file stands for (a
+stale or misnamed file, a shifted row), and a file with no equity rows, are defects: such a row is
+never matched. Each other equity row of the file that is not stored is counted by why: its ISIN
+is stored that day under a better-ranked series (one row per ISIN, `identity.best_per_isin`), the
+row fails the row check (`rowcheck.row_ok`), its ISIN has no instrument, or none of these (a
+defect). Every failed finding carries the days it was seen on.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ from ..identity import series_rank
 from ..reference import EQUITY_SERIES
 from ..rowcheck import Candidate, row_ok
 from ..store import DATASET_BARS
+from . import dated
 from .context import Context
 
 FIELDS = (
@@ -55,7 +58,8 @@ COLUMNS = {
 OTHER_SERIES = "other_series"
 ROW_CHECK = "row_check"
 NO_INSTRUMENT = "no_instrument"
-WRONG_DATE = "wrong_date"
+OFF_DATE = "source_row_off_date"
+EMPTY = "source_without_equity_rows"
 DUPLICATE = "duplicate_in_file"
 NOT_STORED = "source_row_not_stored"
 
@@ -83,7 +87,7 @@ def _number(raw: str | None) -> Decimal | None:
 
 def _file_date(raw: str) -> date | None:
     text = raw.strip()
-    for fmt in ("%d-%b-%Y", "%Y-%m-%d", "%d-%m-%Y"):
+    for fmt in ("%d-%b-%Y", "%d-%b-%y", "%Y-%m-%d", "%d-%m-%Y"):  # 13-Jul-20 on 13 Jul 2020
         try:
             return datetime.strptime(text, fmt).date()  # noqa: DTZ007 - a calendar date
         except ValueError:
@@ -158,12 +162,25 @@ def compare_day(
 ) -> DayResult:
     """A day's stored rows (dicts with `isin`, `series` and the `FIELDS`) against its file's
     rows. Findings: `value_mismatch` (one per field), `stored_not_in_source`,
-    `stored_duplicate`, and per unstored equity file row its reason (`OTHER_SERIES`,
-    `ROW_CHECK`, `NO_INSTRUMENT`, `WRONG_DATE`, `DUPLICATE` or the defect `NOT_STORED`)."""
+    `stored_duplicate`, the defects `OFF_DATE` (a file row not dated `day`, never matched) and
+    `EMPTY` (no equity row), and per unstored equity file row its reason (`OTHER_SERIES`,
+    `ROW_CHECK`, `NO_INSTRUMENT`, `DUPLICATE` or the defect `NOT_STORED`)."""
     out = DayResult(stored=len(stored))
     by_key: dict[tuple[str, str], SourceRow] = {}
-    for row in source:
-        if row.series not in EQUITY_SERIES:
+    equity = [row for row in source if row.series in EQUITY_SERIES]
+    if not equity:
+        out.add(EMPTY, {"day": day.isoformat(), "rows": len(source)})
+    for row in equity:
+        if row.day != day:
+            out.add(
+                OFF_DATE,
+                {
+                    "day": day.isoformat(),
+                    "isin": row.isin,
+                    "series": row.series,
+                    "file_date": None if row.day is None else row.day.isoformat(),
+                },
+            )
             continue
         key = (row.isin, row.series)
         if key in by_key:
@@ -211,9 +228,7 @@ def compare_day(
             "symbol": row.symbol,
         }
         held = stored_series.get(row.isin)
-        if row.day != day:
-            out.add(WRONG_DATE, item)
-        elif held is not None and series_rank(held) < series_rank(row.series):
+        if held is not None and series_rank(held) < series_rank(row.series):
             out.add(OTHER_SERIES, item)
         elif not _checkable(row, day):
             out.add(ROW_CHECK, item)
@@ -224,8 +239,15 @@ def compare_day(
     return out
 
 
-DEFECTS = ("value_mismatch", "stored_not_in_source", "stored_duplicate", NOT_STORED)
-EXCLUDED = (OTHER_SERIES, ROW_CHECK, NO_INSTRUMENT, WRONG_DATE, DUPLICATE)
+DEFECTS = (
+    "value_mismatch",
+    "stored_not_in_source",
+    "stored_duplicate",
+    OFF_DATE,
+    EMPTY,
+    NOT_STORED,
+)
+EXCLUDED = (OTHER_SERIES, ROW_CHECK, NO_INSTRUMENT, DUPLICATE)
 
 
 def summarise(
@@ -239,6 +261,7 @@ def summarise(
     examples: dict[str, list[dict[str, Any]]] = defaultdict(list)
     mismatch_fields: Counter[str] = Counter()
     years: dict[int, Counter[str]] = defaultdict(Counter)
+    seen: dict[str, list[date]] = defaultdict(list)
     days = 0
     for day, result in results:
         days += 1
@@ -250,18 +273,21 @@ def summarise(
             total[code] += n
             if code in DEFECTS:
                 year[code] += n
+                seen[code].append(day)
             room = MAX_LISTED - len(examples[code])
             examples[code].extend(result.examples[code][:room])
         for item in result.examples.get("value_mismatch", ()):
             mismatch_fields[item["field"]] += 1
     findings = []
     if missing_files:
-        findings.append(finding("raw_file_missing", FAIL, [d.isoformat() for d in missing_files]))
+        items = [d.isoformat() for d in missing_files]
+        findings.append(dated(finding("raw_file_missing", FAIL, items), missing_files))
     if unstored_days:
-        findings.append(finding("raw_day_not_stored", FAIL, [d.isoformat() for d in unstored_days]))
+        items = [d.isoformat() for d in unstored_days]
+        findings.append(dated(finding("raw_day_not_stored", FAIL, items), unstored_days))
     for code in DEFECTS:
         if total[code]:
-            findings.append(_counted(code, FAIL, total[code], examples[code]))
+            findings.append(dated(_counted(code, FAIL, total[code], examples[code]), seen[code]))
     if total[NO_INSTRUMENT]:
         findings.append(
             _counted(NO_INSTRUMENT, WARN, total[NO_INSTRUMENT], examples[NO_INSTRUMENT])

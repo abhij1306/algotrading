@@ -54,7 +54,12 @@ def _finding_lines(findings: Sequence[Mapping[str, Any]]) -> list[str]:
     lines = []
     for f in findings:
         lines.append(f"- **{f['code']}** ({f['severity']}): {f['count']}")
-        extra = {k: v for k, v in f.items() if k not in {"code", "severity", "count", "items"}}
+        extra = {
+            k: v for k, v in f.items() if k not in {"code", "severity", "count", "items", "days"}
+        }
+        if f.get("days"):
+            days = f["days"]
+            extra["days"] = f"{len(days)} from {days[0]} to {days[-1]}"
         if extra:
             lines.append(f"  - {_cell(json.dumps(extra, default=str))}")
         lines += [
@@ -76,6 +81,9 @@ def render(doc: Mapping[str, Any], log: Sequence[str] = ()) -> str:
     ]
     for check_id, check in (doc.get("checks") or {}).items():
         lines += ["", f"## {check_id} {check.get('title', '')}: {check['status'].upper()}", ""]
+        if check.get("coverage"):
+            cover = check["coverage"]
+            lines += [f"Covers {cover['from']} to {cover['to']} only.", ""]
         lines += _summary_lines(check.get("summary") or {})
         if check.get("findings"):
             lines += ["", "Findings:", "", *_finding_lines(check["findings"])]

@@ -10,13 +10,21 @@ announcements of its ISIN (else its symbol) made after its period ended and with
   disseminated the matched announcement: the figures are usable before the market saw them.
 - `estimate_before_first_announcement` (fail): an estimated `public_at` (the filing deadline, or
   the XBRL day's end) before the first announcement of the period: usable before it was public.
-- `before_any_announcement` (warn): `public_at` more than a day before every announcement of
-  the period (a filing the feed's results categories do not hold, such as an XBRL filed on its
-  own): not judged, listed for a look.
+- `before_any_announcement` (fail): `public_at` before the period's first announcement was
+  disseminated, with no announcement within a day of it: the figures are usable before any
+  results were public, and nothing in the reference shows the filing (an XBRL filed on its own
+  would need its own evidence).
+- `between_announcements` (warn): no announcement within a day of `public_at`, but the period's
+  first announcement was disseminated before it (cited): the results were public by then.
 - `late_vs_announcement` (warn): `public_at` more than a day after the matched announcement
   (safe, but the figures reach the engine late).
-- `unmatched` (warn): no announcement of the instrument in the window.
+- `unmatched` (fail): no announcement of the instrument in the window: its timing is unproven.
 
+No reference files fails the check; a filing public after the reference's last announcement is
+outside its coverage (the check's `coverage` ends there), and every failed finding is dated by
+the filings' `public_at`.
+
+Results announced in years the store holds no filing of (the pre-2020 gap) fail for those years.
 The summary counts the filings per year and source, the 23:59 `public_at` times by how they were
 made (`public_at_source`), the reference's announcements in the years the store has none of (the
 pre-2020 gap), and the fundamentals figures that are not point in time (screener.in pages).
@@ -35,6 +43,7 @@ from typing import Any
 
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
+from . import covered, dated, spanning
 from .context import Context
 
 MATCH_DAYS = 120  # a quarter's results are announced within 45 (60 for March) days, or late
@@ -123,8 +132,10 @@ def judge(filing: Filing, found: Sequence[Announcement]) -> tuple[str | None, di
     if filing.public_at_source in ESTIMATED_SOURCES and filing.public_at < found[0].announced:
         return "estimate_before_first_announcement", detail
     seen = nearest.disseminated or nearest.announced
-    if filing.public_at < nearest.announced - LATE:  # no announcement near it: another event
-        return "before_any_announcement", detail
+    if filing.public_at < nearest.announced - LATE:  # no announcement near it
+        if filing.public_at < first - LEAD_TOLERANCE:
+            return "before_any_announcement", detail
+        return "between_announcements", detail
     if filing.public_at < seen - LEAD_TOLERANCE:
         lead = seen - filing.public_at
         return "public_before_dissemination", {**detail, "lead_s": int(lead.total_seconds())}
@@ -182,9 +193,10 @@ def judge_all(
 SEVERITY = {
     "public_before_dissemination": FAIL,
     "estimate_before_first_announcement": FAIL,
-    "before_any_announcement": WARN,
+    "before_any_announcement": FAIL,
+    "between_announcements": WARN,
     "late_vs_announcement": WARN,
-    "unmatched": WARN,
+    "unmatched": FAIL,
 }
 
 
@@ -223,7 +235,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     stored_years = {f.period_end.year for f in filings}
     if ctx.ca_data is None or not any(ctx.ca_data.glob(_REF_GLOB)):
         ctx.note("D5: no --ca-data results_announcements files; timing unchecked")
-        findings.append(finding("reference_missing", WARN, [_REF_GLOB]))
+        findings.append(finding("reference_missing", FAIL, [_REF_GLOB]))
         return check_result("D5", summary, findings)
     by_isin, by_symbol, ref_years = read_announcements(sorted(ctx.ca_data.glob(_REF_GLOB)))
     reference_end = max(a.announced for items in by_isin.values() for a in items)
@@ -233,20 +245,23 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     summary["leads_before_dissemination"] = {k: dict(v) for k, v in sorted(leads.items())}
     for code, severity in SEVERITY.items():
         if counts[code]:
-            findings.append({**finding(code, severity, items[code]), "count": counts[code]})
+            found = {**finding(code, severity, items[code]), "count": counts[code]}
+            if severity == FAIL:
+                found = dated(found, [i["public_at"][:10] for i in items[code]])
+            findings.append(found)
     gap = {
         str(y): n
         for y, n in sorted(ref_years.items())
         if ctx.start.year <= y <= ctx.end.year and y < min(stored_years, default=y + 1)
     }
-    if gap:
-        findings.append(
-            finding(
-                "no_results_before_store",
-                WARN,
-                [{"year": y, "announcements": n} for y, n in gap.items()],
-            )
+    if gap:  # results announced in years the store holds no filing of: a hole, not a look
+        found = finding(
+            "no_results_before_store",
+            FAIL,
+            [{"year": y, "announcements": n} for y, n in gap.items()],
         )
+        years = sorted(int(y) for y in gap)
+        findings.append(spanning(found, date(years[0], 1, 1), date(years[-1], 12, 31)))
     not_pit = sum(n for _, p, n in pit if not p)
     if not_pit:
         findings.append(
@@ -256,4 +271,4 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
                 [{"source": s, "filings": n} for s, p, n in pit if not p],
             )
         )
-    return check_result("D5", summary, findings)
+    return covered(check_result("D5", summary, findings), ctx.start, reference_end.date())

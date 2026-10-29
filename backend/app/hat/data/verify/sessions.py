@@ -1,14 +1,18 @@
 """D6: the trading calendar, the ISIN lineage chains and suspensions against NSE.
 
-- Sessions: NSE writes a bhavcopy for every session and none for a holiday, so the files under
-  `raw/` are the reference: a calendar session without a file, or a file on a day the calendar
-  calls closed, fails, as does a session the store has no bars for. NSE's holiday lists as
-  recorded (`nse_holidays_history.json`) are compared too: a listed holiday with a file, or a
-  closed weekday the list does not name, warns.
+- Sessions: NSE writes a bhavcopy for every session and none for a holiday. A calendar session
+  without a file under `raw/`, or a file on a day the calendar calls closed, fails, as does a
+  session the store has no bars for. The files under `raw/` were fetched for the calendar's
+  sessions, so a trading day the calendar wrongly closed would have none: every weekday the
+  calendar closes is asked of NSE's archive itself (`references.probe_days`; the answers are
+  kept). An archive file for it fails (`closed_weekday_has_bhavcopy`), and so does a closed
+  weekday not asked yet (`closed_weekday_unproven`, run with `--fetch`). The holiday list the
+  calendar is built from is not a reference here.
 - Lineage: the linked chains must not fork or loop; an older ISIN's bars must end before its
   successor's begin (else a chain has two bars a day) and the link's date must be the
   successor's first bar; a link between two symbols must be in NSE's symbol-change list
-  (`symbolchange.csv`, kept under `raw/reference/nse/`).
+  (`symbolchange.csv`, kept under `raw/reference/nse/`, read here by `read_symbol_changes`),
+  else it fails; no list fails too, and rows of it that cannot be read are counted (warn).
 - Suspensions: an instrument the master calls active must have traded in the window's last
   `STALE_SESSIONS` sessions (or be the old ISIN of a chain); one called inactive should not trade on
   the last session. Breaks inside a history (an instrument gone for more than
@@ -18,7 +22,6 @@
 
 from __future__ import annotations
 
-import json
 from bisect import bisect_left
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -27,12 +30,19 @@ from datetime import date
 from typing import Any
 
 from ..audit import FAIL, WARN, check_result, finding
-from ..calendar import RECORDED_HISTORY
-from ..nse_changes import SYMBOL_CHANGES_URL, parse_symbol_changes
 from ..series_break import is_break
 from ..store import DATASET_BARS
+from . import dated
 from .context import Context
-from .references import reference_file
+from .references import (
+    FOUND,
+    NOT_FOUND,
+    SYMBOL_CHANGES,
+    SYMBOL_CHANGES_URL,
+    probe_days,
+    read_symbol_changes,
+    reference_file,
+)
 
 STALE_SESSIONS = 20  # an active instrument with no bar in this many sessions is suspended
 SUSPENSION_SESSIONS = 5  # a hole this long inside a history counts as a suspension
@@ -42,45 +52,41 @@ def _iso(days: Iterable[date]) -> list[str]:
     return [d.isoformat() for d in sorted(days)]
 
 
-def check_sessions(
+def check_sessions(  # noqa: PLR0913
     calendar_open: Collection[date],
     calendar_closed: Collection[date],
     bhavcopy_days: Collection[date],
     store_days: Collection[date],
-    nse_holidays: Collection[date],
+    probes: Mapping[date, str],
     start: date,
     end: date,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-    """The calendar's sessions of `start..end` against the days NSE wrote a bhavcopy, the
-    store's days and NSE's holiday list (`nse_holidays`, its years only)."""
+    """The calendar's sessions of `start..end` against the days a bhavcopy is under `raw/`, the
+    store's days, and NSE's archive asked about each weekday the calendar closes (`probes`:
+    `FOUND` or `NOT_FOUND`; a day missing from it is unproven). Every finding fails, dated."""
 
     def window(days: Collection[date]) -> set[date]:
         return {d for d in days if start <= d <= end}
 
     opened, closed = window(calendar_open), window(calendar_closed)
-    files, stored, listed = window(bhavcopy_days), window(store_days), window(nse_holidays)
-    listed_years = {d.year for d in nse_holidays}
-    findings = []
+    files, stored = window(bhavcopy_days), window(store_days)
+    weekdays = {d for d in closed if d.weekday() < 5}  # noqa: PLR2004 - Saturday is 5
     rules = (
-        ("session_without_bhavcopy", FAIL, opened - files),
-        ("bhavcopy_on_closed_day", FAIL, files - opened),
-        ("session_not_stored", FAIL, (opened & files) - stored),
-        ("stored_day_not_session", FAIL, stored - opened),
-        ("nse_holiday_with_bhavcopy", WARN, listed & files),
-        (
-            "closed_weekday_not_nse_holiday",
-            WARN,
-            {d for d in closed - listed if d.weekday() < 5 and d.year in listed_years} - files,
-        ),
+        ("session_without_bhavcopy", opened - files),
+        ("bhavcopy_on_closed_day", files - opened),
+        ("session_not_stored", (opened & files) - stored),
+        ("stored_day_not_session", stored - opened),
+        ("closed_weekday_has_bhavcopy", {d for d in weekdays if probes.get(d) == FOUND}),
+        ("closed_weekday_unproven", {d for d in weekdays if d not in probes}),
     )
-    for code, severity, days in rules:
-        if days:
-            findings.append(finding(code, severity, _iso(days)))
+    findings = [dated(finding(code, FAIL, _iso(days)), days) for code, days in rules if days]
     summary = {
         "calendar_sessions": len(opened),
         "bhavcopy_days": len(files),
         "store_days": len(stored),
-        "weekend_sessions": len({d for d in opened if d.weekday() >= 5}),
+        "weekend_sessions": len({d for d in opened if d.weekday() >= 5}),  # noqa: PLR2004
+        "closed_weekdays": len(weekdays),
+        "closed_weekdays_without_archive_file": sum(probes.get(d) == NOT_FOUND for d in weekdays),
     }
     return summary, findings
 
@@ -117,8 +123,8 @@ def check_links(
     symbol_changes: Sequence[tuple[str, str]] | None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The linked chains: forks and loops fail, overlapping bars fail, a link not dated on its
-    successor's first bar warns, a symbol change NSE's list does not hold warns
-    (`symbol_changes` None: the list was not available, which is said in the summary)."""
+    successor's first bar warns, a symbol change NSE's list does not hold fails, as does no list
+    (`symbol_changes` None)."""
     succ: dict[str, list[str]] = defaultdict(list)
     pred: dict[str, list[str]] = defaultdict(list)
     for link in links:
@@ -134,7 +140,7 @@ def check_links(
                 loops.append(start)
                 break
             seen.add(at)
-    overlap, dated, unlisted, no_bars = [], [], [], []
+    overlap, misdated, unlisted, no_bars = [], [], [], []
     for link in links:
         old, new = spans.get(link.old), spans.get(link.new)
         item = {
@@ -151,7 +157,7 @@ def check_links(
                 {**item, "old_last": old[1].isoformat(), "new_first": new[0].isoformat()}
             )
         if link.effective != new[0]:
-            dated.append({**item, "new_first": new[0].isoformat()})
+            misdated.append({**item, "new_first": new[0].isoformat()})
         if (
             symbol_changes is not None
             and link.old_symbol != link.new_symbol
@@ -164,11 +170,15 @@ def check_links(
         ("chain_loop", FAIL, loops),
         ("chain_bars_overlap", FAIL, overlap),
         ("link_without_bars", WARN, no_bars),
-        ("link_not_on_first_bar", WARN, dated),
-        ("symbol_change_not_in_nse_list", WARN, unlisted),
+        ("link_not_on_first_bar", WARN, misdated),
     ):
         if items:
             findings.append(finding(code, severity, items))
+    if unlisted:
+        found = finding("symbol_change_not_in_nse_list", FAIL, unlisted)
+        findings.append(dated(found, [i["effective"] for i in unlisted]))
+    if symbol_changes is None:
+        findings.append(finding("symbol_changes_missing", FAIL, [SYMBOL_CHANGES]))
     summary = {
         "links": len(links),
         "by_reason": dict(Counter(link.reason for link in links)),
@@ -258,21 +268,19 @@ WHERE date BETWEEN ? AND ? GROUP BY 1
 
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
-    from importlib import resources  # noqa: PLC0415
-
+    from ..bhavcopy import FIRST_ISIN_DAY  # noqa: PLC0415
     from .rawbars import find_raw_days  # noqa: PLC0415
 
+    start = max(ctx.start, FIRST_ISIN_DAY)
     calendar = ctx.rows("SELECT date, is_trading FROM hat_trading_calendar")
     opened = {d for d, t in calendar if t}
     closed = {d for d, t in calendar if not t}
-    recorded = json.loads(
-        resources.files("app.hat.data").joinpath(RECORDED_HISTORY).read_text(encoding="utf-8")
-    )
-    holidays = {date.fromisoformat(d) for year in recorded["holidays"].values() for d in year}
-    files = set(find_raw_days(ctx, ctx.start))
+    files = set(find_raw_days(ctx, start))
     store_days = ctx.store.days(DATASET_BARS)
+    asked = {d for d in closed if start <= d <= ctx.end and d.weekday() < 5}  # noqa: PLR2004
+    probes = probe_days(ctx, asked)
     sessions_summary, findings = check_sessions(
-        opened, closed, files, store_days, holidays, ctx.start, ctx.end
+        opened, closed, files, store_days, probes, start, ctx.end
     )
     with ctx.store.connect() as con:
         spans = {i: (a, b) for i, a, b in con.execute(_SPANS_SQL).fetchall()}
@@ -287,15 +295,14 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         "JOIN hat_instrument n ON n.id = l.new_instrument_id WHERE l.status = 'linked'"
     )
     links = [Link(*r) for r in rows]
-    data = reference_file(ctx, "nse", "symbolchange.csv", SYMBOL_CHANGES_URL)
-    changes = (
-        None
-        if data is None
-        else [(c.old, c.new) for c in parse_symbol_changes(data.decode("utf-8-sig", "replace"))]
-    )
-    if changes is None:
-        ctx.note("D6: NSE symbolchange.csv not kept and not fetched; symbol links unchecked")
+    data = reference_file(ctx, "nse", SYMBOL_CHANGES, SYMBOL_CHANGES_URL)
+    changes, unread = None, 0
+    if data is not None:
+        renames, unread = read_symbol_changes(data)
+        changes = [(r.old, r.new) for r in renames]
     link_summary, link_findings = check_links(links, spans, changes)
+    if unread:
+        link_findings.append({**finding("symbol_changes_unread", WARN, []), "count": unread})
     listings = [
         Listing(str(i), s, a, d)
         for i, s, a, d in ctx.rows("SELECT id, symbol, active, delisted_on FROM hat_instrument")

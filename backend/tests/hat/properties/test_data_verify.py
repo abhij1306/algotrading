@@ -12,7 +12,17 @@ from pathlib import Path
 
 from app.hat.data import audit, verify
 from app.hat.data.bars_basis import DailyRange
-from app.hat.data.verify import adjustments, bars5m, filings, membership, rawbars, series, sessions
+from app.hat.data.verify import (
+    adjustments,
+    bars5m,
+    filings,
+    membership,
+    rawbars,
+    references,
+    series,
+    sessions,
+    snapshot,
+)
 from app.hat.data.verify.adjustments import RefAction, StoredAction
 from app.hat.time import IST
 
@@ -22,65 +32,139 @@ D1, D2, D3 = date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)
 # --- the report and the data audit --------------------------------------------------------------
 
 
+SNAP = {"digest": "data-1", "parts": {}}
+
+
+def _check(status: str, *findings: dict, coverage: tuple[date, date] | None = None) -> dict:
+    result = {"status": status, "summary": {}, "findings": list(findings)}
+    return result if coverage is None else verify.covered(result, *coverage)
+
+
 def _report(statuses: dict[str, str], start: date = D1, end: date = D3) -> dict:
-    checks = {k: {"status": s, "summary": {}, "findings": []} for k, s in statuses.items()}
-    return verify.report_doc(checks, start, end, datetime(2026, 10, 29, tzinfo=UTC))
+    checks = {
+        k: _check(s, *([audit.finding("x", audit.FAIL, [])] if s == "fail" else []))
+        for k, s in statuses.items()
+    }
+    return verify.report_doc(checks, start, end, datetime(2026, 10, 29, tzinfo=UTC), SNAP)
+
+
+def _status(doc: dict | None, start: date = D1, end: date = D3, **kw: object) -> dict:
+    args = {"current": "data-1", "used_5m": False} | kw
+    return verify.window_status(doc, None, start, end, **args)  # type: ignore[arg-type]
 
 
 def test_the_digest_ignores_the_creation_time() -> None:
     a = _report({"D1": "pass"})
-    b = verify.report_doc(
-        {"D1": {"status": "pass", "summary": {}, "findings": []}},
-        D1,
-        D3,
-        datetime(2027, 1, 1, tzinfo=UTC),
-    )
+    b = verify.report_doc({"D1": _check("pass")}, D1, D3, datetime(2027, 1, 1, tzinfo=UTC), SNAP)
     assert a["digest"] == b["digest"]
     assert a["created"] != b["created"]
 
 
 def test_a_failed_blocking_check_leaves_the_window_unverified() -> None:
     every = dict.fromkeys(verify.CHECKS, "pass")
-    assert verify.window_status(_report(every), None, used_5m=True)["verified"]
-    failed = verify.window_status(_report(every | {"D2": "fail"}), None, used_5m=False)
+    assert _status(_report(every), used_5m=True)["verified"]
+    failed = _status(_report(every | {"D2": "fail"}))
     assert (failed["verified"], failed["failed"]) == (False, ["D2"])
 
 
 def test_d4_blocks_only_a_run_that_reads_5_minute_bars() -> None:
     doc = _report(dict.fromkeys(verify.CHECKS, "pass") | {"D4": "fail"})
-    assert verify.window_status(doc, None, used_5m=False)["verified"]
-    assert verify.window_status(doc, None, used_5m=True)["failed"] == ["D4"]
+    assert _status(doc)["verified"]
+    assert _status(doc, used_5m=True)["failed"] == ["D4"]
 
 
 def test_a_blocking_check_not_run_leaves_the_window_unverified() -> None:
-    status = verify.window_status(_report({"D1": "pass"}), None, used_5m=False)
+    status = _status(_report({"D1": "pass"}))
     assert not status["verified"]
     assert "D2" in status["not_run"]
+
+
+def test_a_warning_never_stands_for_a_missing_reference() -> None:
+    # every check's "no reference" finding fails, so a report without its references never
+    # verifies a window (blocking item 1)
+    every = dict.fromkeys(verify.CHECKS, "pass")
+    missing = _check("fail", audit.finding("notices_missing", audit.FAIL, []))
+    status = _status(_report(every) | {"checks": _report(every)["checks"] | {"D3": missing}})
+    assert status["failed"] == ["D3"]
+
+
+def test_each_check_is_judged_on_the_runs_own_window() -> None:
+    every = {k: _check("pass") for k in verify.CHECKS}
+    early = date(2012, 1, 2)
+    gap = verify.dated(audit.finding("sessions_without_membership", audit.FAIL, []), [early])
+    late_only = _check("pass", coverage=(D2, D3))
+    doc = verify.report_doc(
+        every | {"D3": _check("fail", gap), "D7": late_only},
+        early,
+        D3,
+        datetime(2026, 10, 29, tzinfo=UTC),
+        SNAP,
+    )
+    # a 2012 run: no membership then fails D3; D7 does not cover it
+    old = _status(doc, early, early)
+    assert (old["failed"], old["not_run"]) == (["D3"], ["D7"])
+    # a 2024 run: the 2012 gap does not concern it, and D7 covers it
+    assert _status(doc, D2, D3)["verified"]
+    spanned = verify.spanning(audit.finding("gap", audit.FAIL, []), D1, D1)
+    assert verify.failing_in(spanned, D1, D3)
+    assert not verify.failing_in(spanned, D2, D3)
+    assert verify.failing_in(audit.finding("whole", audit.FAIL, []), D2, D3)
+    assert not verify.failing_in(audit.finding("look", audit.WARN, []), D1, D3)
+
+
+def test_a_report_on_changed_data_does_not_verify() -> None:
+    # blocking item 5: the report records the snapshot it judged
+    doc = _report(dict.fromkeys(verify.CHECKS, "pass"))
+    assert _status(doc)["verified"]
+    stale = _status(doc, current="data-2")
+    assert (stale["verified"], stale["stale"]) == (False, True)
+    found = verify.window_status(doc, Path("v.json"), D1, D3, "data-2", used_5m=False)
+    assert audit.check_verify(found)["findings"][0]["code"] == "verify_report_stale"
+
+
+def test_the_snapshot_reads_each_store_files_day() -> None:
+    assert snapshot.file_day("bars_5m/date=2024-03-01/bars.parquet") == D1
+    assert snapshot.file_day("raw/cm01MAR2024bhav.csv.zip") == D1
+    assert snapshot.file_day("raw/ind_close_all_01032024.csv") == D1
+    assert snapshot.file_day("raw/BhavCopy_NSE_CM_0_0_0_20240301_F_0000.csv.zip") == D1
+    assert snapshot.file_day("raw/reference/nse/symbolchange.csv") is None
+    a = snapshot.files_digest([("p", 1, 2)])
+    assert a == snapshot.files_digest([("p", 1, 2)])
+    assert a != snapshot.files_digest([("p", 1, 3)])  # rewritten in place
 
 
 def test_the_newest_report_covering_the_window_is_read(tmp_path: Path) -> None:
     old = _report(dict.fromkeys(verify.CHECKS, "fail"))
     new = verify.report_doc(
-        {k: {"status": "pass"} for k in verify.CHECKS},
+        {k: _check("pass") for k in verify.CHECKS},
         D1,
         D3,
         datetime(2026, 10, 30, tzinfo=UTC),
+        SNAP,
     )
-    narrow = verify.report_doc({}, D2, D3, datetime(2026, 10, 31, tzinfo=UTC))
+    narrow = verify.report_doc({}, D2, D3, datetime(2026, 10, 31, tzinfo=UTC), SNAP)
     for name, doc in (("a", old), ("b", new), ("c", narrow)):
         verify.write_report(verify.reports_dir(tmp_path) / f"verify-{name}", doc, "")
     found = verify.covering_reports(tmp_path, D1, D3)
     assert [d["digest"] for d, _ in found] == [new["digest"], old["digest"]]
-    assert verify.status_for(tmp_path, D1, D3, used_5m=False)["verified"]
-    assert verify.status_for(tmp_path, D1, D3 + timedelta(days=1), used_5m=False)["report"] is None
+    assert verify.covering_reports(tmp_path, D1, D3 + timedelta(days=1)) == []
+
+
+def test_a_narrow_run_never_replaces_the_full_report(tmp_path: Path) -> None:
+    full = verify.report_folder(tmp_path, D1, verify.FIRST_DAY, D3, sorted(verify.CHECKS))
+    narrow = verify.report_folder(tmp_path, D1, D2, D3, ["D2"])
+    assert full.name == "verify-2024-03-01"
+    assert narrow.name == "verify-2024-03-01-D2-20240304-20240305"
 
 
 def test_the_audit_warns_an_unverified_window_and_never_fails_it() -> None:
-    missing = audit.check_verify(verify.window_status(None, None, used_5m=False))
+    missing = audit.check_verify(_status(None))
     assert missing["status"] == audit.WARN
     assert missing["findings"][0]["code"] == "verify_report_missing"
     failed = audit.check_verify(
-        verify.window_status(_report({"D1": "fail"}), Path("v.json"), used_5m=False)
+        verify.window_status(
+            _report({"D1": "fail"}), Path("v.json"), D1, D3, "data-1", used_5m=False
+        )
     )
     codes = {f["code"] for f in failed["findings"]}
     assert codes == {"verify_blocking_failed", "verify_blocking_not_run"}
@@ -145,6 +229,21 @@ def test_d1_file_rows_not_stored_are_sorted_by_why() -> None:
     assert result.counts["stored_not_in_source"] == 0
 
 
+def test_d1_a_file_dated_off_its_day_fails_even_when_it_matches() -> None:
+    # blocking item 2: a stale file under day X that equals the store is no match
+    stale = rawbars.compare_day(D2, [_stored("I1")], [_source("I1", day=D1)], {"I1"})
+    assert stale.matched == 0
+    assert stale.counts[rawbars.OFF_DATE] == 1
+    assert stale.counts["stored_not_in_source"] == 1
+    empty = rawbars.compare_day(D2, [], [_source("I1", "N1")], {"I1"})
+    assert empty.counts[rawbars.EMPTY] == 1
+    assert rawbars._file_date("13-Jul-20") == date(2020, 7, 13)  # NSE's file of that day
+    result = rawbars.summarise([(D2, stale)], [], [])
+    assert result["status"] == audit.FAIL
+    off = next(f for f in result["findings"] if f["code"] == rawbars.OFF_DATE)
+    assert off["days"] == [D2.isoformat()]
+
+
 # --- D2 -----------------------------------------------------------------------------------------
 
 
@@ -172,17 +271,54 @@ def test_d2_reads_every_dividend_of_a_purpose_text() -> None:
     assert not adjustments.names_dividend("Face Value Split (Sub-Division)")
 
 
-def test_d2_rights_terp_and_the_face_value_the_reference_does_not_date() -> None:
+def test_d2_rights_terp_on_the_issue_days_face_value() -> None:
     assert adjustments.rights_factor(1, 1, Decimal(50), Decimal(100)) == Fraction(3, 4)
     assert adjustments.rights_factor(1, 1, Decimal(120), Decimal(100)) == 1
-    prices = adjustments.issue_prices("Rights 1:3 @ Premium Rs 40/-", "", "1")
-    assert prices[0] == 41
-    assert Decimal(50) in prices
+    # today's face value 1 after a 10 -> 1 split in 2020: the 2018 issue was at 10 + 40
+    fv = adjustments.issue_face_value(
+        Decimal(1), date(2018, 1, 1), [(date(2020, 1, 1), Fraction(1, 10))]
+    )
+    assert fv == 10
+    assert adjustments.issue_price("Rights 1:3 @ Premium Rs 40/-", "", fv) == 50
+    assert adjustments.issue_price("Rights 2:7", "", Decimal(10)) is None
+    assert adjustments.issue_price("Rights 1:2 @ Rs 150 Per Share", "", Decimal(10)) == 150
     stored = adjustments.rights_factor(1, 3, Decimal(50), Decimal(100))
-    code, _ = adjustments.judge_rights(stored, 1, 3, prices, Decimal(100))
-    assert code == "equal_other_face_value"
-    assert adjustments.issue_prices("Rights 2:7", "", "10") == []
-    assert adjustments.issue_prices("Rights 1:2 @ Rs 150 Per Share", "", "10") == [150]
+    assert adjustments.judge_rights(stored, 1, 3, Decimal(50), Decimal(100))[0] == "equal"
+    assert adjustments.judge_rights(stored, 1, 3, Decimal(41), Decimal(100))[0] == "factor_mismatch"
+
+
+def test_d2_rights_tolerance_is_on_the_discount() -> None:
+    # 1:100 at a 40% discount: factor 0.99604; stored 1.0 is within 0.5% of the factor but
+    # misses the whole discount
+    code, expected = adjustments.judge_rights(Fraction(1), 1, 100, Decimal(60), Decimal(100))
+    assert code == "factor_mismatch"
+    assert expected < 1
+    near = expected - (1 - expected) / 100  # 1% off the discount
+    assert adjustments.judge_rights(near, 1, 100, Decimal(60), Decimal(100))[0] == "equal"
+    assert adjustments.discount_close(Fraction(1), Fraction(1))
+
+
+def test_d2_two_distinct_dividends_need_both_stored() -> None:
+    keys = {"a": frozenset({"ABC"})}
+    two = RefAction(
+        "dividend", D2, frozenset({"ABC"}), cash=Decimal(15), amounts=(Decimal(5), Decimal(10))
+    )
+    stored = [_stored_action("a", "dividend", "1", "5")]
+    summary, _ = adjustments.compare_factors([two], stored, keys, {}, [], D1)
+    assert summary == {"dividend:cash_mismatch": 1}
+    repeated = RefAction(
+        "dividend", D2, frozenset({"ABC"}), cash=Decimal(10), amounts=(Decimal(5), Decimal(5))
+    )
+    summary, _ = adjustments.compare_factors([repeated], stored, keys, {}, [], D1)
+    assert summary == {"dividend:equal_one_row": 1}
+
+
+def test_d2_a_reference_action_of_no_instrument_is_a_counted_finding() -> None:
+    ref = RefAction("split_bonus", D2, frozenset({"NOHAT"}), Fraction(1, 2))
+    _, findings = adjustments.compare_factors([ref], [], {}, {}, [], D1)
+    assert [(f["code"], f["severity"], f["count"]) for f in findings] == [
+        ("split_bonus_no_instrument", audit.WARN, 1)
+    ]
 
 
 def _stored_action(
@@ -231,6 +367,8 @@ def test_d2_a_wrong_or_missing_action_fails_and_an_owner_deletion_warns() -> Non
     assert levels["split_bonus_factor_mismatch"] == audit.FAIL
     assert levels["split_bonus_deleted_by_owner"] == audit.WARN
     assert levels["dividend_not_stored"] == audit.FAIL
+    mismatch = next(f for f in findings if f["code"] == "split_bonus_factor_mismatch")
+    assert mismatch["days"] == [D2.isoformat()]
 
 
 def test_d2_moves_are_classed_by_what_explains_them() -> None:
@@ -293,25 +431,63 @@ def test_d3_notice_overrides_apply_before_the_trace() -> None:
         membership.Member("i-ren", "INE3", "RENAMED", D3, None),
         membership.Member("i-odd", "INE4", "ODD", D3, None),
     ]
-    traced, entries, exits = membership.trace_changes(
+    trace = membership.trace_changes(
         members,
         [*changes, membership.NoticeChange("n3", (D3,), frozenset(), frozenset({"FORMER"}))],
-        set(),
         [D1, D2, D3],
-        D1,
+        (D1, D3),
+        (D1, D3),
         {"i-ren": {"FORMER"}},
     )
-    assert traced == 3
-    assert [e["symbol"] for e in entries] == ["ODD"]
-    assert exits == []
+    assert len(trace.traced) == 3
+    assert {t["notice"] for t in trace.traced} == {"n1", "n3"}
+    assert [e["symbol"] for e in trace.entries] == ["ODD"]
+    assert trace.exits == []
+    assert trace.unapplied == []
+
+
+def test_d3_a_notice_the_store_did_not_apply_fails() -> None:
+    # blocking item 3: the other direction, notice -> store
+    notice = membership.NoticeChange(
+        "n1", (D3,), frozenset({"GONE"}), frozenset({"MISSING", "DUMMYHEG"})
+    )
+    members = [membership.Member("i-gone", "INE1", "GONE", D1, None)]
+    trace = membership.trace_changes(members, [notice], [D1, D2, D3], (D1, D3), (D1, D3))
+    assert {(u["symbol"], u["kind"]) for u in trace.unapplied} == {
+        ("GONE", "exclusion"),
+        ("MISSING", "inclusion"),
+    }
+
+
+def test_d3_an_isin_change_is_the_same_symbol_leaving_and_entering() -> None:
+    members = [
+        membership.Member("i-old", "INE1", "ABC", D1, D3),
+        membership.Member("i-new", "INE9", "ABC", D3, None),
+    ]
+    trace = membership.trace_changes(members, [], [D1, D2, D3], (D1, D3), (D1, D3))
+    assert {t.get("isin_change") for t in trace.traced} == {"INE1", "INE9"}
+    assert trace.entries == trace.exits == []
+
+
+def test_d3_reads_nse_symbol_changes_on_its_own() -> None:
+    data = (
+        b"NAME OF THE COMPANY,OLD SYMBOL,NEW SYMBOL,EFFECTIVE DATE\n"
+        b" Abc Ltd,abc,ABCNEW,30-OCT-2019\n"
+        b"Bad,X,,01-JAN-2020\n"
+        b"Bad date,P,Q,someday\n"
+    )
+    renames, unread = references.read_symbol_changes(data)
+    assert renames == [references.Rename("ABC", "ABCNEW", date(2019, 10, 30))]
+    assert unread == 2
 
 
 def test_d3_an_archived_list_difference_is_explained_or_named() -> None:
     listed = {"INE1": "A", "DUM545A01024": "DUMMYX", "INE9": "NOTHAT", "INE3": "C"}
     stored = {"INE1": "A", "INE2": "B"}
     explained, wrong = membership.compare_list(listed, stored, {"INE1", "INE2", "INE3"}, {"C"})
-    assert {e["isin"] for e in explained} == {"DUM545A01024", "INE9", "INE3"}
-    assert wrong == [{"isin": "INE2", "symbol": "B", "in": "store"}]
+    assert {e["isin"] for e in explained} == {"DUM545A01024", "INE3"}
+    # blocking item 3: a listed member HAT has no instrument for is survivorship, not explained
+    assert {w["isin"] for w in wrong} == {"INE2", "INE9"}
     assert membership.capture_day("20181004105632_niftyindices.csv") == date(2018, 10, 4)
 
 
@@ -334,6 +510,45 @@ def test_d4_session_candles_aggregate_inside_the_session_only() -> None:
     ]
     day = bars5m.session_days(candles)[D1]
     assert (day.open, day.high, day.low, day.close, day.candles) == (100, 102, 99, 101, 2)
+
+
+def _src(hhmm: str, price: float, volume: int = 10) -> bars5m.SourceBar:
+    h, m = map(int, hhmm.split(":"))
+    at = datetime(2024, 3, 1, h, m, tzinfo=IST)
+    return bars5m.SourceBar(at, price, price, price, price, volume)
+
+
+def test_d4_reads_the_labelling_from_the_days_own_rows() -> None:
+    end = [_src("09:15", 1, 0), _src("09:20", 10), _src("15:30", 11)]
+    start = [_src("09:15", 10), _src("15:25", 11), _src("15:30", 11, 0)]
+    assert bars5m.end_labelled(end)
+    assert not bars5m.end_labelled(start)
+    assert [c.start.time() for c in bars5m.candles_of(end)][1:] == [
+        datetime(2024, 3, 1, 9, 15).time(),
+        datetime(2024, 3, 1, 15, 25).time(),
+    ]
+
+
+def test_d4_stored_bars_match_the_source_bar_by_bar() -> None:
+    # item 9: an end-labelled day stored at half the source's prices (a carried 1:1 bonus)
+    t915, t920 = datetime(2024, 3, 1, 9, 15).time(), datetime(2024, 3, 1, 9, 20).time()
+    source = [
+        _src("09:15", 1, 0),
+        _src("09:20", 100, 10),
+        _src("09:25", 102, 20),
+        _src("15:30", 101),
+    ]
+    stored = {t915: (50.0, 50.0, 50.0, 50.0, 20), t920: (51.0, 51.0, 51.0, 51.0, 40)}
+    ok = bars5m.compare_bars(D1, stored, source)
+    assert (ok.shift, ok.scale, ok.price, ok.volume, ok.stored_only) == (5, 0.5, 0, 0, 0)
+    assert ok.source_only == 1  # the 15:25 bar (labelled 15:30) is not stored
+    wrong = bars5m.compare_bars(D1, {**stored, t920: (51.5, 51.5, 51.5, 51.5, 40)}, source)
+    assert wrong.price == 1
+
+
+def test_d4_reads_the_fyers_download_windows() -> None:
+    windows = bars5m.fyers_windows({"done": {"NSE:ABC-EQ": ["2025-10-22", "2026-10-21"], "X": 1}})
+    assert windows == {"ABC": (date(2025, 10, 22), date(2026, 10, 21))}
 
 
 def test_d4_refused_days_are_classed_in_order() -> None:
@@ -388,6 +603,21 @@ def test_d5_a_filing_public_before_nse_disseminated_it_fails() -> None:
         == "estimate_before_first_announcement"
     )
     assert filings.judge(_filing(announced), [])[0] == "unmatched"
+    assert filings.SEVERITY["unmatched"] == audit.FAIL
+
+
+def test_d5_a_filing_public_before_any_announcement_fails() -> None:
+    # blocking item 4: public five days before the only announcement
+    announced = datetime(2024, 2, 10, 15, 0, tzinfo=IST)
+    found = [filings.Announcement(announced, announced)]
+    early = _filing(announced - timedelta(days=5), "xbrl")
+    assert filings.judge(early, found)[0] == "before_any_announcement"
+    assert filings.SEVERITY["before_any_announcement"] == audit.FAIL
+    # after the period's first announcement, nothing near: the results were already public
+    later = [*found, filings.Announcement(announced + timedelta(days=15), None)]
+    between = _filing(announced + timedelta(days=8), "xbrl")
+    assert filings.judge(between, later)[0] == "between_announcements"
+    assert filings.SEVERITY["between_announcements"] == audit.WARN
 
 
 def test_d5_parses_nse_times_and_matches_inside_the_period_window() -> None:
@@ -407,11 +637,43 @@ def test_d5_parses_nse_times_and_matches_inside_the_period_window() -> None:
 
 
 def test_d6_the_calendar_against_the_files_and_the_store() -> None:
-    summary, findings = sessions.check_sessions({D1, D2, D3}, set(), {D1, D2}, {D1}, set(), D1, D3)
+    summary, findings = sessions.check_sessions({D1, D2, D3}, set(), {D1, D2}, {D1}, {}, D1, D3)
     assert summary["calendar_sessions"] == 3
     codes = {f["code"]: f["items"] for f in findings}
     assert codes["session_without_bhavcopy"] == [D3.isoformat()]
     assert codes["session_not_stored"] == [D2.isoformat()]
+
+
+def test_d6_a_closed_weekday_is_asked_of_nse_not_of_the_calendars_own_list() -> None:
+    # item 6: a trading day the calendar closed has no file under raw/ (it was never fetched);
+    # NSE's archive answering for it fails, and an unasked closed weekday is unproven
+    closed = {D2, D3}
+    probes = {D2: references.FOUND}
+    _, findings = sessions.check_sessions({D1}, closed, {D1}, {D1}, probes, D1, D3)
+    codes = {f["code"]: f["items"] for f in findings}
+    assert codes["closed_weekday_has_bhavcopy"] == [D2.isoformat()]
+    assert codes["closed_weekday_unproven"] == [D3.isoformat()]
+    _, ok = sessions.check_sessions(
+        {D1}, closed, {D1}, {D1}, dict.fromkeys(closed, references.NOT_FOUND), D1, D3
+    )
+    assert ok == []
+
+
+def test_d6_a_link_off_nses_symbol_changes_fails_dated() -> None:
+    link = sessions.Link("o", "n", D2, "isin_change", "OLD", "NEW")
+    spans = {"o": (D1, D1), "n": (D2, D3)}
+    _, findings = sessions.check_links([link], spans, [("OTHER", "NEW")])
+    unlisted = next(f for f in findings if f["code"] == "symbol_change_not_in_nse_list")
+    assert (unlisted["severity"], unlisted["days"]) == (audit.FAIL, [D2.isoformat()])
+    _, ok = sessions.check_links([link], spans, [("OLD", "NEW")])
+    assert ok == []
+
+
+def test_d6_no_symbol_change_list_fails() -> None:
+    _, findings = sessions.check_links([], {}, None)
+    assert [(f["code"], f["severity"]) for f in findings] == [
+        ("symbol_changes_missing", audit.FAIL)
+    ]
 
 
 def test_d6_renames_chain_and_long_holes_are_bucketed() -> None:
@@ -439,19 +701,54 @@ def test_d7_index_levels_match_exactly_and_blank_file_values_are_skipped() -> No
     assert [w["field"] for w in wrong] == ["close"]
 
 
-def test_d7_etf_store_prices_are_unadjusted_before_the_compare() -> None:
+def test_d7_etf_factors_come_from_nses_unit_actions() -> None:
+    # item 10: the factor is NSE's, not the store's own
+    text = (
+        "symbol,old_face_value_rs,new_face_value_rs,ex_effective_date\n"
+        "NIFTYBEES,10,1,19-Dec-2019\n"
+        "BAD,10,,19-Dec-2019\n"
+    )
+    actions, unread = series.read_unit_actions(text)
+    assert unread == 1
+    split = date(2019, 12, 19)
+    assert series.unit_factor(actions["NIFTYBEES"], split - timedelta(days=1)) == Decimal("0.1")
+    assert series.unit_factor(actions["NIFTYBEES"], split) == 1
     row = {
         "symbol": "NIFTYBEES",
         "date": D1,
-        "open": 2_000_000,
-        "high": 2_000_000,
-        "low": 2_000_000,
-        "close": 2_000_000,
-        "factor": "0.1",
+        "open": 20_000_000,
+        "high": 20_000_000,
+        "low": 20_000_000,
+        "close": 20_000_000,
+        "factor": "1.0",
     }
     raw = {("NIFTYBEES", D1): [Decimal(2000)] * 4}
-    assert series.compare_etf([row], raw) == (1, [], [])
-    compared, wrong, missing = series.compare_etf(
-        [row | {"close": 2_001_000}, row | {"date": D2}], raw
+    assert series.compare_etf([row], raw, actions) == (1, [], [], [])
+    old = date(2019, 1, 1)
+    wrong = row | {"date": old, "factor": "1.0", "close": 2_000_000}
+    raw[("NIFTYBEES", old)] = [Decimal(2000)] * 4
+    compared, prices, missing, factors = series.compare_etf([wrong], raw, actions)
+    assert [f["nse"] for f in factors] == ["0.1"]
+    assert {p["field"] for p in prices} == {"open", "high", "low"}  # / 0.1, not / 1.0
+    assert (compared, missing) == (1, [])
+
+
+def test_d7_reads_the_tri_answers_on_its_own_and_fails_their_gaps() -> None:
+    # item 8: an own reader, and a span no answer covers fails (11: whole absent days seen)
+    rows = [
+        {"Date": "01 Mar 2024", "TotalReturnsIndex": "1,000.5"},
+        {"Date": "bad", "TotalReturnsIndex": "1"},
+    ]
+    answer = series.read_tri_answer(
+        "NIFTY_500_TRI_20240301_20240304.json", json.dumps(rows).encode()
     )
-    assert (compared, [w["field"] for w in wrong], len(missing)) == (1, ["close"], 1)
+    assert answer is not None
+    assert (answer.first, answer.last, answer.unread) == (D1, D2, 1)
+    assert answer.closes == {D1: Decimal("1000.5")}
+    assert series.read_tri_answer("other.json", b"[]") is None
+    out = series.compare_tri(
+        {D1: Decimal("1000.5"), D2: Decimal(9)}, [answer], [D1, D2, D3], D1, D3
+    )
+    assert out["tri_not_in_niftyindices"] == [D2.isoformat()]
+    assert out["tri_unanswered"] == [D3.isoformat()]
+    assert "tri_mismatch" not in out
