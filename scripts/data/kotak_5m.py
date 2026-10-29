@@ -535,7 +535,7 @@ def cmd_backfill(work: Work, interval: float) -> None:
 
 def cmd_topup(work: Work, start: date, end: date, interval: float) -> int:
     """Every member's [start, end] into `raw_5m_topup/`, one call per member and window; exit 1
-    when a member's call kept failing (the next run asks again)."""
+    when a member has no token in the scrip master or its call kept failing."""
     work.topup.mkdir(parents=True, exist_ok=True)
     for old in work.topup.glob("*.parquet"):  # only the previous top-up's files
         old.unlink()
@@ -569,7 +569,7 @@ def cmd_topup(work: Work, start: date, end: date, interval: float) -> int:
         f" {missing[:10]}, {len(failed)} failed {failed[:10]} ({pace.calls} calls)",
         flush=True,
     )
-    return 1 if failed else 0
+    return 1 if failed or missing else 0  # the next run asks for both again
 
 
 def cmd_summary(work: Work) -> None:

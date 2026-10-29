@@ -46,7 +46,11 @@ STEPS: tuple[Step, ...] = (
     Step("ca", ("ingest",), about="per session: ca.adjust (bc file, dividends, demergers)"),
     Step("features", ("quality", "ca"), about="features_daily and breadth_daily"),
     Step("membership", ("bars",), about="NIFTY 500 membership CSV rebuilt and loaded"),
-    Step("bars5m", ("bars",), about="Kotak 5-minute top-up of the missing sessions, imported"),
+    Step(
+        "bars5m",
+        ("bars", "membership"),
+        about="Kotak 5-minute top-up of the members' missing sessions, imported",
+    ),
     Step("etf", about="ETF overlay data top-up, built and stored under etf/"),
     Step("results", cadence=WEEKLY, about="NSE results fetch, parse, derive"),
     Step("fundamentals", ("results", "bars"), WEEKLY, "fundamentals extract and derive"),
@@ -95,6 +99,32 @@ def sessions_to_fill(
     if last_good is None:
         return [through] if through in trading_days else []
     return sorted(d for d in trading_days if last_good < d <= through)
+
+
+def recent_sessions(
+    trading_days: Sequence[date], last_stored: date | None, through: date, lookback: int
+) -> list[date]:
+    """The sessions a per-instrument check covers: the last `lookback` through `through`, and
+    every one after `last_stored` (a long stop), oldest first."""
+    upto = sorted(d for d in trading_days if d <= through)
+    recent = upto[-lookback:] if lookback > 0 else []
+    later = [d for d in upto if last_stored is None or d > last_stored]
+    return sorted(set(recent) | set(later)) if last_stored is not None else recent
+
+
+def gaps(
+    expected: Mapping[date, set[str]],
+    stored: Mapping[date, set[str]],
+    explained: set[tuple[str, date]] = frozenset(),
+) -> dict[date, set[str]]:
+    """Per session, the expected instruments with no stored bar and no ledgered refusal; only
+    the sessions with any."""
+    out = {}
+    for day, want in expected.items():
+        missing = {i for i in want - stored.get(day, set()) if (i, day) not in explained}
+        if missing:
+            out[day] = missing
+    return out
 
 
 def due(cadence: str, last_ok: date | None, today: date) -> bool:

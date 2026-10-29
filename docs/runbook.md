@@ -219,7 +219,7 @@ steps that read it are skipped.
 | `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`) | ingest |
 | `features` | `features --through` | quality, ca |
 | `membership` | `nifty500_membership.py` fetch, text, parse, reference, build as of today, then `load-index-membership --apply` | bars |
-| `bars5m` | `kotak_5m.py members` and `topup` of the missing sessions, then `bars5m_import --apply` | bars |
+| `bars5m` | `kotak_5m.py members`, then `topup` from the first session (of the last 10 and every one after the last stored day) in which a member with a daily bar has no 5-minute bars and no ledgered refusal, then `bars5m_import --apply`; fails while one is still missing | bars, membership |
 | `etf` | `overlay_etf.py` local, kotak, indices, dividends, build, store | |
 | `results` | weekly: results fetch, fetch-secondary, parse, derive | |
 | `fundamentals` | weekly: fundamentals extract, derive | results, bars |

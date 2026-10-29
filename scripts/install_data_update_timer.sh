@@ -7,8 +7,11 @@ data_root="$(realpath "${1:?usage: $0 HAT_DATA_ROOT}")"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$units"
+# a path as a literal sed replacement: its \, & and | escaped
+lit() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 for unit in hat-data-update.service hat-data-update.timer; do
-  sed -e "s|@REPO@|$repo|g" -e "s|@DATA_ROOT@|$data_root|g" -e "s|@KOTAK_PYTHON@|${KOTAK_PYTHON:-}|g" \
+  sed -e "s|@REPO@|$(lit "$repo")|g" -e "s|@DATA_ROOT@|$(lit "$data_root")|g" \
+    -e "s|@KOTAK_PYTHON@|$(lit "${KOTAK_PYTHON:-}")|g" \
     "$repo/deploy/systemd/$unit" >"$units/$unit"
 done
 systemctl --user daemon-reload

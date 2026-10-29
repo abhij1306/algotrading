@@ -51,6 +51,7 @@ STATUS_FILE = Path("update") / "status.json"  # under the data root
 LOCK_FILE = Path("update") / "update.lock"
 LOG_DIR = Path("logs") / "update"
 EXIT_LOCKED = 3
+CALENDAR = "calendar"  # the step that writes the calendar the others read
 
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
@@ -82,28 +83,27 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real d
 
 
 def _run(args: argparse.Namespace, root: Path, memory: str | None) -> int:  # pragma: no cover
-    from app.database import HatDataSessionLocal
-
-    from ..calendar import session_calendar
     from .steps import BODIES, Context
 
     now = datetime.now(IST)
-    with HatDataSessionLocal() as session:
-        calendar = session_calendar(session)
-    sessions = calendar.trading_days() if calendar is not None else []
-    through = args.through or latest_finished(sessions, now.replace(tzinfo=None))
-    if through is None:
-        sys.stderr.write("update_no_calendar\n")
-        return 2
+    sessions, through = _sessions(args, now)
     status_path = root / STATUS_FILE
     status = read_status(status_path)
     results: dict[str, str] = {}
     sys.stdout.write(f"data update through {through}{' (dry run)' if args.dry_run else ''}\n")
     for step in selected(STEPS, args.only):
         log = root / LOG_DIR / now.date().isoformat() / f"{step.name}.log"
-        ctx = Context(root, sessions, through, now.date(), log, args.dry_run, memory)
-        forced = step.name in args.only  # a step named by hand runs whatever its cadence
-        entry = _step(step, status.get(step.name), results, ctx, BODIES[step.name], forced)
+        if through is None and step.name != CALENDAR:  # no calendar rows, even after `calendar`
+            started = now.isoformat(timespec="seconds")
+            entry = StepStatus(FAILED, started, detail="update_no_calendar")
+        else:
+            ctx = Context(
+                root, sessions, through or now.date(), now.date(), log, args.dry_run, memory
+            )
+            forced = step.name in args.only  # a step named by hand runs whatever its cadence
+            entry = _step(step, status.get(step.name), results, ctx, BODIES[step.name], forced)
+        if step.name == CALENDAR:  # a first run's calendar rows are there only now
+            sessions, through = _sessions(args, now)
         results[step.name] = entry.result
         sys.stdout.write(f"{step.name:<13} {entry.result:<8} {entry.last_good or '-':<11} ")
         sys.stdout.write(f"{entry.detail}\n")
@@ -112,6 +112,18 @@ def _run(args: argparse.Namespace, root: Path, memory: str | None) -> int:  # pr
             status[step.name] = entry
             write_status(status_path, status, _run_record(now, through, results))
     return exit_code(results)
+
+
+def _sessions(args: argparse.Namespace, now: datetime) -> tuple[list[date], date | None]:
+    """The stored trading days and the session to fill through (None with no calendar rows)."""
+    from app.database import HatDataSessionLocal
+
+    from ..calendar import session_calendar
+
+    with HatDataSessionLocal() as session:
+        calendar = session_calendar(session)
+    sessions = calendar.trading_days() if calendar is not None else []
+    return sessions, args.through or latest_finished(sessions, now.replace(tzinfo=None))
 
 
 def _step(  # noqa: PLR0913
@@ -163,10 +175,10 @@ def _day(text: str | None) -> date | None:
     return date.fromisoformat(text) if text else None
 
 
-def _run_record(now: datetime, through: date, results: dict[str, str]) -> dict[str, object]:
+def _run_record(now: datetime, through: date | None, results: dict[str, str]) -> dict[str, object]:
     return {
         "started": now.isoformat(timespec="seconds"),
-        "through": through.isoformat(),
+        "through": through.isoformat() if through else None,
         "failed": sorted(n for n, r in results.items() if r == FAILED),
         "skipped": sorted(n for n, r in results.items() if r == SKIPPED),
         "ok": sorted(n for n, r in results.items() if r in (OK, NOT_DUE)),

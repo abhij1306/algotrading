@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from app.paths import PROJECT_ROOT
 
 from ...settings import process_env
-from .plan import sessions_to_fill
+from .plan import gaps, recent_sessions, sessions_to_fill
 
 BACKEND = PROJECT_ROOT / "backend"
 SCRIPTS = PROJECT_ROOT / "scripts" / "data"
@@ -402,33 +402,89 @@ def _covered_to() -> date | None:
         )
 
 
+LOOKBACK_5M = 10  # sessions checked per member every run: one Kotak call per member covers 30 days
+
+
 def bars5m(ctx: Context) -> Done:
-    """Kotak's 5-minute bars of today's members for the sessions after the last stored one
-    (`kotak_5m.py topup`), then `bars5m_import`, which adds only the days not stored and holds
-    the minute-history lock (a running history job fails this step; the next run retries)."""
+    """Kotak's 5-minute bars of today's members (`kotak_5m.py members`, then `topup`) from the
+    first session in which a member with a daily bar has no 5-minute bars and no ledgered
+    refusal, checked per instrument over the last `LOOKBACK_5M` sessions and every one after
+    the last stored day; then `bars5m_import`, which adds only the days not stored and holds the
+    minute-history lock (a running history job fails this step; the next run retries). Fails
+    while any such member-day is still missing."""
     from ..bars_store import BarStore
 
-    last = _last(BarStore(ctx.root).days())
-    todo = sessions_to_fill(ctx.sessions, last, ctx.through)
-    if not todo:
-        return Done(last, "up to date")
     work = work_dir(ctx, "KOTAK_5M_DIR", "kotak_5m")
     tool = "kotak_5m.py"
+    members = script(tool, "--work", work, "members")
+    if not ctx.dry_run:
+        chain(ctx, [members])
+    store = BarStore(ctx.root)
+    window = recent_sessions(ctx.sessions, _last(store.days()), ctx.through, LOOKBACK_5M)
+    before = _gaps_5m(ctx, store, work, window)
+    if before is None:
+        if ctx.dry_run:
+            return Done(None, f"{would([members])}, then a per-member check of {_days(window)}")
+        raise StepError("kotak_5m members wrote no universe_raw.csv")
+    if not before:
+        return Done(ctx.through, f"every member's bars stored for {_days(window)}")
+    start = min(before)
     commands = [
-        script(tool, "--work", work, "members"),
-        script(tool, "--work", work, "topup", "--from", todo[0], "--to", ctx.through, kotak=True),
+        script(tool, "--work", work, "topup", "--from", start, "--to", ctx.through, kotak=True),
         module("app.hat.data.bars5m_import", "--source", work / "raw_5m_topup", "--apply"),
     ]
     if ctx.dry_run:
-        return Done(last, f"{would(commands)} for {_days(todo)}")
-    try:
-        chain(ctx, commands)
-    except StepError as exc:
-        raise StepError(exc.detail, _last(BarStore(ctx.root).days())) from None
-    now = _last(BarStore(ctx.root).days())
-    if now is None or now < ctx.through:
-        raise StepError(f"5-minute bars through {now}", now)
-    return Done(now, f"5-minute bars for {_days(todo)}")
+        return Done(None, f"{would([members, *commands])} from {start}: {_count(before)}")
+    fetched = child(ctx, commands[0])  # import what was fetched even when some members failed
+    imported = child(ctx, commands[1])
+    after = _gaps_5m(ctx, store, work, window) or {}
+    good = min(after) if after else None
+    last_good = max((d for d in window if good is None or d < good), default=None)
+    if fetched or imported or after:
+        raise StepError(
+            f"topup exited {fetched}, import exited {imported}; still missing {_count(after)}",
+            last_good,
+        )
+    return Done(last_good, f"5-minute bars from {start}: {_count(before)} filled")
+
+
+def _count(gaps: dict[date, set[str]]) -> str:
+    if not gaps:
+        return "none"
+    first = min(gaps)
+    return f"{sum(len(v) for v in gaps.values())} member-days, first {first} ({len(gaps[first])})"
+
+
+def _gaps_5m(
+    ctx: Context,
+    store,  # noqa: ANN001 - BarStore, imported late
+    work: Path,
+    window: Sequence[date],
+) -> dict[date, set[str]] | None:  # noqa: ANN001
+    """Per session of `window`, today's members (`universe_raw.csv`) with a daily bar and no
+    5-minute bars nor a ledgered refusal of that day; None without the member list."""
+    import csv
+
+    import pyarrow.parquet as pq
+
+    from ..store import DATASET_BARS
+
+    universe = work / "universe_raw.csv"
+    if not universe.exists():
+        return None
+    with universe.open(newline="") as f:
+        members = {row[3] for row in csv.reader(f) if len(row) > 3}
+    daily = _store(ctx)
+    expected = {}
+    for day in window:
+        traded = set()
+        for path in daily.partition_files(DATASET_BARS, day):
+            traded |= {
+                str(i) for i in pq.read_table(path, columns=["instrument_id"])[0].to_pylist()
+            }
+        expected[day] = members & traded
+    explained = {(r.instrument_id, r.day) for r in store.read_rejects() if r.day in expected}
+    return gaps(expected, {d: store.instruments(d) for d in window}, explained)
 
 
 def etf(ctx: Context) -> Done:

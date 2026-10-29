@@ -75,3 +75,17 @@ def test_the_exit_code_is_1_when_a_step_failed_or_was_skipped() -> None:
     assert plan.exit_code({"bars": OK, "results": plan.NOT_DUE}) == 0
     assert plan.exit_code({"bars": OK, "ca": FAILED}) == 1
     assert plan.exit_code({"features": SKIPPED}) == 1
+
+
+def test_the_5m_check_covers_the_lookback_and_every_session_after_the_last_stored() -> None:
+    assert plan.recent_sessions(WEEK, THU, FRI, 2) == [THU, FRI]
+    assert plan.recent_sessions(WEEK, MON, FRI, 2) == [TUE, WED, THU, FRI]  # a long stop
+    assert plan.recent_sessions(WEEK, None, WED, 2) == [TUE, WED]
+
+
+def test_gaps_are_per_instrument_and_skip_ledgered_refusals() -> None:
+    expected = {WED: {"a", "b", "c"}, THU: {"a", "b"}}
+    stored = {WED: {"a"}, THU: {"a", "b", "z"}}  # one instrument's partition is not everyone's
+    assert plan.gaps(expected, stored) == {WED: {"b", "c"}}
+    assert plan.gaps(expected, stored, {("c", WED)}) == {WED: {"b"}}
+    assert plan.gaps(expected, {WED: {"a", "b", "c"}, THU: {"a", "b"}}) == {}
