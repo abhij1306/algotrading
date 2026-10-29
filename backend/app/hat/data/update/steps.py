@@ -516,6 +516,22 @@ def fundamentals(ctx: Context) -> Done:
     return Done(ctx.through, "extracted, derived")
 
 
+def record(ctx: Context) -> Done:
+    """The stores' manifests and the reference CSVs into the data repo clone, committed and
+    pushed when they changed (`record.refresh`)."""
+    from ...settings import load_settings
+    from .. import record as data_record
+
+    clone = load_settings().data_repo
+    if ctx.dry_run:
+        return Done(None, f"would refresh the manifests and reference CSVs in {clone}")
+    try:
+        detail = data_record.refresh(ctx.root, clone)
+    except data_record.RecordError as exc:
+        raise StepError(str(exc)) from exc
+    return Done(ctx.through, detail)
+
+
 BODIES: dict[str, Callable[[Context], Done]] = {
     "calendar": calendar,
     "bars": bars,
@@ -528,4 +544,5 @@ BODIES: dict[str, Callable[[Context], Done]] = {
     "etf": etf,
     "results": results,
     "fundamentals": fundamentals,
+    "record": record,
 }

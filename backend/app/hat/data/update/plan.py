@@ -54,6 +54,8 @@ STEPS: tuple[Step, ...] = (
     Step("etf", about="ETF overlay data top-up, built and stored under etf/"),
     Step("results", cadence=WEEKLY, about="NSE results fetch, parse, derive"),
     Step("fundamentals", ("results", "bars"), WEEKLY, "fundamentals extract and derive"),
+    # last, after whatever ran: its failure never stops a data step
+    Step("record", about="store manifests and reference CSVs pushed to the data repo"),
 )
 STEP_NAMES = tuple(s.name for s in STEPS)
 

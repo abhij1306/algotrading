@@ -52,6 +52,8 @@ from .money import exact
 # MVP is single user (decision T1): one fixed tenant id unless HAT_USER_ID overrides it.
 DEFAULT_USER_ID = uuid.UUID("00000000-0000-7000-8000-000000000001")
 DEFAULT_DUCKDB_MEMORY = "1GB"
+# The local clone of the private data repo (app.hat.data.record, scripts/hat_snapshot.py).
+DEFAULT_DATA_REPO = Path("/data/workspace/algotradingdata")
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ class HatSettings:
     symbol_silent_seconds: int = 120
     entry_timeout_minutes: int = 60
     duckdb_memory: str = DEFAULT_DUCKDB_MEMORY
+    data_repo: Path = DEFAULT_DATA_REPO
     gtt_check_minutes: int = 5
     history_daily_limit: int = PLAN_CALLS_PER_DAY
     history_reserve: int = 500
@@ -165,6 +168,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> HatSettings:
         symbol_silent_seconds=_count(source.get("HAT_SYMBOL_SILENT_SECONDS"), 120),
         entry_timeout_minutes=_count(source.get("HAT_ENTRY_TIMEOUT_MINUTES"), 60),
         duckdb_memory=_memory(source.get("HAT_DUCKDB_MEMORY")),
+        data_repo=Path((source.get("HAT_DATA_REPO") or "").strip() or DEFAULT_DATA_REPO),
         gtt_check_minutes=_count(source.get("HAT_GTT_CHECK_MINUTES"), 5),
         history_daily_limit=_count(source.get("HAT_HISTORY_DAILY_LIMIT"), PLAN_CALLS_PER_DAY),
         history_reserve=_count(source.get("HAT_HISTORY_RESERVE"), 500),

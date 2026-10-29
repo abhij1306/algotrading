@@ -223,6 +223,7 @@ steps that read it are skipped.
 | `etf` | `overlay_etf.py` local, kotak, indices, dividends, build, store | |
 | `results` | weekly: results fetch, fetch-secondary, parse, derive | |
 | `fundamentals` | weekly: fundamentals extract, derive | results, bars |
+| `record` | `record.refresh`: manifests and reference CSVs pushed to the data repo (Data record) | |
 
 Results and fundamentals run weekly: the cached filings change only in results season, `extract`
 replaces every row (about 15 minutes), and an NSE filing keeps NSE's own `public_at`, so a week's
@@ -259,6 +260,33 @@ Recover: read the failed step's `detail` and log, fix the cause, then run that s
 `--only` (or wait for the next run). A failing `quality` keeps `features` back, as it does the
 live chain; a `membership` build that refuses an unresolved symbol needs an `overrides.json` or
 `symbol_alias.json` entry.
+
+### Data record
+
+The private data repo (a local clone at `HAT_DATA_REPO`, default `/data/workspace/algotradingdata`;
+its `README.md` maps it) keeps what must not be lost silently. `python -m app.hat.data.record`
+(the update's last step) rewrites, in the clone:
+
+- `manifests/<store>.csv` for `raw`, `bars_daily_raw`, `bars_5m`, `features_daily`,
+  `index_daily`, `breadth_daily` and `etf`: per file its path, rows, date range, bytes and sha256.
+  The commit message counts per store the files added (`+`), rewritten (`~`, bytes of an existing
+  file changed) and removed (`-`) and lists every rewritten and removed file; the step's detail
+  names the first rewrites. A rewrite in `raw`, `bars_daily_raw` or `bars_5m` without a planned
+  repair is a data incident; `features_daily` partitions are rewritten when an adjustment
+  changes.
+- `reference/<table>.csv`: index membership, corporate actions and their versions, demerger
+  notices, results and fundamentals filings with `public_at`, the trading calendar, instruments,
+  symbol history, ISIN lineage, merges and overrides, read through the read-only engine in a
+  stable order (UTC timestamps).
+
+It commits and pushes only when a file changed. The clone's pre-push guard
+(`.githooks/pre-push`; enable once with `git config core.hooksPath .githooks`) refuses a push
+that adds a credential-looking file (`.env`, `*token*`, `*.key`, ...) or text (private keys,
+GitHub/AWS/Slack tokens, JWTs, password or secret assignments); the step fails while the guard is
+off or the clone is not on `main`. A store folder that is missing while its manifest is committed
+(a wrong or unmounted data root) fails the step instead of reading as no change. A failed
+`record` (a missing clone, a refused or failed push) is reported like any step and
+stops no data step; fix it and run `--only record`.
 
 ### Index membership
 
@@ -622,6 +650,41 @@ in the postgres container, `pg_restore ... -d "$DB_NAME" --no-owner <set>/hat.du
 `pg_restore ... -d "$DB_STATE_NAME" --no-owner <set>/hat_state.dump`; `$COMPOSE run --rm --no-deps
 -v "<set>:/restore:ro" backend tar -xf /restore/hat_data.tar -C /data/hat`; start, then "Restart
 recovery" (changes since the backup show as mismatches).
+
+### Snapshot and restore
+
+`scripts/hat_snapshot.py release` uploads a snapshot as GitHub Release assets of the data repo
+(tag `snapshot-<date>`): `pg_dump --format=custom` of the databases (`<db>.dump.partNN`) and a
+gzipped tar per folder (`<part>.tar.gz.partNN`), each asset under 1.9 GB. It stages one asset at a
+time in a private folder it makes under `--stage` or `HAT_SNAPSHOT_STAGE` (default `/var/tmp`, on
+the root disk: `/tmp` is a small RAM tmpfs and the data disk must never fill), uploads and deletes
+it, then
+uploads `SHA256SUMS` and the record `snapshots/<tag>.json` (every asset's size and sha256 and
+every file each tar holds), checks the assets on GitHub against it (size and GitHub's sha256
+digest) and commits the record to the clone, under the clone's lock that the update's `record`
+step also takes (it waits up to 30 minutes). It refuses a tag whose release already holds its
+record (`<tag>.json`): a complete release is never rewritten; an incomplete one (a failed run) has
+its assets deleted and is taken again. Like `record`, it needs the clone on `main` with the guard
+on, and it skips writers' temporary files (`.*.tmp`) and files removed while it runs. `check --tag T --repo OWNER/algotradingdata`
+re-checks a release later. pg_dump is `--pg-dump` or `HAT_PG_DUMP` (version 18; for the database
+container `docker exec <container> pg_dump -U postgres`). The command carries its own connection:
+the unit loads no `.env`, so a host pg_dump takes `PGHOST`/`PGUSER` in the command and the
+password from `~/.pgpass`.
+
+The weekly release (`scripts/hat_snapshot_weekly.sh`, Sundays 10:00 IST) is incremental: both
+dumps, and the files of `raw/` and `bars_5m/` that the earlier records do not already hold.
+Install it with `scripts/install_snapshot_timer.sh <HAT_DATA_ROOT> <clone> ["<pg_dump command>"]`;
+`journalctl --user -u hat-snapshot` shows the run. The full set (the stores, the Kotak raw files,
+`ca-data`, the rest of the data root and the workspace folders) is taken by hand with `--part` and
+`--exclude PART:PATTERN` (a pattern without `/` matches any path component, one starting with `/`
+a folder from the part's root); the data repo's README lists the command of the first one.
+
+Restore: `gh release download <tag> --repo OWNER/algotradingdata --dir <scratch>`;
+`sha256sum -c SHA256SUMS`; `cat <db>.dump.part* > <db>.dump` and `pg_restore -d <db> --no-owner
+<db>.dump` into a fresh database; `cat <part>.tar.gz.part* | tar -xz -C <target>` for each folder,
+the full release first, then each later incremental release in date order (a record's `removed`
+lists the files to delete after unpacking it). Drill: restore the latest `hat_live` dump into
+`hat_restore_drill`, compare the main tables' row counts with hat_live, drop it.
 
 ### Failover drill: `ops.failover_drill`
 
