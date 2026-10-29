@@ -761,6 +761,25 @@ def _print_backfill(report: BackfillReport, apply: bool) -> None:  # pragma: no 
             out.write(f"  still missing {len(left)}: {', '.join(str(d) for d in left)}\n")
 
 
+def _reload(
+    store: DataStore, archive: ArchiveIndexSource, wanted: Sequence[date], *, apply: bool
+) -> int:  # pragma: no cover - the network
+    """The `reload` command: prints each changed row, the days without a file and the days
+    without daily bars (the archive reads only those); exit 1 when any day was not judged."""
+    bar_days = set(store.days(DATASET_BARS))
+    changed = reload_days(store, archive, [d for d in wanted if d in bar_days], apply=apply)
+    sys.stdout.write(f"index reload ({'applied' if apply else 'dry run'})\n")
+    for day, new, old in changed:
+        sys.stdout.write(f"  {day} {new.index_name}: stored {old} -> file {new}\n")
+    missing = sorted(set(archive.not_found) | set(archive.errors))
+    if missing:
+        sys.stdout.write(f"  no file: {', '.join(str(d) for d in missing)}\n")
+    skipped = sorted(set(wanted) - bar_days)
+    if skipped:
+        sys.stdout.write(f"  not a bar day: {', '.join(str(d) for d in skipped)}\n")
+    return 1 if missing or skipped else 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the network
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.index_history")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -808,19 +827,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
         return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
     archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
     if args.command == "reload":
-        bar_days = set(store.days(DATASET_BARS))
-        days = [d for d in args.days or [] if d in bar_days]
-        changed = reload_days(store, archive, days, apply=args.apply)
-        sys.stdout.write(f"index reload ({'applied' if args.apply else 'dry run'})\n")
-        for day, new, old in changed:
-            sys.stdout.write(f"  {day} {new.index_name}: stored {old} -> file {new}\n")
-        missing = sorted(set(archive.not_found) | set(archive.errors))
-        if missing:
-            sys.stdout.write(f"  no file: {', '.join(str(d) for d in missing)}\n")
-        skipped = sorted(set(args.days or []) - bar_days)
-        if skipped:  # the archive reads only the days with daily bars (`ArchiveIndexSource`)
-            sys.stdout.write(f"  not a bar day: {', '.join(str(d) for d in skipped)}\n")
-        return 1 if missing or skipped else 0
+        return _reload(store, archive, args.days or [], apply=args.apply)
     history = NiftyIndicesSource(post, pacer, HISTORY_URL, HISTORY_INDICES, parse_history_json)
     end = args.end or date.today()
     sources = (archive, tri_source(post, pacer), history)

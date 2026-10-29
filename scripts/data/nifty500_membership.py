@@ -379,7 +379,7 @@ def cmd_fetch(work: Path) -> None:
 
 
 def cmd_text(work: Path) -> None:
-    import pdfplumber  # noqa: PLC0415 - only this step reads PDFs
+    import pdfplumber  # noqa: PLC0415
 
     out = work / "raw" / "text"
     out.mkdir(parents=True, exist_ok=True)

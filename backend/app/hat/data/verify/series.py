@@ -323,7 +323,8 @@ def _history(
         return {}
 
     def fetch(_url: str) -> FetchResult:
-        from ..index_history import http_poster  # noqa: PLC0415 - the network, only when fetching
+        # the network, only when fetching
+        from ..index_history import http_poster  # noqa: PLC0415
 
         return http_poster()(HISTORY_URL, tri_request(base, date(year, 1, 1), date(year, 12, 31)))
 

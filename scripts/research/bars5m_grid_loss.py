@@ -69,6 +69,7 @@ KINDS = ("full", "back", "no_first", "no_last", "no_edges", "off_grid", "open_of
 _FLOATS = ("adv", "open_off", "vol_ratio", "ret")
 BUCKETS = ((0, 10), (10, 25), (25, 50), (50, 100), (100, None))  # ADV20, Rs crore
 VOLUME_BANDS = (1.0, 5.0)  # |5-minute volume / daily volume - 1|, percent
+PARQUET = "*.parquet"
 REPORTS = PROJECT_ROOT / "reports" / "bt-verify"
 _REPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json")
 
@@ -311,7 +312,7 @@ def main(argv: list[str] | None = None) -> int:
         "create table members_df (instrument_id varchar, effective_from date, effective_to date)"
     )
     con.executemany("insert into members_df values (?, ?, ?)", members)
-    five = str(root / "bars_5m" / "*" / "*.parquet")
+    five = str(root / "bars_5m" / "*" / PARQUET)
     grid = {"first": FIRST_MIN, "last": LAST_MIN, "width": WIDTH_MIN}
     con.execute(
         "create temp table five_days (instrument_id varchar, date date, n bigint,"
@@ -323,7 +324,7 @@ def main(argv: list[str] | None = None) -> int:
             _FIVE_SQL,
             {"five": five, "start": f"{year}-01-01", "stop": f"{year + 1}-01-01", **grid},
         )
-    con.execute(_SQL, {"daily": str(root / "bars_daily_raw" / "*" / "*.parquet")})
+    con.execute(_SQL, {"daily": str(root / "bars_daily_raw" / "*" / PARQUET)})
     cur = con.execute("select * exclude (instrument_id, date, symbol) from day_rows")
     names = [d[0] for d in cur.description]
     rows = [
@@ -352,7 +353,7 @@ def main(argv: list[str] | None = None) -> int:
             _KOTAK_SQL,
             {
                 "five": five,
-                "kotak": str(args.kotak / "raw_5m" / "*.parquet"),
+                "kotak": str(args.kotak / "raw_5m" / PARQUET),
                 "close": LAST_MIN + WIDTH_MIN,  # the closing row an end label prints
                 **grid,
             },
