@@ -120,8 +120,8 @@ def members(
         first = {row["instrument_id"]: row["first_pass"] for row in found.iter_rows(named=True)}
     if not first:
         return []
-    head = successors(session, first)
-    ids = list({*first, *head.values()})
+    head = successors(session)
+    ids = list({*first, *head, *head.values()})
     instruments = {
         str(i.id): i
         for i in session.scalars(select(HatInstrument).where(HatInstrument.id.in_(ids)))
@@ -151,7 +151,8 @@ def members(
         if instrument is None:
             continue
         symbols = [instrument.symbol]
-        for one in [latest, *olds]:
+        older = sorted(i for i, h in head.items() if h == latest)
+        for one in dict.fromkeys([latest, *olds, *older]):
             symbols += [s for _d, s in sorted(history.get(one, []), reverse=True)]
             if one in instruments:
                 symbols.append(instruments[one].symbol)
@@ -162,14 +163,14 @@ def members(
                 _unique(symbols),
                 any(i in nifty for i in olds),
                 min(first[i] for i in olds),
-                tuple(sorted({i for i, h in head.items() if h == latest})),
+                tuple(older),
             )
         )
     return sorted(out, key=lambda m: (not m.nifty500, m.first_pass, m.symbols[0]))
 
 
-def successors(session: Session, ids: Iterable[str]) -> dict[str, str]:
-    """Each of `ids` that changed ISIN (`hat_isin_lineage`, linked) -> its latest successor: a
+def successors(session: Session) -> dict[str, str]:
+    """Each instrument that changed ISIN (`hat_isin_lineage`, linked) -> its latest successor: a
     company is covered once, as its current instrument, which holds every filing of every ISIN
     it had (NSE's listing keeps naming a filing by the old ISIN long after a change)."""
     newer = {
@@ -180,7 +181,7 @@ def successors(session: Session, ids: Iterable[str]) -> dict[str, str]:
             )
         )
     }
-    return latest_of(newer, ids)
+    return latest_of(newer, newer)
 
 
 def latest_of(newer: dict[str, str], ids: Iterable[str]) -> dict[str, str]:

@@ -188,12 +188,14 @@ def candidates(items: Sequence[Announcement], period_end: date) -> list[Announce
 
 
 def near(items: Sequence[Announcement], period_end: date, at: datetime) -> list[Announcement]:
-    """The announcements (sorted) after `period_end` made within `LATE` of `at`: a quarter that
-    ended before the listing counts from a later quarter's results (`timing.comparative_quarter`),
-    outside `candidates`' window."""
-    keys = [a.announced for a in items]
-    found = items[bisect_left(keys, at - LATE) : bisect_right(keys, at + LATE)]
-    return [a for a in found if a.announced.date() > period_end]
+    """The announcements (sorted) after `period_end` public (disseminated, else announced) within
+    `LATE` of `at`: a quarter that ended before the listing counts from a later quarter's results
+    (`timing.comparative_quarter`), outside `candidates`' window."""
+    return [
+        a
+        for a in items
+        if a.announced.date() > period_end and abs((a.disseminated or a.announced) - at) <= LATE
+    ]
 
 
 def judge(
@@ -335,18 +337,15 @@ def missing_quarters(  # noqa: PLR0913
     end: date,
 ) -> list[dict[str, Any]]:
     """Each demanded period (`demanded_periods`, over the chain's span) no ISIN of a company's
-    chain has stored, dated (`day`) by the chain's first announcement of results in `start..end`
-    after the period's end and by its deadline plus `GRACE`, else by its deadline; kept when that
-    day is in `start..end`. The item names the chain's latest ISIN (`isin`) and all of its ISINs
-    (`isins`). Announcements only date a finding, never excuse one."""
+    chain has stored, dated (`day`) by the chain's first announcement of results after the period's
+    end and by its deadline plus `GRACE` (one before `start` too), else by its deadline; kept when
+    that day is in `start..end`. The item names the chain's latest ISIN (`isin`) and all of its
+    ISINs (`isins`). Announcements only date a finding, never excuse one."""
     out = []
     for chain in chains:
         have = {p for isin in chain for p in stored.get(isin, ())}
         said = sorted(
-            a.announced.date()
-            for isin in chain
-            for a in by_isin.get(isin, ())
-            if a.results and start <= a.announced.date() <= end
+            a.announced.date() for isin in chain for a in by_isin.get(isin, ()) if a.results
         )
         span = chain_listing(chain, listings)
         latest = max(

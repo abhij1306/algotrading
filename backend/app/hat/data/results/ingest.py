@@ -584,11 +584,15 @@ class MemberIngest:  # pragma: no cover - the database
         return match.public if match else None
 
     def _taken(self, period_end: date) -> set[datetime]:
-        """The announcements (`Announcement.public`) that date another quarter's NSE filing."""
+        """The announcements (`Announcement.public`) that date another quarter's NSE filing, any
+        version of it (a revision timed by its XBRL leaves its first version's announcement
+        taken)."""
         times = {
-            h.public_at
-            for (end, _b, source), h in self.latest.items()
-            if source == SOURCE_NSE and h.public_at_source == "announcement" and end != period_end
+            row.public_at
+            for row in [*self.rows, *self.older_rows]
+            if row.source == SOURCE_NSE
+            and row.public_at_source == "announcement"
+            and row.period_end != period_end
         }
         return {a.public for a in self.items if a.at in times or a.public in times}
 

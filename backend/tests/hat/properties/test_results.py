@@ -29,7 +29,7 @@ from app.hat.data.results.ingest import (
 )
 from app.hat.data.results.raw import RawCache
 from app.hat.data.results.secondary import Quarter, page_url, parse_page
-from app.hat.data.results.universe import BAR_SCHEMA, passing
+from app.hat.data.results.universe import BAR_SCHEMA, latest_of, passing
 from app.hat.models import HatFinancialResult
 from app.hat.time import IST
 
@@ -435,6 +435,13 @@ def test_results__a_quarter_not_announced_by_its_deadline_counts_from_the_next_r
     assert _secondary_public_at([], date(2024, 3, 31), set(), listed) == (
         timing.PublicAt(timing.deadline(date(2024, 3, 31)), "deadline", True)
     )
+
+
+def test_results__every_isin_of_a_chain_maps_to_its_latest_instrument() -> None:
+    # old -> middle -> latest: the middle instrument joins the company too, whichever is selected
+    newer = {"old": "middle", "middle": "latest"}
+    assert latest_of(newer, newer) == {"old": "latest", "middle": "latest"}
+    assert latest_of({"a": "b", "b": "a"}, ["a"]) == {"a": "b"}  # a cycle ends
 
 
 def test_results__public_at() -> None:

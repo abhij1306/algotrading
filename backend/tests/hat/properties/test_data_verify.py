@@ -1150,6 +1150,19 @@ def test_d5_a_quarter_is_owed_only_if_due_by_the_last_traded_day() -> None:
         date(2022, 12, 31),
     )
     assert holes == []
+    # announced before the window: dated by that announcement, not by its deadline inside it
+    said = {"INE1": [filings.Announcement(_at(2021, 11, 10, 16, 0), None)]}
+    holes = filings.missing_quarters(
+        [("INE1",)],
+        {"INE1": [date(2021, 6, 30)]},
+        {"INE1": listed},
+        said,
+        COVERAGE,
+        date(2022, 12, 31),
+        date(2021, 11, 12),
+        date(2022, 12, 31),
+    )
+    assert holes == []
 
 
 def test_d5_a_company_is_judged_over_its_isin_chain() -> None:
@@ -1267,3 +1280,6 @@ def test_d5_a_pre_listing_quarter_is_matched_near_its_public_at() -> None:
     found = filings.near(said, filing.period_end, filing.public_at)
     assert found == said
     assert filings.judge(filing, found)[0] is None
+    # matched on its dissemination, a day after the submission
+    late = [filings.Announcement(_at(2024, 11, 7, 10, 0), _at(2024, 11, 8, 16, 1))]
+    assert filings.near(late, filing.period_end, filing.public_at + timedelta(hours=20)) == late
