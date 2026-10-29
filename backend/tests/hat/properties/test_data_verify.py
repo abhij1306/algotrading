@@ -10,6 +10,8 @@ from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
 
+import pytest
+
 from app.hat.data import audit, verify
 from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
@@ -144,7 +146,7 @@ def test_the_newest_report_covering_the_window_is_read(tmp_path: Path) -> None:
     )
     narrow = verify.report_doc({}, D2, D3, datetime(2026, 10, 31, tzinfo=UTC), SNAP)
     for name, doc in (("a", old), ("b", new), ("c", narrow)):
-        verify.write_report(verify.reports_dir(tmp_path) / f"verify-{name}", doc, "")
+        verify.write_report(tmp_path, Path(f"verify-{name}"), doc, "")
     found = verify.covering_reports(tmp_path, D1, D3)
     assert [d["digest"] for d, _ in found] == [new["digest"], old["digest"]]
     assert verify.covering_reports(tmp_path, D1, D3 + timedelta(days=1)) == []
@@ -155,6 +157,16 @@ def test_a_narrow_run_never_replaces_the_full_report(tmp_path: Path) -> None:
     narrow = verify.report_folder(tmp_path, D1, D2, D3, ["D2"])
     assert full.name == "verify-2024-03-01"
     assert narrow.name == "verify-2024-03-01-D2-20240304-20240305"
+
+
+def test_a_report_folder_outside_the_reports_folder_is_refused(tmp_path: Path) -> None:
+    inside = verify.report_target(tmp_path, Path("mine"))
+    assert inside == (verify.reports_dir(tmp_path) / "mine").resolve()
+    full = verify.report_folder(tmp_path, D1, D2, D3, ["D2"])
+    assert verify.report_target(tmp_path, full) == full.resolve()
+    for outside in (Path("../x"), tmp_path.parent / "x", Path(".")):
+        with pytest.raises(ValueError, match="report_folder_outside_audits"):
+            verify.report_target(tmp_path, outside)
 
 
 def test_the_audit_warns_an_unverified_window_and_never_fails_it() -> None:

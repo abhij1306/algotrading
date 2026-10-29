@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ..audit import FAIL, SKIPPED, check_result, finding
-from . import CHECKS, FIRST_DAY, report_doc, report_folder, write_report
+from . import CHECKS, FIRST_DAY, report_doc, report_folder, report_target, write_report
 from .context import Context
 from .markdown import render
 from .references import kept_bytes
@@ -41,7 +41,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--check", action="append", choices=sorted(CHECKS), dest="checks")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, default=FIRST_DAY)
     parser.add_argument("--to", dest="end", type=date.fromisoformat)
-    parser.add_argument("--report", type=Path, help="the report folder")
+    parser.add_argument("--report", type=Path, help="the report folder, under audits/")
     parser.add_argument("--ca-data", type=Path, help="NSE corporate-action and results pulls")
     parser.add_argument("--notices", type=Path, help="NIFTY 500 notices and archived lists")
     parser.add_argument("--kotak", type=Path, help="the Kotak raw 5-minute files")
@@ -89,6 +89,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     args = _parser().parse_args(argv)
     settings = operator_settings()
+    if args.report is not None:
+        try:
+            report_target(settings.data_root, args.report)
+        except ValueError as exc:
+            sys.stderr.write(f"verify refused: {exc}\n")
+            return 1
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     days = store.days(DATASET_BARS)
     end = args.end or (days[-1] if days else date.today())  # noqa: DTZ011 - a calendar date
@@ -114,7 +120,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     created = datetime.now(UTC)
     doc = report_doc(results, args.start, end, created, judged)
     folder = args.report or report_folder(settings.data_root, created.date(), args.start, end, ids)
-    _, md_path = write_report(folder, doc, render(doc, ctx.log))
+    _, md_path = write_report(settings.data_root, folder, doc, render(doc, ctx.log))
     sys.stdout.write(
         json.dumps(
             {"status": doc["status"], "digest": doc["digest"], "report": str(md_path)}, indent=1

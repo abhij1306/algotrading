@@ -411,7 +411,8 @@ captures, niftyindices, Yahoo); without it only kept files are read. The full wi
 (2011-06-22 to the last bar) takes about 40 minutes.
 
 The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a run of
-fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`); the command exits 2
+fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`; `--report` names a folder
+inside `audits/`, and one outside it is refused); the command exits 2
 when a check fails. It records the data snapshot it judged (the verified stores' files and the
 reference tables' rows in its window). A backtest's data audit reads the newest report covering
 its window (`verify` check, `docs/backtests/process.md`) and judges each blocking check on the

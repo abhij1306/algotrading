@@ -130,9 +130,22 @@ def report_folder(root: Path, created: date, start: date, end: date, ids: Sequen
     return reports_dir(root) / f"verify-{created.isoformat()}-{scope}-{start:%Y%m%d}-{end:%Y%m%d}"
 
 
-def write_report(folder: Path, doc: Mapping[str, Any], markdown: str) -> tuple[Path, Path]:
-    """`verify.json` and `verify.md` in `folder`, each written whole (a temporary name, then a
-    rename), so a reader never sees half a report."""
+def report_target(root: Path, folder: Path) -> Path:
+    """`folder` resolved inside the reports folder (the only place `status_for` reads); a folder
+    resolving outside it is refused before anything is written."""
+    base = reports_dir(root).resolve()
+    target = (base / folder).resolve()
+    if not target.is_relative_to(base) or target == base:
+        raise ValueError("report_folder_outside_audits")
+    return target
+
+
+def write_report(
+    root: Path, folder: Path, doc: Mapping[str, Any], markdown: str
+) -> tuple[Path, Path]:
+    """`verify.json` and `verify.md` in `folder` (inside the reports folder, `report_target`),
+    each written whole (a temporary name, then a rename), so a reader never sees half a report."""
+    folder = report_target(root, folder)
     folder.mkdir(parents=True, exist_ok=True)
     paths = (folder / REPORT_JSON, folder / REPORT_MD)
     for path, text in zip(paths, (json.dumps(doc, indent=1, default=str), markdown), strict=True):
