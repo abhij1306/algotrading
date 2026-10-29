@@ -799,22 +799,6 @@ def test_d5_only_an_announcement_of_results_proves_they_were_public() -> None:
     assert filings.judge(estimate, [named])[0] == "late_vs_announcement"
 
 
-def test_d5_a_quarter_announced_inside_the_stored_history_must_be_stored() -> None:
-    # second review item 8: holes inside the history, not only the years before it
-    quarters = [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]
-    stored = {"INE1": quarters}
-    say = [
-        filings.Announcement(datetime(2023, 5, 20, tzinfo=IST), None),
-        filings.Announcement(datetime(2023, 8, 10, tzinfo=IST), None),
-        filings.Announcement(datetime(2023, 11, 9, tzinfo=IST), None),  # Sep quarter: missing
-        filings.Announcement(datetime(2023, 11, 10, tzinfo=IST), None, results=False),
-        filings.Announcement(datetime(2024, 2, 8, tzinfo=IST), None),
-    ]
-    end = datetime(2024, 12, 31, tzinfo=IST)
-    holes = filings.missing_quarters(stored, {"INE1": say}, end)
-    assert holes == [("INE1", datetime(2023, 11, 9, tzinfo=IST))]
-
-
 def test_d5_parses_nse_times_and_matches_inside_the_period_window() -> None:
     assert filings.parse_time("30-Oct-2021 23:06:07") == datetime(
         2021, 10, 30, 23, 6, 7, tzinfo=IST
@@ -1026,18 +1010,90 @@ def test_an_older_pass_never_overrides_a_newer_failure_in_the_window() -> None:
     assert verify.pick_reports(reports, "D2", lambda d: "data-1", D3, D3) == (older, None)
 
 
-def test_d5_an_early_reporters_missing_quarter_is_found() -> None:
-    # second Opus review item 1: results 28 days after the quarter, about 110 days after the
-    # prior stored period; the September quarter is missing from the store
+def _say(*days: date, results: bool = True) -> list[filings.Announcement]:
+    return [
+        filings.Announcement(datetime.combine(d, datetime.min.time(), IST), None, results)
+        for d in days
+    ]
+
+
+def _quarters_missing(
+    stored: dict, said: dict, as_of: date, start: date = date(2011, 1, 1)
+) -> list[tuple[str, str]]:
+    holes = filings.missing_quarters(stored, said, as_of, start, as_of)
+    return [(i["isin"], i["quarter"]) for i in holes]
+
+
+def test_d5_every_quarter_inside_the_stored_history_must_be_stored() -> None:
+    # third review item 3: Dec-19, Jun-20, Sep-20 stored, Mar-20 missing fails, announced or not
+    stored = {"INE1": [date(2019, 12, 31), date(2020, 6, 30), date(2020, 9, 30)]}
+    assert _quarters_missing(stored, {}, date(2021, 3, 31)) == [("INE1", "2020-03-31")]
+    # an early reporter: Sep-23 announced 28 days after its end, about 120 after Jun-23
+    early = {"INE2": [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]}
+    said = {"INE2": _say(date(2023, 7, 20), date(2023, 10, 28), date(2024, 1, 25))}
+    assert _quarters_missing(early, said, date(2024, 12, 31)) == [("INE2", "2023-09-30")]
+    # a half-yearly filer (Sep and Mar) needs only its half years
+    half = {"INE3": [date(2022, 9, 30), date(2023, 3, 31), date(2023, 9, 30)]}
+    assert _quarters_missing(half, {}, date(2024, 12, 31)) == []
+
+
+def test_d5_a_late_announcement_after_the_history_is_the_quarter_before() -> None:
+    # third review item 2: Mar-19 results announced 2019-07-10 at the end of the stored history
+    # report Mar-19 (stored), never Jun-19
+    stored = {"INE1": [date(2018, 12, 31), date(2019, 3, 31)]}
+    said = {"INE1": _say(date(2019, 7, 10))}
+    assert _quarters_missing(stored, said, date(2020, 3, 31)) == []
+    # a quarter after the history is demanded only once its deadline has passed
+    later = {"INE1": _say(date(2019, 11, 5))}  # Sep-19, past Jun-19's window
+    assert filings.deadline(date(2019, 9, 30)) == date(2019, 11, 14)
+    assert _quarters_missing(stored, later, date(2019, 11, 10)) == [("INE1", "2019-06-30")]
+    assert _quarters_missing(stored, later, date(2019, 11, 30)) == [("INE1", "2019-06-30")]
+
+
+def test_d5_stored_periods_count_whenever_public_and_the_window_comes_first() -> None:
+    # third review items 1 and 4: the stored periods are given whole (not those public in the
+    # window), and a quarter is dated by its first announcement inside the window
+    stored = {"INE1": [date(2023, 3, 31), date(2023, 9, 30)]}
+    said = {"INE1": _say(date(2023, 8, 1), date(2023, 12, 20))}
+    holes = filings.missing_quarters(
+        stored, said, date(2024, 6, 30), date(2023, 1, 1), date(2024, 6, 30)
+    )
+    assert [(i["quarter"], i["day"]) for i in holes] == [("2023-06-30", "2023-08-01")]
+    inside = filings.missing_quarters(
+        stored, said, date(2024, 6, 30), date(2023, 9, 1), date(2024, 6, 30)
+    )
+    assert inside == []  # Jun-23's announcement and deadline both fall before the window
+    again = {"INE1": _say(date(2023, 8, 1), date(2023, 8, 20), date(2023, 12, 20))}
+    late = filings.missing_quarters(
+        stored, again, date(2024, 6, 30), date(2023, 8, 10), date(2024, 6, 30)
+    )
+    assert [(i["quarter"], i["day"]) for i in late] == [("2023-06-30", "2023-08-20")]
     assert filings.quarter_before(date(2023, 10, 28)) == date(2023, 9, 30)
     assert filings.quarter_before(date(2024, 1, 1)) == date(2023, 12, 31)
-    stored = {"INE1": [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]}
-    say = [
-        filings.Announcement(datetime(2023, 7, 20, tzinfo=IST), None),
-        filings.Announcement(datetime(2023, 10, 28, tzinfo=IST), None),  # Sep quarter
-        filings.Announcement(datetime(2023, 10, 29, tzinfo=IST), None),  # same quarter, once
-        filings.Announcement(datetime(2024, 1, 25, tzinfo=IST), None),
-    ]
-    end = datetime(2024, 12, 31, tzinfo=IST)
-    holes = filings.missing_quarters(stored, {"INE1": say}, end)
-    assert holes == [("INE1", datetime(2023, 10, 28, tzinfo=IST))]
+
+
+def test_a_newer_stale_failure_counts_even_outside_its_coverage() -> None:
+    # third review item 5: a narrower newer report (coverage ending early) with a failure in the
+    # window still stops an older pass
+    bad = verify.dated(audit.finding("x", audit.FAIL, []), [D2])
+    newer = verify.covered(_check("fail", bad), D1, D2)
+    doc = verify.report_doc(
+        {"D5": newer}, verify.FIRST_DAY, D3, datetime(2026, 11, 1, tzinfo=UTC), {"digest": "old"}
+    )
+    older = verify.report_doc(
+        {"D5": _check("pass")}, D1, D3, datetime(2026, 10, 1, tzinfo=UTC), SNAP
+    )
+    assert verify.check_status(newer, D1, D3) == "not_run"
+    assert (
+        verify.pick_reports([(doc, None), (older, None)], "D5", lambda d: "data-1", D1, D3)
+        == "stale"
+    )
+
+
+def test_d3_the_live_list_is_fetched_for_a_run_to_the_last_session_by_today() -> None:
+    # third review item 6: the calendar lists the year's coming sessions
+    sessions = [D1, D2, D3, date(2024, 12, 31)]
+    assert membership.last_session_by(sessions, D3) == D3
+    assert membership.last_session_by(sessions, date(2024, 3, 3)) == D1
+    last = membership.last_session_by(sessions, D3)
+    assert membership.live_list_name(D3, D3, last) is not None

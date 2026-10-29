@@ -260,7 +260,8 @@ def pick_reports(
     """The report that judges `check_id` on `start..end`: the newest of `found` (newest first)
     that ran the check and whose snapshot is the data now (`current`, the snapshot digest of the
     report's window); `"stale"` when every report that ran it judged data since changed, or when
-    a newer report on since-changed data failed the check inside the window (an older pass
+    a newer report on since-changed data has a failed finding inside the window (whatever its
+    coverage) (an older pass
     never overrides a newer failure); None when none ran it. A narrow run never hides the check
     of an older, wider report."""
     ran = [
@@ -271,7 +272,7 @@ def pick_reports(
     for doc, path in ran:
         if (doc.get("snapshot") or {}).get("digest") == current(doc):
             return doc, path
-        if check_status(doc["checks"][check_id], start, end) == "failed":
+        if any(failing_in(f, start, end) for f in doc["checks"][check_id].get("findings") or ()):
             return "stale"  # its failure stands until a newer report judges the data now
     return "stale" if ran else None
 

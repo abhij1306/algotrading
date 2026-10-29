@@ -396,6 +396,13 @@ def _fetch_lists(ctx: Context, last_session: date | None) -> None:  # pragma: no
         )
 
 
+def last_session_by(sessions: Sequence[date], today: date) -> date | None:
+    """The last session on or before `today` (the calendar also lists the year's coming
+    sessions)."""
+    at = bisect_right(sessions, today)
+    return sessions[at - 1] if at else None
+
+
 def live_list_name(today: date, end: date, last_session: date | None) -> str | None:
     """The name NSE's live list is kept under: today's date (the day it was fetched, so the list
     is compared with the membership of the day it states); None, so nothing is fetched, when
@@ -486,7 +493,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         ctx.note("D3: no --notices folder with changes_parsed.json; changes not traced")
         findings.append(finding("notices_missing", FAIL, ["changes_parsed.json"]))
     if ctx.fetch:
-        _fetch_lists(ctx, sessions_all[-1] if sessions_all else None)
+        _fetch_lists(ctx, last_session_by(sessions_all, datetime.now(IST).date()))
     known = {isin for (isin,) in ctx.rows("SELECT isin FROM hat_instrument")}
     lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     compared = []
