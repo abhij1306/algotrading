@@ -28,6 +28,9 @@ The checks:
   dividends and overlay flows, the shares held, each trade's P&L) passed, and `equity.csv` agrees
   with itself and `run.json`: each session's equity is its cash plus its position value, the last
   session's equity is `final_equity` and it holds nothing.
+- `lookahead`: the reads past the as-of clock the run made on purpose (`MarketView.hindsight`),
+  counted by reason; a decision made on one (every reason but a descriptive column's) warns
+  `lookahead_hindsight` with the counts.
 - `data`: the run's data audit status (`data.audit`); a warning names the data audit's checks
   that did not pass and the owner's explanation of that audit digest, if there is one
   (`data_audits/<digest>.explained.md`).
@@ -47,8 +50,9 @@ from pathlib import Path
 from typing import Any
 
 from ..money import exact
+from .data import HINDSIGHT_BREAKOUT_VOL_RATIO
 
-__all__ = ["AUDIT_VERSION", "audit_run", "changed_of", "check_ledger"]
+__all__ = ["AUDIT_VERSION", "audit_run", "changed_of", "check_ledger", "check_lookahead"]
 
 AUDIT_VERSION = "3"
 PASS, WARN, FAIL = "pass", "warn", "fail"
@@ -567,6 +571,18 @@ def check_ledger(
     return _check("ledger", summary, findings)
 
 
+# hindsight reads no decision makes: a feature column of the signal report
+DESCRIPTIVE_HINDSIGHT = frozenset({HINDSIGHT_BREAKOUT_VOL_RATIO})
+
+
+def check_lookahead(hindsight: Mapping[str, int]) -> dict[str, Any]:
+    """The run's reads past its as-of clock, by reason (`MarketView.hindsight`): any a decision
+    made warns `lookahead_hindsight` with the counts."""
+    decided = {k: n for k, n in sorted(hindsight.items()) if n and k not in DESCRIPTIVE_HINDSIGHT}
+    findings = [_finding("lookahead_hindsight", WARN, [decided])] if decided else []
+    return _check("lookahead", {"hindsight": dict(sorted(hindsight.items()))}, findings)
+
+
 def audit_run(
     run: Mapping[str, Any],
     csvs: Mapping[str, str],
@@ -576,11 +592,12 @@ def audit_run(
     data_audit: Mapping[str, Any] | None = None,
     explained: Path | None = None,
     ledger: Mapping[str, Any] | None = None,
+    hindsight: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """`audit.json` of a completed run: its `run.json` document, its CSV files by name, the
     (low, high) of each (instrument id, date) it filled on, on the price basis it fills on, its
     slippage in bps, its data audit with the owner's explanation of it (`check_data`) and its
-    ledger reconciliation (`check_ledger`). The
+    ledger reconciliation (`check_ledger`) and its hindsight reads (`check_lookahead`). The
     digest is sha256 of the rest of the document."""
     trades = _trades(_rows(csvs.get("trades")))
     equity = _rows(csvs.get("equity"))
@@ -594,6 +611,7 @@ def audit_run(
         check_concentration(run, trades),
         check_equity_jumps(run, equity, trades),
         check_ledger(run, equity, ledger),
+        check_lookahead(hindsight or {}),
         check_refusals(run, _rows(csvs.get("refusals"))),
         check_trials(run),
         check_data(run, data_audit, None if explained is None else str(explained)),

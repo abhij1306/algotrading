@@ -45,7 +45,7 @@ from ..costs import BacktestFills
 from ..engine import rotation
 from ..engine.positions import trade_r
 from ..engine.strategy.config import Rotation, StrategyConfig
-from ..money import require_exact
+from ..money import dividend_credit, require_exact
 from .report import END_OF_PERIOD, FillRow, LegRow, SignalRow, TradeRow
 
 __all__ = [
@@ -233,7 +233,7 @@ class RotationBook:
         """Credit each holding's dividends going ex today (`per_share`); the total."""
         total = _ZERO
         for holding in self.holdings.values():
-            cash = holding.qty * per_share(holding.instrument_id)
+            cash = dividend_credit(holding.qty, per_share(holding.instrument_id))
             if cash:
                 holding.dividends += cash
                 self.flow += cash

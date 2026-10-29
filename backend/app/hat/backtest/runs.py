@@ -853,6 +853,7 @@ def _execute(
             data_audit=market.audit,
             explained=data_audit.explanation_of(root, market.audit.get("digest")),
             ledger=result.ledger,
+            hindsight=result.hindsight,
         )
         pbo = built.pbo
         evidence = evidence_doc(

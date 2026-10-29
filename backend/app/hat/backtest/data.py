@@ -79,6 +79,10 @@ from ..time import IST, as_utc
 from .spec import BacktestError, membership_key
 
 __all__ = [
+    "HINDSIGHT_BREAKOUT_VOL_RATIO",
+    "HINDSIGHT_DELISTED_EXIT",
+    "HINDSIGHT_EP_VOLUME",
+    "HINDSIGHT_FULL_DAY_PACE",
     "JUMP_SKIP_SESSIONS",
     "LOOKAHEAD",
     "LOOKBACK_SESSIONS",
@@ -90,6 +94,7 @@ __all__ = [
     "industry_on",
     "jump_skips",
     "looks_ahead",
+    "public_by",
     "load_market",
     "membership_cover_refusal",
     "point_in_time_members",
@@ -99,6 +104,17 @@ __all__ = [
 ]
 
 LOOKAHEAD = "backtest_lookahead"  # a decision read data stamped after its instant (`MarketView`)
+# the reads `MarketView.hindsight` counts, by reason: the run audit warns `lookahead_hindsight`
+HINDSIGHT_FULL_DAY_PACE = "volume_pace_full_day"  # a 5m session paced on the day's whole volume
+HINDSIGHT_EP_VOLUME = "ep_estimate_volume"  # a daily EP estimate gated on the day's own volume
+HINDSIGHT_BREAKOUT_VOL_RATIO = "breakout_vol_ratio"  # a feature column, read by no rule
+HINDSIGHT_DELISTED_EXIT = "delisted_exit"  # a delisting known from the registry, not on the day
+
+
+def public_by(filings: Iterable[ResultEvent], day: date) -> tuple[ResultEvent, ...]:
+    """The filings public by the end of `day` (IST): what a trigger on `day` may read; it reads
+    only those public by its own instant."""
+    return tuple(r for r in filings if as_utc(r.public_at).astimezone(IST).date() <= day)
 
 
 def looks_ahead(day: date, session: date | None, known: date | None, *, inclusive: bool) -> bool:
@@ -381,6 +397,9 @@ class MarketView:
         self.closes = list(data.index_closes.get(index, ()))
         self.breadth = data.breadth
         self.dividends = data.dividends
+        self.results = data.results
+        # the reads made past the clock on purpose (`hindsight`), by reason
+        self.hindsight_reads: dict[str, int] = {}
         by_day: dict[date, set[str]] = defaultdict(set)
         for instrument_id, day in data.pending:
             by_day[day].add(instrument_id)
@@ -395,9 +414,11 @@ class MarketView:
         self.session, self.known = day, day
 
     @contextmanager
-    def hindsight(self) -> Iterator[None]:
-        """No clock inside: a result column described as read after the fact (one no rule
-        reads, as `signal_features`' `breakout_vol_ratio`)."""
+    def hindsight(self, reason: str) -> Iterator[None]:
+        """No clock inside, the read counted under `reason` (`hindsight_reads`): a read past the
+        run's instant made on purpose, a known gap the run records (the day's own volume where
+        no 5-minute bars show it) or a result column described as read after the fact."""
+        self.count_hindsight(reason)
         clock = self.session, self.known
         self.session = self.known = None
         try:
@@ -405,13 +426,30 @@ class MarketView:
         finally:
             self.session, self.known = clock
 
+    def count_hindsight(self, reason: str) -> None:
+        """Count a use of data past the clock that is not a read through the view (a delisting
+        the registry knows before the day shows it, `HINDSIGHT_DELISTED_EXIT`)."""
+        self.hindsight_reads[reason] = self.hindsight_reads.get(reason, 0) + 1
+
     def release(self) -> None:
         """No clock: the run is over (the result's analytics read the sessions after a trade)."""
         self.session = self.known = None
 
-    def _check(self, day: date, *, inclusive: bool = True) -> None:
+    def as_of(self, day: date, *, inclusive: bool = True) -> None:
+        """Refuse (`LOOKAHEAD`) a read of `day` past the clock (`looks_ahead`): what a reader
+        of the run's other data (the rotation's closes, the 5-minute store, the overlay's ETF
+        data) calls before it reads."""
         if looks_ahead(day, self.session, self.known, inclusive=inclusive):
             raise BacktestError(LOOKAHEAD)
+
+    def _check(self, day: date, *, inclusive: bool = True) -> None:
+        self.as_of(day, inclusive=inclusive)
+
+    def results_on(self, instrument_id: str, day: date) -> tuple[ResultEvent, ...]:
+        """The instrument's results filings public by the end of `day` (IST), the session in
+        progress at most: a trigger reads only those public by its instant."""
+        self._check(day, inclusive=False)
+        return public_by(self.results.get(instrument_id, ()), day)
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on

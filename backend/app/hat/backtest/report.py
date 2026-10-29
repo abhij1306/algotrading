@@ -210,6 +210,10 @@ class BacktestResult:
     rebalances: tuple[Mapping[str, Any], ...] = ()
     # the ledger reconciliation (`reconcile`): its status, what it checked, its findings
     ledger: Mapping[str, Any] = field(default_factory=dict)
+    # the reads past the as-of clock the run made on purpose, by reason (`MarketView.hindsight`)
+    hindsight: Mapping[str, int] = field(default_factory=dict)
+    # each skip and funnel count with its session, (day, kind, key): the truncation check's
+    decisions: tuple[tuple[date, str, str], ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:

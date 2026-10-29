@@ -4,10 +4,17 @@ loader reads for its window, so nothing is published and no trial is recorded.
 
 `truncation`: a portfolio run from `--from` to T and the same run to T+N (`--extra` sessions
 later) must make the same decisions up to T: the same watchlists and signals (taken or refused,
-sized the same) through T, the same fills before T, every fill of T the longer run makes also in
-the shorter one (whose extra fills on T are only its period-end closes), the same rotation orders
+sized the same) through T, the same skips and funnel counts by session and the same EP log
+decisions through T, the same fills before T, every fill of T the longer run makes also in the
+shorter one (whose extra fills on T are only its period-end closes), the same rotation orders
 through T, the ETF overlay's rows and the equity curve before T. A difference is a read of
 something stamped after the decision (or a loader that reads past its window) and is printed.
+
+One difference is known and reported apart, `delisting_known_later`: an instrument the registry
+delists after T whose last bar is on or before T. The longer run closes it at that last close
+(`MarketData.last_traded`, counted `delisted_exit` in its hindsight reads); the shorter one cannot
+know it is delisted. Its fills from that exit on, and the equity rows from the first such exit,
+are left out of the comparison and listed.
 
 `fingerprint`: one run's resolved-config hash, trade-list hash (as `run.json` `binding` hashes
 it), and hashes of its fills, signals and equity curve, to show a change left a run's results
@@ -50,7 +57,7 @@ from app.hat.backtest.data import MarketData, load_market, symbol_on  # noqa: E4
 from app.hat.backtest.loop import run_backtest  # noqa: E402
 from app.hat.backtest.overrides import read_policy_file  # noqa: E402
 from app.hat.backtest.portfolio import parse_portfolio  # noqa: E402
-from app.hat.backtest.report import END_OF_PERIOD, BacktestResult  # noqa: E402
+from app.hat.backtest.report import DELISTED, END_OF_PERIOD, BacktestResult  # noqa: E402
 from app.hat.backtest.runs import _configs, _spec, _target, resolved_of  # noqa: E402
 from app.hat.backtest.spec import REGIME_MULT_POLICY, RunSpec  # noqa: E402
 from app.hat.backtest.standard import trade_list_hash  # noqa: E402
@@ -166,7 +173,9 @@ def fingerprint(spec: RunSpec, data: MarketData, result: BacktestResult) -> dict
         "equity_hash": _digest(f"{d},{_text(e)}" for d, e in result.equity),
         "final_equity": _text(result.equity[-1][1]) if result.equity else None,
         "rebalances_hash": _digest(_rebalance_key(r) for r in result.rebalances),
-        "ledger": getattr(result, "ledger", None),
+        "ledger": result.ledger,
+        "hindsight": dict(result.hindsight),
+        "skips": dict(result.skips),
     }
 
 
@@ -176,9 +185,40 @@ def _multiset_diff(a: Iterable[str], b: Iterable[str]) -> tuple[list[str], list[
     return sorted((ca - cb).elements()), sorted((cb - ca).elements())
 
 
+# the EP log's decision columns (the rest are forward returns, read after the period)
+EP_DECISION = ("trade_date", "instrument_id", "playbook", "basis", "reached", "failed_gate")
+EP_DECISION += ("reason", "signal_state")
+
+
+def delisted_later(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, date]:
+    """The instruments the longer run closes as delisted on or before `at` and the shorter one
+    does not (the module docstring), at that exit's day."""
+    seen = {(t.instrument_id, t.exit_date) for t in short.trades if t.exit_reason == DELISTED}
+    found: dict[str, date] = {}
+    for t in long.trades:
+        if (
+            t.exit_reason == DELISTED
+            and t.exit_date <= at
+            and (t.instrument_id, t.exit_date) not in seen
+        ):
+            found[t.instrument_id] = min(t.exit_date, found.get(t.instrument_id, t.exit_date))
+    return found
+
+
 def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, dict[str, Any]]:
     """The decisions of the run to `at` against those of the longer run, up to `at`."""
     checks: dict[str, dict[str, Any]] = {}
+    later = delisted_later(short, long, at)
+    cut = min(later.values(), default=None)
+
+    def kept(f: Any) -> bool:  # noqa: ANN401 - a FillRow
+        return f.instrument_id not in later or f.day < later[f.instrument_id]
+
+    checks["delisting_known_later"] = {
+        "pass": True,
+        "instruments": {k: v.isoformat() for k, v in sorted(later.items())},
+        "equity_compared_before": None if cut is None else cut.isoformat(),
+    }
 
     def record(name: str, diff: tuple[list[str], list[str]], compared: int) -> None:
         only_short, only_long = diff
@@ -197,13 +237,20 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
         a = [key(r) for r in rows_s if day(r) <= at]
         b = [key(r) for r in rows_l if day(r) <= at]
         record(name, _multiset_diff(a, b), len(a))
-    before_s = [_fill_key(f) for f in short.fills if f.day < at]
-    before_l = [_fill_key(f) for f in long.fills if f.day < at]
+    for name, rows_s, rows_l in (
+        ("skips_funnel", short.decisions, long.decisions),
+        ("ep_log", _ep(short), _ep(long)),
+    ):
+        a = [",".join(map(_text, r)) for r in rows_s if r[0] <= at]
+        b = [",".join(map(_text, r)) for r in rows_l if r[0] <= at]
+        record(name, _multiset_diff(a, b), len(a))
+    before_s = [_fill_key(f) for f in short.fills if f.day < at and kept(f)]
+    before_l = [_fill_key(f) for f in long.fills if f.day < at and kept(f)]
     record("fills_before_t", _multiset_diff(before_s, before_l), len(before_s))
     # on T the shorter run also closes what it holds at the period end: only sales, at most one
     # per position it closed there, of that position's instrument
-    on_s = [_fill_key(f) for f in short.fills if f.day == at]
-    on_l = [_fill_key(f) for f in long.fills if f.day == at]
+    on_s = [_fill_key(f) for f in short.fills if f.day == at and kept(f)]
+    on_l = [_fill_key(f) for f in long.fills if f.day == at and kept(f)]
     extra_s, missing = _multiset_diff(on_s, on_l)
     closed = Counter(
         t.instrument_id
@@ -225,19 +272,30 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
         "short_extra_not_period_end": stray[:MAX_LISTED],
         "differences": len(missing) + len(stray),
     }
-    reb_s = [_rebalance_key(r) for r in short.rebalances if str(r.get("date")) <= at.isoformat()]
-    reb_l = [_rebalance_key(r) for r in long.rebalances if str(r.get("date")) <= at.isoformat()]
+
+    def reb_kept(r: Mapping[str, Any]) -> bool:
+        day = str(r.get("date"))
+        known = later.get(str(r.get("instrument_id")))
+        return day <= at.isoformat() and (known is None or day < known.isoformat())
+
+    reb_s = [_rebalance_key(r) for r in short.rebalances if reb_kept(r)]
+    reb_l = [_rebalance_key(r) for r in long.rebalances if reb_kept(r)]
     # the shorter run's period-end sales of its rotation holdings are its own
     reb_s = [k for k in reb_s if '"reason": "end_of_period"' not in k]
     reb_l = [k for k in reb_l if '"reason": "end_of_period"' not in k]
     record("rebalances", _multiset_diff(reb_s, reb_l), len(reb_s))
-    eq_s = [f"{d},{_text(e)}" for d, e in short.equity if d < at]
-    eq_l = [f"{d},{_text(e)}" for d, e in long.equity if d < at]
+    eq_end = at if cut is None else min(at, cut)
+    eq_s = [f"{d},{_text(e)}" for d, e in short.equity if d < eq_end]
+    eq_l = [f"{d},{_text(e)}" for d, e in long.equity if d < eq_end]
     record("equity_before_t", _multiset_diff(eq_s, eq_l), len(eq_s))
     ov_s = [",".join(r) for r in short.overlay_rows if r and r[0] < at.isoformat()]
     ov_l = [",".join(r) for r in long.overlay_rows if r and r[0] < at.isoformat()]
     record("overlay_before_t", _multiset_diff(ov_s, ov_l), len(ov_s))
     return checks
+
+
+def _ep(result: BacktestResult) -> list[tuple[Any, ...]]:
+    return [tuple(r.get(c) for c in EP_DECISION) for r in result.ep_candidates]
 
 
 def _sessions_after(store: DataStore, at: date, count: int) -> date:

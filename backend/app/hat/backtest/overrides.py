@@ -70,9 +70,10 @@ __all__ = [
 APPEND = "+"
 IDENTITY_KEYS = frozenset({"bot", "market"})
 # The policy fields a backtest never reads, so a `policy_set` on one would change nothing: kill
-# switches and health are not simulated, the sleeves' base weights are the run's own weights
-# (`sleeve_weight`), and `weights_confirmed` sizes nothing.
-NO_EFFECT_POLICY = ("kill", "health_bands", "base_weight", "weights_confirmed")
+# switches and health are not simulated (the sleeve's health is 1), and `weights_confirmed`
+# sizes nothing. `base_weight` is read: it is a sleeve's weight unless the run names its own
+# (`spec.sleeve_weight`).
+NO_EFFECT_POLICY = ("kill", "health_bands", "weights_confirmed")
 NO_OP = "backtest_override_no_op"
 NO_EFFECT = "backtest_override_no_effect"
 _SEGMENT = re.compile(r"([a-z_][a-z0-9_]*)(?:\[([a-z0-9_+-]+(?:#\d{1,2})?)\])?", re.ASCII)

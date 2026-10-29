@@ -280,12 +280,23 @@ class BacktestFills:
         check_slippage(self.slippage_bps)
 
     def fill(
-        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+        self,
+        side: str,
+        qty: int,
+        price: Decimal,
+        day: date,
+        /,
+        *,
+        sold_today: bool = False,
+        limit: Decimal | None = None,
     ) -> tuple[Decimal, Decimal]:
         """(fill price, fees) of a fill of `qty` at the reference `price` on trade date `day`.
         A sell pays the DP charge unless the instrument was `sold_today` already (one DP debit
-        per instrument per sell day, however many sales)."""
+        per instrument per sell day, however many sales). A buy `limit` caps the slipped price:
+        a LIMIT order never fills above it."""
         filled = slipped(price, side, self.slippage_bps)
+        if limit is not None and side == "buy":
+            filled = min(filled, limit)
         model = self.schedule.on(day)
         return filled, charges(model, side, qty, filled, dp=not sold_today).total
 
@@ -310,9 +321,10 @@ class BacktestFills:
                 high = mid - 1
         return low
 
-    def within(self, cash: Decimal) -> CashBoundFills:
-        """These fills, refusing a buy whose outlay exceeds `cash`, as the broker would."""
-        return CashBoundFills(self, cash)
+    def within(self, cash: Decimal, limit: Decimal | None = None) -> CashBoundFills:
+        """These fills, refusing a buy whose outlay exceeds `cash`, as the broker would; a buy
+        under a LIMIT order fills at most at `limit`."""
+        return CashBoundFills(self, cash, limit)
 
 
 @dataclass(frozen=True)
@@ -323,11 +335,14 @@ class CashBoundFills:
 
     fills: BacktestFills
     cash: Decimal
+    limit: Decimal | None = None
 
     def fill(
         self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
     ) -> tuple[Decimal, Decimal]:
-        filled, fees = self.fills.fill(side, qty, price, day, sold_today=sold_today)
+        filled, fees = self.fills.fill(
+            side, qty, price, day, sold_today=sold_today, limit=self.limit
+        )
         if side == "buy" and filled * qty + fees > self.cash:
             raise CostError("cost_cash_overdraw")
         return filled, fees

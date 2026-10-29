@@ -183,6 +183,7 @@ whose audit warns or fails):
 | `concentration` | top-5 share disagrees | top 5 trades > 50% of net P&L; CAGR not positive without them |
 | `equity_jumps` | a > 5% session move with no position held (one opened and closed that session counts) | a move beyond 20% of the value held |
 | `ledger` | the ledger reconciliation failed (`result-standard.md`, Accuracy checks), or `equity.csv` does not add up: equity != cash + position value, the last equity is not `final_equity`, or something is held after the period end | |
+| `lookahead` | | `lookahead_hindsight`: a decision made on a read past the as-of clock, with the counts by reason (`result-standard.md`, As of) |
 | `refusals` | `refusals.csv` counts differ from `run.json` | |
 | `trials` | no `dsr_n_trials` | no DSR |
 | `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |

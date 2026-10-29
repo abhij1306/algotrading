@@ -32,7 +32,14 @@ from decimal import Decimal
 from typing import Any
 
 from ..engine.portfolio.universe import members_on
-from .data import Bar, MarketData, MarketView, industry_on, symbol_on
+from .data import (
+    HINDSIGHT_BREAKOUT_VOL_RATIO,
+    Bar,
+    MarketData,
+    MarketView,
+    industry_on,
+    symbol_on,
+)
 from .standard import quintile
 
 __all__ = ["FEATURE_COLUMNS", "STOCK_COLUMNS", "SETUP_COLUMNS", "SignalFeatures", "vcp_extras"]
@@ -213,7 +220,9 @@ class SignalFeatures:
         return {name: out.get(name) for name in FEATURE_COLUMNS}
 
     def _volume_ratio(self, instrument_id: str, day: date) -> float | None:
-        with self.view.hindsight():  # the day's own volume: known at its close (the docstring)
+        with self.view.hindsight(
+            HINDSIGHT_BREAKOUT_VOL_RATIO
+        ):  # the day's own volume: known at its close (the docstring)
             volumes = self.view.volumes_through(instrument_id, day, VOLUME_BASELINE + 1)
         if len(volumes) <= VOLUME_BASELINE or any(math.isnan(v) for v in volumes):
             return None

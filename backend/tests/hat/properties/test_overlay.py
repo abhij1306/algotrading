@@ -159,8 +159,10 @@ def test_funding_sells_the_sleeve_and_credits_by_date(day: date, pct: Decimal) -
     at = datetime.combine(day, datetime.min.time(), IST).replace(hour=10)
     sleeve.fund(day, at, D(1000))
     sold = 100 - sleeve.units[ov.LIQUIDBEES]
-    proceeds = sleeve._proceeds(ov.LIQUIDBEES, sold, D(100), day)  # noqa: SLF001
-    short = sleeve._proceeds(ov.LIQUIDBEES, sold - 1, D(100), day)  # noqa: SLF001
+    fresh = _overlay([day])  # the day's first sale of the asset: it pays the DP charge
+    fresh.units[ov.LIQUIDBEES] = 100
+    proceeds = fresh._proceeds(ov.LIQUIDBEES, sold, D(100), day)  # noqa: SLF001
+    short = fresh._proceeds(ov.LIQUIDBEES, sold - 1, D(100), day)  # noqa: SLF001
     assert proceeds * pct >= 1000 > short * pct  # the fewest units that cover it
     assert sleeve.cash == proceeds  # the account has all of it
     assert sleeve.pending == proceeds - proceeds * pct  # the rest credited next session
@@ -455,3 +457,16 @@ def test_parse_overlay_defaults_and_refusals() -> None:
     for bad in ({"sleeve": "bonds"}, {"unknown": 1}, {"slippage_bps": {"X": 1}}, {"tax": "yes"}):
         with pytest.raises(ov.OverlayError):
             ov.parse_overlay(bad)
+
+
+def test_the_sleeve_pays_one_dp_charge_per_asset_per_day() -> None:
+    """Two sales of one ETF on one day pay one DP debit, as the broker charges; the next day's
+    first sale pays again. Harm: a sleeve overcharged on every funding sale."""
+    day, later = date(2024, 10, 8), date(2024, 10, 9)
+    sleeve = _overlay([day, later])
+    sleeve.units[ov.LIQUIDBEES] = 100
+    for d in (day, day, later):
+        sleeve._sell(ov.LIQUIDBEES, 10, D(100), d, D(1))  # noqa: SLF001
+    fees = [row[5] for row in sleeve.journal]
+    assert fees[0] > fees[1]
+    assert fees[2] == fees[0]

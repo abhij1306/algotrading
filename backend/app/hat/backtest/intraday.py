@@ -54,6 +54,7 @@ __all__ = [
     "EpEstimate",
     "EpTrace",
     "after_trigger",
+    "traded_low_after",
     "on_basis",
     "replay",
     "session_bars",
@@ -126,12 +127,14 @@ def session_bars(
     return {k: tuple(v) for k, v in out.items()}
 
 
-def on_basis(day: date, bars: Sequence[Bar], daily_close: Decimal) -> bool:
-    """Whether a session's 5-minute bars fit its daily bar, by the data audit's rule
-    (`audit.basis_of`): every bar on the IST 5-minute grid inside `day`'s regular session, and
-    the last close within `CLOSE_5M_PCT` of the daily close (both on one price basis). A session
-    that does not fit is decided on the daily estimate, so no run reads bars off their day."""
-    if not bars or daily_close <= 0:
+def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
+    """Whether a session's 5-minute bars fit its daily bar, known at its open: every bar on the
+    IST 5-minute grid inside `day`'s regular session (a property of the stored file), and the
+    first bar's open within `CLOSE_5M_PCT` of the daily open (both on one price basis). The data
+    audit judges the last close (`audit.basis_of`); a run decides before the close, so it reads
+    the open. A session that does not fit is decided on the daily estimate, so no run reads bars
+    off their day."""
+    if not bars or daily_open <= 0:
         return False
     opens = datetime.combine(day, SESSION_OPEN, tzinfo=IST)
     closes = datetime.combine(day, SESSION_CLOSE, tzinfo=IST)
@@ -139,7 +142,7 @@ def on_basis(day: date, bars: Sequence[Bar], daily_close: Decimal) -> bool:
         start = bar.start.astimezone(IST)
         if not opens <= start < closes or (start - opens) % BAR_WIDTH:
             return False
-    return abs(bars[-1].close / daily_close - 1) * 100 <= _CLOSE_OFF_PCT
+    return abs(bars[0].open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
 
 
 class _ReplayView:
@@ -237,6 +240,13 @@ def trace(day: date, candidate: Candidate, bars: Sequence[Bar], order: Sequence[
 
 def _order(bar: Bar) -> tuple[datetime, str]:
     return bar.start, bar.symbol
+
+
+def traded_low_after(bars: Sequence[Bar], at: datetime) -> Decimal | None:
+    """The lowest low the bars after the trigger bar that finished at `at` show (None: no bar
+    follows): the prices that traded after a LIMIT went in, for whether it filled. A day low the
+    bars miss is not counted: it may have come before the trigger."""
+    return min((b.low for b in bars if b.start >= at - BAR_FINAL_LAG), default=None)
 
 
 def after_trigger(

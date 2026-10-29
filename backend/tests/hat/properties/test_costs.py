@@ -264,3 +264,16 @@ def test_dp_once_per_instrument_per_sell_day() -> None:
     _, buy = fills.fill("buy", 10, D(550), DAY)
     _, buy_flagged = fills.fill("buy", 10, D(550), DAY, sold_today=True)
     assert buy == buy_flagged
+
+
+def test_a_limit_buy_never_fills_above_its_limit() -> None:
+    """Slippage moves a buy up, but a LIMIT order fills at most at its limit; a sell is never
+    capped. 100 at 500 under 20 bps slips to 501.0000; the limit holds it at 500."""
+    fills = BacktestFills(load_cost_schedule(), D(20))
+    assert fills.fill("buy", 100, D(500), DAY)[0] == D("501.0000")
+    capped = fills.within(D(10**7), D(500))
+    price, fees = capped.fill("buy", 100, D(500), DAY)
+    assert (
+        (price, fees) == fills.fill("buy", 100, D(500), DAY, limit=D(500)) == (D(500), D("59.38"))
+    )
+    assert capped.fill("sell", 100, D(500), DAY)[0] == D("499.0000")

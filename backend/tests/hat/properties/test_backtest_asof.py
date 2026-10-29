@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
-from app.hat.backtest.data import looks_ahead
+from app.hat.backtest.data import looks_ahead, public_by
+from app.hat.engine.trigger import ResultEvent
+from app.hat.time import IST
 
 MON, TUE, WED = date(2024, 1, 1), date(2024, 1, 2), date(2024, 1, 3)
 
@@ -29,3 +31,16 @@ def test_at_the_close_the_session_is_known() -> None:
 def test_the_first_session_knows_no_close() -> None:
     assert looks_ahead(MON, MON, None, inclusive=True)
     assert not looks_ahead(MON, MON, None, inclusive=False)
+
+
+def test_a_filing_is_read_only_from_the_day_it_is_public() -> None:
+    """A trigger on a day reads the filings public by that day's end (IST), never a later one.
+    Harm: an earnings trigger firing on a result not yet filed."""
+    late = ResultEvent(
+        datetime(2024, 1, 2, 23, 50, tzinfo=IST), date(2023, 12, 31), None, None, False
+    )
+    early = ResultEvent(
+        datetime(2024, 1, 1, 18, 0, tzinfo=IST), date(2023, 12, 31), None, None, False
+    )
+    assert public_by((early, late), MON) == (early,)
+    assert public_by((early, late), TUE) == (early, late)

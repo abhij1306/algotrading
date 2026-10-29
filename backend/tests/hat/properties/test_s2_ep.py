@@ -247,10 +247,17 @@ def test_ep_gate_judges_the_playbook_universe() -> None:
     assert ep_gate(playbook, frame(rows), gap_day, previous, universe, "SM") == "universe"
     fell = frame(_closes(6_000))
     assert ep_gate(playbook, fell, gap_day, previous, universe, "EQ") == "neglect"
-    # every hard setup criterion switched off: the setup passes, the universe still judges
+    # every hard setup criterion switched off: the gate fails closed, unless the playbook
+    # declares an empty setup; then the universe still judges
     off = [c.model_copy(update={"enabled": False}) for c in playbook.setup.criteria]
-    bare = playbook.model_copy(
+    empty = playbook.model_copy(
         update={"setup": playbook.setup.model_copy(update={"criteria": off})}
+    )
+    assert ep_gate(empty, fell, gap_day, previous, universe, "EQ") == "setup"
+    # off by default and left out of the stored form, so no stored config's hash moves
+    assert "allow_empty" not in empty.setup.model_dump(mode="json")
+    bare = playbook.model_copy(
+        update={"setup": playbook.setup.model_copy(update={"criteria": off, "allow_empty": True})}
     )
     assert ep_gate(bare, fell, gap_day, previous, universe, "EQ") is None
     assert ep_gate(bare, fell, gap_day, previous, universe, "SM") == "universe"

@@ -270,6 +270,9 @@ def test_candidate_policy_then_fields_then_caps() -> None:
     assert (got.global_open_risk_pct, got.account_drawdown_pct) == (D("0.03"), D("0.20"))
     assert (got.adv_cap_pct, got.max_entries_per_day) == (D("0.02"), 5)
     assert got.max_open_positions == 10
+    # `base_weight` is read (a sleeve's weight unless the run names one): a set on it applies
+    weighted = Overrides(policy_sets=(("base_weight.S1", "0.40"),))
+    assert weighted.apply_policy(version).policy.base_weight["S1"] == D("0.40")
     # a playbook's key is a policy path segment as it is (hyphens included)
     p_max = Overrides(policy_sets=(("p_max.stage2-contraction-breakout", "1"),))
     assert p_max.apply_policy(version).policy.to_json()["p_max"]["stage2-contraction-breakout"]
@@ -284,7 +287,7 @@ def test_candidate_policy_then_fields_then_caps() -> None:
         # a field no backtest reads, and a set to the value in force, change nothing
         ((("kill.account_drawdown_pct", "0.1"),), "backtest_override_no_effect"),
         ((("health_bands.half_dd", "0.12"),), "backtest_override_no_effect"),
-        ((("base_weight.x", "0.5"),), "backtest_override_no_effect"),
+        ((("weights_confirmed", True),), "backtest_override_no_effect"),
         ((("adv_cap_pct", "0.010"),), "backtest_override_no_op"),
         ((("p_max.stage2-contraction-breakout", "0.2"),), "backtest_override_no_op"),
     ):

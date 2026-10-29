@@ -133,6 +133,9 @@ def _sorted_unique(instances: list[Instance]) -> list[Instance]:
 class SetupStage(Model):
     threshold: float = Field(default=DEFAULT_THRESHOLD, ge=0, le=1)
     criteria: list[Instance] = Field(default_factory=list, max_length=MAX_INSTANCES)
+    # A pre-open playbook whose hard setup criteria are all off passes its setup gate only when
+    # it says so here (`live_entry.ep_gate`); without it, it fails closed.
+    allow_empty: bool = Field(default=False, exclude_if=lambda v: not v)
 
     @model_validator(mode="after")
     def _check(self) -> SetupStage:
