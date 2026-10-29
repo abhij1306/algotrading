@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -382,8 +383,19 @@ def test_results__name_stamp_time_is_never_used() -> None:
     unlisted = timing.xbrl_at(_filing(STAMPED, None))
     assert unlisted is not None
     assert unlisted.at.time() != datetime(2026, 7, 17, 7, 50, 4).time()
-    created = timing.xbrl_at(_filing(STAMPED, None, _ist(2026, 7, 17, 19, 50, 4)))
-    assert created == timing.FiledAt(_ist(2026, 7, 17, 19, 50, 4), False)
+    # an integrated filing with no broadcast time: its creation is no dissemination, so the
+    # end of that day (an upper bound), and its announcement first when one is matched
+    unbroadcast = _filing(STAMPED, None, _ist(2026, 7, 17, 19, 50, 4))
+    assert timing.unbroadcast(unbroadcast)
+    created = timing.xbrl_at(unbroadcast)
+    assert created == timing.FiledAt(_ist(2026, 7, 17, 23, 59, 59), True)
+    announced = _ist(2026, 7, 18, 10, 2)
+    assert timing.public_at(1, announced, created, floor=True) == timing.PublicAt(
+        announced, "announcement", False
+    )
+    assert timing.public_at(2, None, created, floor=True) == timing.PublicAt(
+        created.at, "xbrl_date", True
+    )
     # an integrated filing broadcast after its document's creation counts from the broadcast
     both = timing.xbrl_at(_filing(STAMPED, _ist(2026, 7, 17, 19, 52), _ist(2026, 7, 17, 19, 50, 4)))
     assert both == timing.FiledAt(_ist(2026, 7, 17, 19, 52), False)
@@ -469,12 +481,17 @@ def test_results__a_late_xbrl_takes_its_quarters_announcement_only_as_a_first_fi
     assert late_announcement(filing(_ist(2022, 6, 4, 10, 13), revision=True), found) is None
     assert late_announcement(filing(_ist(2022, 7, 4, 10, 13)), found) is None  # over 7 days
     assert late_announcement(xbrl, None) is None
+    undated = replace(xbrl, broadcast_at=None, xbrl_url="https://x/corporate/xbrl/-")
+    assert late_announcement(undated, found) is None  # nothing dates the filing
     # the reg33 listing has no revision flag: a row filed over a day after another of the same
     # quarter and basis is one
     marked = nse.later_filings(
         [xbrl, filing(_ist(2022, 6, 4, 18, 0)), filing(_ist(2022, 8, 1, 10, 0))]
     )
     assert [f.revision for f in marked] == [False, False, True]
+    # one insurer's filing on the shared listing never makes another's a revision
+    other = replace(filing(_ist(2022, 8, 1, 10, 0)), symbol="Y")
+    assert [f.revision for f in nse.later_filings([xbrl, other])] == [False, False]
 
 
 def test_results__an_earlier_time_moves_only_onto_an_announcement_within_bounds() -> None:
@@ -488,6 +505,7 @@ def test_results__an_earlier_time_moves_only_onto_an_announcement_within_bounds(
     assert not may_move(old, on, date(2022, 6, 30))  # before the quarter ended
     long_ago = timing.PublicAt(old - timedelta(days=121), "announcement", False)
     assert not may_move(old, long_ago, date(2021, 12, 31))
+    assert not may_move(old, on, date(2022, 3, 31), version=2)  # a revision: later only
 
 
 def test_results__public_at() -> None:

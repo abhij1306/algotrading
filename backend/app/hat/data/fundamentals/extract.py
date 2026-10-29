@@ -46,6 +46,7 @@ from ..results.timing import (
     anchor_date,
     match_announcement,
     public_at,
+    unbroadcast,
     xbrl_at,
 )
 from ..results.xbrl import XbrlError
@@ -195,7 +196,7 @@ def nse_versions(
         version = 1 if held is None else held[0] + 1
         filed = xbrl_at(c.filing)
         announced = _announced_at(c, announcements) if version == 1 else None
-        when = public_at(version, announced, filed)
+        when = public_at(version, announced, filed, floor=unbroadcast(c.filing))
         if when is None:
             outcomes["nse_no_time"] += 1
             continue

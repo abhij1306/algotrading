@@ -361,12 +361,15 @@ page a week after its fetch or once NSE's cached listing has a newer filing of t
 `fetch` first), an announcement day until fetched after it ended, and `parse` adds only filings not stored
 yet. A new quarter is the four commands again once its results are out. `parse` writes every
 filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`, and re-times every stored row: a row the
-current rules time differently moves, later, or earlier only onto an announcement's dissemination
-(`results/retimed-<UTC time>.csv`, one per run and kept, lists each move with the old and new
-time, source, estimate flag and XBRL time; a row whose filing is gone from NSE's listing moves
-only from its announcement's submission to that announcement's dissemination). Before a parse
-that re-times hat_live, take a snapshot (`scripts/hat_snapshot.py`) and a
-`pg_dump -t hat_financial_result` beside it. Rows are otherwise append-only (a trigger refuses DELETE
+current rules time differently moves, later, or (a first version) earlier only onto an
+announcement's dissemination (`results/retimed-<UTC time>.csv`, one per run and kept, written as
+each company commits, lists each move with the old and new time, source, estimate flag and XBRL
+time; a row whose filing is gone from NSE's listing moves only from its announcement's submission
+to that announcement's dissemination). Before the first parse of a release that changes the
+timing rules on hat_live, which the daily update would otherwise run itself: stop the timer
+(`systemctl --user stop hat-data-update.timer`), take a snapshot (`scripts/hat_snapshot.py`)
+and a `pg_dump -t hat_financial_result` beside it, run `parse` and `derive`, check them, then
+start the timer again. Rows are otherwise append-only (a trigger refuses DELETE
 and any other UPDATE),
 so try a change on a scratch database first and run `derive` after a re-time. Run `parse` only after `fetch` has
 finished: a quarter not yet fetched would be backfilled from the secondary source.

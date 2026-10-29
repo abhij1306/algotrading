@@ -373,18 +373,19 @@ REVISION_GAP = timedelta(days=1)
 
 def later_filings(filings: Sequence[Filing]) -> list[Filing]:
     """`filings` with each one filed more than `REVISION_GAP` after another filing of the same
-    quarter and basis marked a revision: the reg33 listing has no revision flag (its `reInd`
-    names the format: N Ind-AS, A non-Ind-AS, F NBFC), so a later row is told by its time."""
-    first: dict[tuple[date, str], datetime] = {}
+    company (symbol), quarter and basis marked a revision: the reg33 listing has no revision flag
+    (its `reInd` names the format: N Ind-AS, A non-Ind-AS, F NBFC), so a later row is told by its
+    time. The insurance listing holds every insurer: one's filing never makes another's late."""
+    first: dict[tuple[str, date, str], datetime] = {}
     for f in filings:
         when = f.created_at or f.broadcast_at
-        key = (f.period_end, f.basis)
+        key = (f.symbol, f.period_end, f.basis)
         if when is not None and (key not in first or when < first[key]):
             first[key] = when
     out = []
     for f in filings:
         when = f.created_at or f.broadcast_at
-        early = first.get((f.period_end, f.basis))
+        early = first.get((f.symbol, f.period_end, f.basis))
         later = when is not None and early is not None and when - early > REVISION_GAP
         out.append(replace(f, revision=True) if later and not f.revision else f)
     return out

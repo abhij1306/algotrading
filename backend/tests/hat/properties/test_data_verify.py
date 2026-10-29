@@ -764,6 +764,19 @@ def test_d5_a_filing_public_before_nse_disseminated_it_fails() -> None:
     assert filings.SEVERITY["unmatched"] == audit.FAIL
 
 
+def test_d5_an_unbroadcast_integrated_filing_at_its_creation_days_end_is_a_warning() -> None:
+    created = datetime(2026, 1, 21, 16, 6, tzinfo=IST)
+    day_end = datetime(2026, 1, 21, 23, 59, 59, tzinfo=IST)
+    later = [filings.Announcement(day_end + timedelta(hours=10), None)]
+    estimate = _filing(day_end, "xbrl_date")
+    assert filings.judge(estimate, later, None, created)[0] == "xbrl_day_estimate"
+    assert filings.SEVERITY["xbrl_day_estimate"] == audit.WARN
+    # timed before that day's end, or without the creation time, it is judged by announcements
+    early = _filing(created, "xbrl_date")
+    assert filings.judge(early, later, None, created)[0] == "estimate_before_first_announcement"
+    assert filings.judge(estimate, later)[0] == "estimate_before_first_announcement"
+
+
 def test_d5_a_filing_is_judged_by_the_announcement_it_was_timed_by() -> None:
     # two announcements: one made earlier but disseminated late, one disseminated when stored
     first = datetime(2021, 10, 26, 16, 49, tzinfo=IST)

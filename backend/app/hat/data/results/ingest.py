@@ -23,13 +23,15 @@ Then, per instrument, each quarter the secondary source shows on a basis for whi
 becomes a `source=secondary` row (`public_at` the quarter's NSE results announcement when one is
 found, else the regulatory deadline, `public_at_estimated`; a quarter that ended before the company
 listed counts from the results that first carry it, `timing.comparative_quarter`). Every filing
-considered is written to `<report_dir>/filings.csv` with its outcome.
+considered is written to `<report_dir>/filings.csv` with its outcome, member by member as each
+member's rows commit.
 
 Last, every stored row's `public_at` is worked out again under today's rules and the cache
 (`MemberIngest.retime`); one that comes out later is moved later, one that comes out earlier only
 onto an announcement's dissemination time after the quarter's end and by at most 120 days (the
 only timing changes the table allows), and each move is written to
-`<report_dir>/retimed-<UTC time>.csv` (one file per run, kept).
+`<report_dir>/retimed-<UTC time>.csv` (one file per run, kept; written as each member commits,
+so a run that stops partway still logs every committed move).
 """
 
 from __future__ import annotations
@@ -74,6 +76,7 @@ from .timing import (
     public_at,
     quarter_announcement,
     results_announcements,
+    unbroadcast,
     xbrl_at,
 )
 from .universe import Member
@@ -249,24 +252,35 @@ def parse(
     report = ParseReport()
     outcomes: list[Outcome] = []
     retimed: list[Retimed] = []
-    for n, member in enumerate(members, 1):
-        every = member_filings(nse, member, insurance, owners)
-        filings = by_rule([f for f in every if in_scope(f, start, end)], basis)
-        with db_session_scope(writes_data=True) as session:
-            ingest = MemberIngest(session, nse, member, announced, listed.get(member.instrument_id))
-            stored = ingest.nse(filings)
-            outcomes += stored
-            if not is_insurer(member, insurance, stored):  # insurers: metadata rows only
-                quarters = secondary_by_rule(
-                    _secondary_quarters(secondary, member),
-                    basis,
-                    ingest.nse_consolidated() | filed_consolidated(filings),
+    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
+    with (
+        RowLog(report_dir / "filings.csv", Outcome) as outcome_log,
+        RowLog(report_dir / f"retimed-{stamp}.csv", Retimed) as retimed_log,
+    ):
+        for n, member in enumerate(members, 1):
+            every = member_filings(nse, member, insurance, owners)
+            filings = by_rule([f for f in every if in_scope(f, start, end)], basis)
+            with db_session_scope(writes_data=True) as session:
+                ingest = MemberIngest(
+                    session, nse, member, announced, listed.get(member.instrument_id)
                 )
-                outcomes += ingest.secondary(quarters, start, end)
-            retimed += ingest.retime(every)
-        report.members = n
-        if n % 50 == 0:
-            logger.info("parse %d/%d members, %d outcomes", n, len(members), len(outcomes))
+                done = ingest.nse(filings)
+                if not is_insurer(member, insurance, done):  # insurers: metadata rows only
+                    quarters = secondary_by_rule(
+                        _secondary_quarters(secondary, member),
+                        basis,
+                        ingest.nse_consolidated() | filed_consolidated(filings),
+                    )
+                    done += ingest.secondary(quarters, start, end)
+                moved = ingest.retime(every)
+            # the member's rows are committed: log them now, so a later crash loses no record
+            outcome_log.add(done)
+            retimed_log.add(moved)
+            outcomes += done
+            retimed += moved
+            report.members = n
+            if n % 50 == 0:
+                logger.info("parse %d/%d members, %d outcomes", n, len(members), len(outcomes))
     for item in outcomes:
         report.outcomes[item.result] = report.outcomes.get(item.result, 0) + 1
     report.stored = sum(
@@ -276,9 +290,6 @@ def parse(
         1 for o in outcomes if o.format == FORMAT_SECONDARY and o.result == "stored"
     )
     report.retimed = len(retimed)
-    write_outcomes(report_dir / "filings.csv", outcomes)
-    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
-    write_rows(report_dir / f"retimed-{stamp}.csv", retimed, Retimed)
     return report
 
 
@@ -369,17 +380,26 @@ def year_before_listing(document_end: date | None, listing_end: date) -> bool:
     return document_end is not None and document_end == year_ago(listing_end)
 
 
-def write_outcomes(path: Path, outcomes: Iterable[Outcome]) -> None:
-    write_rows(path, outcomes, Outcome)
+class RowLog:
+    """A CSV of dataclass rows of `kind`, written as rows arrive (each flushed at once)."""
 
+    def __init__(self, path: Path, kind: type) -> None:
+        self.path = path
+        self.fields = list(kind.__dataclass_fields__)
 
-def write_rows(path: Path, items: Iterable[Any], kind: type) -> None:
-    """Dataclass rows of `kind` as a CSV."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(kind.__dataclass_fields__))
-        writer.writeheader()
-        writer.writerows(asdict(i) for i in items)
+    def __enter__(self) -> RowLog:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.handle = self.path.open("w", newline="", encoding="utf-8")
+        self.writer = csv.DictWriter(self.handle, fieldnames=self.fields)
+        self.writer.writeheader()
+        return self
+
+    def add(self, items: Iterable[Any]) -> None:
+        self.writer.writerows(asdict(i) for i in items)
+        self.handle.flush()
+
+    def __exit__(self, *_: object) -> None:
+        self.handle.close()
 
 
 def figures_key(figures: Figures | None) -> tuple[Any, ...]:
@@ -564,7 +584,7 @@ class MemberIngest:  # pragma: no cover - the database
             return self._outcome(c.filing, result="same_figures", **base)
         version = 1 if held is None else held.version + 1
         announced = self._announced(c) if version == 1 else None
-        when = public_at(version, announced, c.filed)
+        when = public_at(version, announced, c.filed, floor=unbroadcast(c.filing))
         if when is None:
             return self._outcome(c.filing, result="excluded", reason="no_time", **base)
         mismatch = document_period(c.period_end, c.filing.period_end)[1]
@@ -641,7 +661,7 @@ class MemberIngest:  # pragma: no cover - the database
             when, filed = self._when_again(row, by_url)
             if when is None or when.at == row.public_at:
                 continue
-            if not may_move(row.public_at, when, row.period_end):
+            if not may_move(row.public_at, when, row.period_end, row.version):
                 continue
             moved.append(self._move(row, when, filed))
         if moved:
@@ -660,7 +680,7 @@ class MemberIngest:  # pragma: no cover - the database
             return self._disseminated(row), None
         filed = xbrl_at(filing)
         announced = self._announced_for(filing, row.period_end) if row.version == 1 else None
-        return public_at(row.version, announced, filed), filed
+        return public_at(row.version, announced, filed, floor=unbroadcast(filing)), filed
 
     def _disseminated(self, row: HatFinancialResult) -> PublicAt | None:
         """A first version timed by an announcement's submission (`an_dt`), at that announcement's
@@ -876,13 +896,15 @@ LATE_FILING = timedelta(days=7)
 EARLIEST_MOVE = timedelta(days=120)
 
 
-def may_move(old_at: datetime, when: PublicAt, period_end: date) -> bool:
-    """Whether a stored time may become `when` (the table's trigger allows no other): later, or
-    earlier onto an announcement after the quarter's end and by at most `EARLIEST_MOVE`."""
+def may_move(old_at: datetime, when: PublicAt, period_end: date, version: int = 1) -> bool:
+    """Whether a stored time may become `when` (the table's trigger allows no other): later, or,
+    for a first version, earlier onto an announcement after the quarter's end and by at most
+    `EARLIEST_MOVE`."""
     if when.at >= old_at:
         return True
     return (
-        when.source == "announcement"
+        version == 1
+        and when.source == "announcement"
         and when.at.astimezone(IST).date() > period_end
         and old_at - when.at <= EARLIEST_MOVE
     )
@@ -892,11 +914,11 @@ def late_announcement(filing: Filing, found: Announcement | None) -> Announcemen
     """`found` (the quarter's own results announcement) as the time of a first filing whose XBRL
     came after it, or None: never for a revision (a later filing of the quarter carries figures
     that were not public then), nor for a filing made more than `LATE_FILING` after it (the
-    figures need not be the announced ones)."""
+    figures need not be the announced ones) or not dated at all."""
     if found is None or filing.revision:
         return None
     filed = xbrl_at(filing)
-    if filed is not None and filed.at - found.public > LATE_FILING:
+    if filed is None or filed.at - found.public > LATE_FILING:
         return None
     return found
 

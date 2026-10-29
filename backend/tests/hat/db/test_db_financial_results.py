@@ -93,40 +93,40 @@ def test_results_are_append_only_and_point_in_time(conn: Connection) -> None:
         nested = session.begin_nested()
         with pytest.raises(DBAPIError, match="append-only"), nested:
             session.execute(statement)
-    # only the timing moves: later, or earlier onto an announcement's dissemination
-    session.execute(
-        update(HatFinancialResult)
-        .where(HatFinancialResult.id == revision.id)
-        .values(public_at=datetime(2026, 2, 20, tzinfo=UTC), public_at_source="announcement")
-    )
+    # only the timing moves: later, or for a first version earlier onto an announcement's
+    # dissemination; a revision only later
+    nested = session.begin_nested()
+    with pytest.raises(DBAPIError, match="append-only"), nested:
+        session.execute(
+            update(HatFinancialResult)
+            .where(HatFinancialResult.id == revision.id)
+            .values(public_at=datetime(2026, 2, 20, tzinfo=UTC), public_at_source="announcement")
+        )
     later = datetime(2026, 1, 20, 10, 5, tzinfo=UTC)
-    session.execute(
-        update(HatFinancialResult)
-        .where(HatFinancialResult.id == original.id)
-        .values(public_at=later, public_at_source="announcement")
-    )
+    first = update(HatFinancialResult).where(HatFinancialResult.id == original.id)
+    session.execute(first.values(public_at=later))
     moved = results_as_of(session, iid, datetime(2026, 1, 20, 10, 1, tzinfo=UTC))
     assert moved == []
+    session.execute(first.values(public_at=datetime(2026, 1, 20, 10, 2, tzinfo=UTC)))
     # never earlier than the quarter's end, nor by more than 120 days, nor with an estimate flag
     # that does not match its source, nor a new XBRL estimate flag without a later XBRL time
-    far = update(HatFinancialResult).where(HatFinancialResult.id == revision.id)
     for statement in (
-        far.values(public_at=datetime(2025, 12, 30, tzinfo=UTC), public_at_source="announcement"),
-        far.values(public_at=datetime(2026, 2, 20, tzinfo=UTC), public_at_estimated=True),
-        far.values(public_at=datetime(2026, 7, 1, tzinfo=UTC), public_at_source="deadline"),
-        far.values(xbrl_at_estimated=True),
+        first.values(public_at=datetime(2025, 12, 30, tzinfo=UTC)),
+        first.values(public_at=later, public_at_estimated=True),
+        first.values(public_at=datetime(2026, 7, 1, tzinfo=UTC), public_at_source="deadline"),
+        first.values(xbrl_at_estimated=True),
     ):
         nested = session.begin_nested()
         with pytest.raises(DBAPIError, match="append-only"), nested:
             session.execute(statement)
     late = datetime(2026, 7, 1, tzinfo=UTC)
     session.execute(
-        far.values(public_at=late, public_at_source="deadline", public_at_estimated=True)
+        first.values(public_at=late, public_at_source="deadline", public_at_estimated=True)
     )
     nested = session.begin_nested()
     with pytest.raises(DBAPIError, match="append-only"), nested:  # 121 days earlier
         session.execute(
-            far.values(
+            first.values(
                 public_at=late - timedelta(days=121),
                 public_at_source="announcement",
                 public_at_estimated=False,

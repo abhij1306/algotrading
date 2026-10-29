@@ -11,7 +11,9 @@ Pure. Why each rule (A0 probe report, sections 5 and 6):
   XBRL file name carries the filing date, but its time is a 12-hour clock without AM/PM: only the
   date is ever used. `xbrl_at` is the listing's broadcast time when it falls on that date, else
   the end of that date (`estimated`: an upper bound, never early). Integrated filings carry the
-  document's creation time and the broadcast time: the later of the two.
+  document's creation time and the broadcast time: the later of the two. An integrated filing
+  with no broadcast time was not shown disseminated: it is public from its results announcement
+  (`unbroadcast`), else from the end of its creation day (estimated), never from its creation.
 - A revision (version 2 on) is public from its own filing, never from the original's
   announcement.
 - One company's announcement times read 12 hours early (05:08 for an evening board meeting). An
@@ -70,6 +72,9 @@ class FiledAt:
 
 def xbrl_at(filing: Filing) -> FiledAt | None:
     """When the filing's XBRL was filed (rules above); None when nothing dates it."""
+    if unbroadcast(filing):
+        assert filing.created_at is not None
+        return FiledAt(end_of(filing.created_at.date()), True)
     if filing.created_at is not None:
         return FiledAt(max(filing.created_at, filing.broadcast_at or filing.created_at), False)
     stamped = stamp_date(filing.xbrl_url)
@@ -81,6 +86,11 @@ def xbrl_at(filing: Filing) -> FiledAt | None:
     if broadcast is not None:
         return FiledAt(broadcast, True)  # may be a later re-broadcast: late, never early
     return None
+
+
+def unbroadcast(filing: Filing) -> bool:
+    """An integrated filing whose listing gives no broadcast time (only the document's creation)."""
+    return filing.created_at is not None and filing.broadcast_at is None
 
 
 def anchor_date(filing: Filing) -> date | None:
@@ -190,9 +200,12 @@ class PublicAt:
     estimated: bool
 
 
-def public_at(version: int, announced: datetime | None, filed: FiledAt | None) -> PublicAt | None:
+def public_at(
+    version: int, announced: datetime | None, filed: FiledAt | None, *, floor: bool = False
+) -> PublicAt | None:
     """When version `version` of a filing became public (rules above); None when nothing dates
-    it (the filing is then excluded)."""
+    it (the filing is then excluded). `floor`: an `unbroadcast` filing, public no earlier than
+    its announcement."""
     filed_source = None
     if filed is not None:
         source = "xbrl_date" if filed.estimated else "xbrl"
@@ -200,7 +213,7 @@ def public_at(version: int, announced: datetime | None, filed: FiledAt | None) -
     if version > 1 or announced is None:
         return filed_source
     announced = pm_fix(announced, filed)
-    if filed_source is not None and filed_source.at < announced:
+    if filed_source is not None and filed_source.at < announced and not floor:
         return filed_source
     return PublicAt(announced, "announcement", False)
 

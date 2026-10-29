@@ -20,6 +20,8 @@ announcements of its ISIN (else its symbol) made after its period ended and with
   first announcement was disseminated before it (cited): the results were public by then.
 - `late_vs_announcement` (warn): `public_at` more than a day after the matched announcement
   (safe, but the figures reach the engine late).
+- `xbrl_day_estimate` (warn): an unbroadcast integrated filing timed at the end of its
+  document's creation day (an upper bound; nothing else proves when it was disseminated).
 - `unmatched` (fail): no announcement of the instrument in the window: its timing is unproven.
 
 No reference files fails the check; a filing public after the reference's last announcement is
@@ -40,7 +42,10 @@ the deadline), never excuse it. Only announcements of results count
 (`announcement_kind`): clarifications, replies and delay notices are left out, and a board
 meeting's outcome that does not name results is matched but never proves they were public.
 An XBRL-timed filing at or after the exchange's broadcast of that XBRL in NSE's results listing
-(the raw cache it was parsed from) is in order. A failure on the reviewed exceptions list
+(the raw cache it was parsed from) is in order. An integrated filing the listing gives no
+broadcast time for, timed at the end of its document's creation day (`xbrl_date`), is reported
+as `xbrl_day_estimate` (warn): an upper bound with nothing else to prove it; one timed before
+that day's end is judged by the announcements. A failure on the reviewed exceptions list
 (`D5_EXCEPTIONS`: code, ISIN, one period end and the reason; a missing quarter matched over the
 chain, any other finding by its exact ISIN) is reported as `excepted` (warn), and an exception
 that no failure needs as `exception_unused` (warn). A membership history starting after the
@@ -75,6 +80,7 @@ from ..results.nse import (
     filings_of,
 )
 from ..results.raw import RawCache
+from ..results.timing import end_of
 from . import covered, dated, spanning
 from .context import Context
 
@@ -201,7 +207,10 @@ def near(items: Sequence[Announcement], period_end: date, at: datetime) -> list[
 
 
 def judge(
-    filing: Filing, found: Sequence[Announcement], broadcast: datetime | None = None
+    filing: Filing,
+    found: Sequence[Announcement],
+    broadcast: datetime | None = None,
+    created: datetime | None = None,
 ) -> tuple[str | None, dict[str, Any]]:
     """A filing's finding code (None: in order) and what it was judged on. A `public_at` from
     the XBRL (`xbrl`) at or after the exchange's broadcast of that XBRL in NSE's results listing
@@ -213,6 +222,12 @@ def judge(
         and filing.public_at >= broadcast - LEAD_TOLERANCE
     ):
         return None, {"xbrl_broadcast": broadcast.isoformat()}
+    if (
+        filing.public_at_source == "xbrl_date"
+        and created is not None
+        and filing.public_at >= end_of(created.astimezone(IST).date())
+    ):
+        return "xbrl_day_estimate", {"xbrl_created": created.isoformat()}
     if not found:
         return "unmatched", {}
     # the announcement whose public time (dissemination, else announcement) is nearest: a
@@ -395,11 +410,13 @@ def judge_all(
     by_symbol: Mapping[str, Sequence[Announcement]],
     reference_end: datetime,
     broadcasts: Mapping[str, datetime] | None = None,
+    created: Mapping[str, datetime] | None = None,
 ) -> tuple[Counter[str], dict[str, list[dict[str, Any]]], dict[str, Counter[str]]]:
     """Every filing public by `reference_end` (the reference's last announcement) judged: the
     counts per code, the items per code, and the leads before dissemination by year and size.
     Later filings are counted as `after_reference`. `broadcasts`: the XBRL listing's broadcast
-    time by document URL (`judge`)."""
+    time by document URL; `created`: an unbroadcast integrated document's creation time
+    (`judge`)."""
     counts: Counter[str] = Counter()
     items: dict[str, list[dict[str, Any]]] = defaultdict(list)
     leads: dict[str, Counter[str]] = defaultdict(Counter)
@@ -413,7 +430,8 @@ def judge_all(
             or near(by_isin.get(filing.isin, ()), filing.period_end, filing.public_at)
             or near(by_symbol.get(filing.symbol, ()), filing.period_end, filing.public_at)
         )
-        code, detail = judge(filing, found, (broadcasts or {}).get(filing.source_url))
+        url = filing.source_url
+        code, detail = judge(filing, found, (broadcasts or {}).get(url), (created or {}).get(url))
         counts["judged"] += 1
         if code is None:
             counts["in_order"] += 1
@@ -507,6 +525,7 @@ SEVERITY = {
     "before_any_announcement": FAIL,
     "between_announcements": WARN,
     "late_vs_announcement": WARN,
+    "xbrl_day_estimate": WARN,
     "unmatched": FAIL,
 }
 
@@ -569,7 +588,10 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings.append(finding("scope_unknown", FAIL, [scope_gap]))
     chains = lineage_chains(_links(ctx), set(stored) | scope)
     by_isin = by_chain(by_isin, chains)
-    counts, items, leads = judge_all(filings, by_isin, by_symbol, reference_end, _broadcasts(ctx))
+    broadcasts, created = _xbrl_times(ctx)
+    counts, items, leads = judge_all(
+        filings, by_isin, by_symbol, reference_end, broadcasts, created
+    )
     summary["judged"] = dict(counts)
     summary["leads_before_dissemination"] = {k: dict(v) for k, v in sorted(leads.items())}
     holes = missing_quarters(
@@ -680,9 +702,12 @@ def _scope(ctx: Context, as_of: date) -> tuple[set[str], str]:  # pragma: no cov
     return {m.isin for m in found}, ""
 
 
-def _broadcasts(ctx: Context) -> dict[str, datetime]:  # pragma: no cover - real data
+def _xbrl_times(
+    ctx: Context,
+) -> tuple[dict[str, datetime], dict[str, datetime]]:  # pragma: no cover - real data
     """Each XBRL document's broadcast time in NSE's results listings (the raw cache the store
-    was parsed from), the latest when listed more than once."""
+    was parsed from), the latest when listed more than once; and each integrated document's
+    creation time where no listing gives it a broadcast time."""
     cache = RawCache(ctx.root / NSE_RAW)
     answers = []
     for url, entry in cache.entries().items():
@@ -693,9 +718,12 @@ def _broadcasts(ctx: Context) -> dict[str, datetime]:  # pragma: no cover - real
         elif url.startswith(RESULTS_API):
             answers.append((LISTING_REG33, cache.body(entry)))
     out: dict[str, datetime] = {}
+    created: dict[str, datetime] = {}
     for filing in filings_of(answers):
         if filing.xbrl_url and filing.broadcast_at is not None:
             out[filing.xbrl_url] = max(
                 out.get(filing.xbrl_url, filing.broadcast_at), filing.broadcast_at
             )
-    return out
+        elif filing.xbrl_url and filing.created_at is not None:
+            created[filing.xbrl_url] = filing.created_at
+    return out, {url: at for url, at in created.items() if url not in out}
