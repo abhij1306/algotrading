@@ -10,8 +10,11 @@ overlay (`load`). Prices are kept as integers of 1/10000 rupee, as the build rou
   (overlapping files) is kept once.
 - `liquid_tr.parquet`: LIQUIDBEES' total-return index, each day's basis (`start`, `proxy`: the
   rate-index proxy where the dividends are not known, `dividend`).
-- `indices.parquet`: NIFTY 50 (the regime rule's) and the reference total-return indices.
-- `manifest.json`: each file's digest, rows and dates, and the build it came from.
+- `indices.parquet`: NIFTY 50 (the regime rule's) and the reference total-return indices, with
+  NIFTY 50's opens from HAT's own `index_daily` (NIFTYBEES' estimated price).
+- `manifest.json`: each file's digest, rows and dates, the build it came from, and the data
+  check `open_gaps`: each ETF's daily opens more than 2% from the previous close
+  where the price the sleeve fills at is not, the thin pre-open auction prints a fill never uses.
 """
 
 from __future__ import annotations
@@ -27,12 +30,15 @@ from pathlib import Path
 from typing import Any
 
 import pyarrow as pa
+import pyarrow.compute as pc
+import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 
 from ..data.bars5m_import import start_epoch
+from ..data.store import DATASET_INDEX
 from ..money import exact
 from ..time import IST
-from .overlay import ASSETS, EtfBar, EtfData
+from .overlay import ASSETS, EtfBar, EtfData, SleevePrices
 
 __all__ = [
     "ETF_DIR",
@@ -44,6 +50,7 @@ __all__ = [
     "five_min_rows",
     "load",
     "manifest",
+    "open_gaps",
     "proxy_ranges",
     "write",
 ]
@@ -62,6 +69,7 @@ _LIQUID_TR = "liquid_tr.parquet"
 _INDICES = "indices.parquet"
 _MANIFEST = "manifest.json"
 _PRICES = ("open", "high", "low", "close")
+GAP_PCT = Decimal("0.02")  # the data check's open gap (`open_gaps`)
 
 
 class EtfDataError(ValueError):
@@ -142,6 +150,48 @@ def proxy_ranges(rows: Iterable[tuple[date, str]]) -> list[tuple[date, date]]:
     return out
 
 
+def open_gaps(data: EtfData, pct: Decimal = GAP_PCT) -> dict[str, list[dict[str, str]]]:
+    """Each ETF's sessions whose daily open is more than `pct` from the previous close while
+    the price the sleeve fills at that open (`SleevePrices`: the first 5-minute bar's close, else
+    the estimate, NIFTY 50's own open move for NIFTYBEES) is not: an auction print, not a move."""
+    prices = SleevePrices(data)
+    out: dict[str, list[dict[str, str]]] = {}
+    for asset in ASSETS:
+        found = []
+        for day, bar in sorted(data.daily.get(asset, {}).items()):
+            before, fill = prices.prev_close(asset, day), prices.at(asset, day)
+            if before is None or fill is None or before[1] <= 0:
+                continue
+            prev = before[1]
+            if abs(bar.open / prev - 1) > pct >= abs(fill[0] / prev - 1):
+                found.append(
+                    {
+                        "date": day.isoformat(),
+                        "open": str(bar.open),
+                        "prev_close": str(prev),
+                        "fill_price": str(fill[0]),
+                        "estimated": str(fill[1]).lower(),
+                    }
+                )
+        out[asset] = found
+    return out
+
+
+def _index_opens(root: Path) -> dict[date, Decimal]:
+    """NIFTY 50's opens in HAT's own index store (`root/index_daily`); none without it."""
+    path = root / DATASET_INDEX
+    if not path.is_dir():
+        return {}
+    table = ds.dataset(path, format="parquet", partitioning="hive").to_table(
+        columns=["date", "open"], filter=pc.field("index_name") == REGIME_INDEX
+    )
+    return {
+        date.fromisoformat(str(d)[:10]): Decimal(o)
+        for d, o in zip(table["date"].to_pylist(), table["open"].to_pylist(), strict=True)
+        if o is not None and o > 0
+    }
+
+
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open(encoding="utf-8", newline="") as fh:
         return list(csv.DictReader(fh))
@@ -211,12 +261,23 @@ def write(root: Path, build: Path, kotak: Path) -> dict[str, Any]:
     )
     names = {REGIME_INDEX, *REFERENCES}
     indices = [r for r in _read_csv(build / "index_daily.csv") if r["index"] in names]
+    opens = _index_opens(root)
     pq.write_table(
         pa.table(
             {
                 "index": [r["index"] for r in indices],
                 "date": [date.fromisoformat(r["date"]) for r in indices],
                 "close": [r["close"] for r in indices],
+                "open": pa.array(
+                    [
+                        str(found)
+                        if r["index"] == REGIME_INDEX
+                        and (found := opens.get(date.fromisoformat(r["date"]))) is not None
+                        else None
+                        for r in indices
+                    ],
+                    pa.string(),
+                ),
             }
         ),
         out / _INDICES,
@@ -239,6 +300,19 @@ def write(root: Path, build: Path, kotak: Path) -> dict[str, Any]:
         "indices": {
             n: _span(date.fromisoformat(r["date"]) for r in indices if r["index"] == n)
             for n in sorted(names)
+        },
+    }
+    (out / _MANIFEST).write_text(json.dumps(found, indent=1, sort_keys=True), encoding="utf-8")
+    gaps = open_gaps(load(root, date.min, date.max))
+    found["open_gaps"] = {
+        "pct": str(GAP_PCT),
+        **{
+            s: {
+                "count": len(v),
+                "estimated": sum(g["estimated"] == "true" for g in v),
+                "days": [g["date"] for g in v],
+            }
+            for s, v in gaps.items()
         },
     }
     (out / _MANIFEST).write_text(json.dumps(found, indent=1, sort_keys=True), encoding="utf-8")
@@ -298,9 +372,12 @@ def load(root: Path, start: date, end: date) -> EtfData:
             bars_5m[r["symbol"]][day].append((at, EtfBar(*(_price(r[p]) for p in _PRICES))))
     tr = [r for r in pq.read_table(base / _LIQUID_TR).to_pylist() if r["date"] <= end]
     indices: dict[str, list[tuple[date, Decimal]]] = defaultdict(list)
+    opens: dict[date, Decimal] = {}
     for r in pq.read_table(base / _INDICES).to_pylist():
         if r["date"] <= end:
             indices[r["index"]].append((r["date"], _decimal(r["close"])))
+            if r["index"] == REGIME_INDEX and r.get("open"):
+                opens[r["date"]] = _decimal(r["open"])
     return EtfData(
         daily={s: dict(daily[s]) for s in ASSETS},
         bars_5m={s: {d: sorted(v) for d, v in bars_5m[s].items()} for s in ASSETS},
@@ -308,4 +385,5 @@ def load(root: Path, start: date, end: date) -> EtfData:
         proxy_ranges=proxy_ranges((r["date"], r["basis"]) for r in tr),
         regime_closes=sorted(indices.get(REGIME_INDEX, [])),
         references={n: sorted(indices.get(n, [])) for n in REFERENCES},
+        regime_opens=opens,
     )
