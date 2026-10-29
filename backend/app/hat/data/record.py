@@ -87,7 +87,9 @@ EXPORTS: dict[str, str] = {
         "order by t.isin, t.period_end, t.basis, t.family, t.source, t.version, t.sha256"
     ),
     "trading_calendar": (
-        "select date, is_trading, open_at, close_at, note from hat_trading_calendar order by date"
+        "select m.code as market, t.date, t.is_trading, t.open_at, t.close_at, t.note "
+        "from hat_trading_calendar t join hat_market m on m.id = t.market_id "
+        "order by m.code, t.date"
     ),
     "instruments": (
         "select isin, series, symbol, name, face_value, listed_on, delisted_on, active, "
@@ -224,14 +226,13 @@ def _parquet_facts(path: Path) -> tuple[int, date | None, date | None]:
 
     meta = pq.ParquetFile(path).metadata
     schema = meta.schema.to_arrow_schema()
-    column = next(
-        (
-            i
-            for i, f in enumerate(schema)
-            if pa.types.is_date(f.type) or pa.types.is_timestamp(f.type)
-        ),
+    field = next(
+        (f.name for f in schema if pa.types.is_date(f.type) or pa.types.is_timestamp(f.type)),
         None,
     )
+    # the Parquet leaf column of that top-level field (leaf and field indexes differ with nesting)
+    leaves = [meta.schema.column(j).path for j in range(meta.num_columns)]
+    column = leaves.index(field) if field in leaves else None
     lows, highs = [], []
     for group in range(meta.num_row_groups) if column is not None else ():
         stats = meta.row_group(group).column(column).statistics
@@ -264,12 +265,24 @@ def write_manifests(root: Path, clone: Path) -> dict[str, Changes]:
         if not (root / store).is_dir():
             continue
         target = clone / MANIFESTS / f"{store}.csv"
-        old = parse_manifest(target.read_text()) if target.exists() else {}
+        old = parse_manifest(committed_text(clone, (MANIFESTS / f"{store}.csv").as_posix()))
         text = manifest_text(store_rows(root, store))
         changes[store] = compare(old, parse_manifest(text))
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text)
     return changes
+
+
+def committed_text(clone: Path, rel: str) -> str:
+    """A file as HEAD holds it (empty when it is not there): the base a manifest is compared
+    with, so a run that failed after writing never hides a rewrite from the next one."""
+    result = subprocess.run(  # noqa: S603
+        ["git", "-C", str(clone), "show", f"HEAD:{rel}"],  # noqa: S607
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    return result.stdout if result.returncode == 0 else ""
 
 
 def write_reference(clone: Path) -> int:
@@ -307,18 +320,35 @@ def git(clone: Path, *args: str) -> str:
 def commit(clone: Path, message: str, *, push: bool) -> bool:
     """Commit the manifests and reference exports when they changed, then push (the clone's
     secret guard runs on the push); whether there was a change."""
-    if git(clone, "config", "core.hooksPath").strip() != HOOKS_PATH:
+    git(clone, "add", "--", str(MANIFESTS), str(REFERENCE))
+    changed = bool(
+        git(clone, "status", "--porcelain", "--", str(MANIFESTS), str(REFERENCE)).strip()
+    )
+    if changed:
+        git(clone, "commit", "-q", "-m", message, "--", str(MANIFESTS), str(REFERENCE))
+    # also a commit an earlier run could not push
+    if push and git(clone, "rev-list", "origin/main..HEAD").strip():
+        try:
+            git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
+        except RecordError:
+            subprocess.run(["git", "-C", str(clone), "rebase", "--abort"], check=False)  # noqa: S603, S607
+            raise
+        git(clone, "push", "-q", "origin", "HEAD:main")
+    return changed
+
+
+def guard_on(clone: Path) -> None:
+    """RecordError unless the clone's pre-push secret guard is enabled."""
+    result = subprocess.run(  # noqa: S603
+        ["git", "-C", str(clone), "config", "core.hooksPath"],  # noqa: S607
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if result.stdout.strip() != HOOKS_PATH:
         raise RecordError(
             f"the data repo's secret guard is off: git config core.hooksPath {HOOKS_PATH}"
         )
-    git(clone, "add", "--", str(MANIFESTS), str(REFERENCE))
-    if not git(clone, "status", "--porcelain", "--", str(MANIFESTS), str(REFERENCE)).strip():
-        return False
-    git(clone, "commit", "-q", "-m", message, "--", str(MANIFESTS), str(REFERENCE))
-    if push:
-        git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
-        git(clone, "push", "-q", "origin", "HEAD:main")
-    return True
 
 
 def refresh(root: Path, clone: Path, *, push: bool = True) -> str:
@@ -326,6 +356,7 @@ def refresh(root: Path, clone: Path, *, push: bool = True) -> str:
     outcome. RecordError when the clone is missing or git fails."""
     if not (clone / ".git").exists():
         raise RecordError(f"no data repo clone at {clone} (HAT_DATA_REPO)")
+    guard_on(clone)
     changes = write_manifests(root, clone)
     tables = write_reference(clone)
     stamp = datetime.now(UTC).date().isoformat()

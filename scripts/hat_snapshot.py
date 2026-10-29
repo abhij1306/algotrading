@@ -33,6 +33,7 @@ import hashlib
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -81,7 +82,8 @@ def excluded(rel: str, patterns: Iterable[str]) -> bool:
         names = prefixes if "/" in pattern else parts
         if any(fnmatch.fnmatchcase(name, pattern.removeprefix("/")) for name in names):
             return True
-    return False
+    # a credential-looking name in any case (`.ENV`, `MyToken.json`)
+    return any(fnmatch.fnmatchcase(name.lower(), p) for p in SECRET_PATTERNS for name in parts)
 
 
 def part_excludes(specs: Iterable[str], part: str) -> list[str]:
@@ -98,11 +100,14 @@ def part_excludes(specs: Iterable[str], part: str) -> list[str]:
 
 
 def held_files(records: Sequence[Mapping]) -> dict[str, dict[str, Entry]]:
-    """Per part, the files the records hold once restored in order (each record's files added,
-    its removed files dropped): what an incremental release need not carry again."""
+    """Per part, the files the records hold once restored in order (a full release's files
+    replace the part's state, an incremental one's are added and its removed files dropped):
+    what an incremental release need not carry again."""
     state: dict[str, dict[str, Entry]] = {}
     for record in sorted(records, key=lambda r: r["created"]):
         for part, body in record.get("parts", {}).items():
+            if not record.get("incremental"):
+                state[part] = {}
             files = state.setdefault(part, {})
             files.update(body.get("files", {}))
             for name in body.get("removed", []):
@@ -127,9 +132,18 @@ def sums_text(assets: Mapping[str, Entry]) -> str:
     return "".join(f"{assets[name]['sha256']}  {name}\n" for name in sorted(assets))
 
 
-def asset_problems(record_assets: Mapping[str, Entry], remote: Mapping[str, Entry]) -> list[str]:
-    """Each recorded asset that GitHub lacks or holds with another size or sha256 digest."""
-    problems = []
+def asset_problems(
+    record_assets: Mapping[str, Entry], remote: Mapping[str, Entry], extra: Iterable[str] = ()
+) -> list[str]:
+    """Each recorded asset that GitHub lacks or holds with another size or sha256 digest, and
+    each release asset the record does not list (other than the `extra` names: the sums and the
+    record itself), which a `cat <name>.part*` restore would pick up."""
+    allowed = set(record_assets) | set(extra)
+    problems = [
+        f"{name} is on the release but not in the record"
+        for name in sorted(remote)
+        if name not in allowed
+    ]
     for name, want in sorted(record_assets.items()):
         got = remote.get(name)
         if got is None:
@@ -158,7 +172,7 @@ class AssetWriter:
         self.digest = hashlib.sha256()
 
     def _path(self) -> Path:
-        return self.stage / f"{self.name}.part{self.index:02d}"
+        return self.stage / f"{self.name}.part{self.index:03d}"
 
     def write(self, data: bytes) -> int:
         view = memoryview(data)
@@ -235,10 +249,15 @@ def write_tar(root: Path, names: Sequence[str], out: AssetWriter) -> dict[str, E
     with tarfile.open(fileobj=out, mode="w|gz", compresslevel=1) as archive:
         for name in names:
             path = root / name
-            info = archive.gettarinfo(str(path), arcname=name)
             with path.open("rb") as handle:
+                archive.inodes = {}  # every path a regular file, never a link to another member
+                info = archive.gettarinfo(arcname=name, fileobj=handle)
+                before = os.fstat(handle.fileno())
                 reader = _Hashing(handle)
                 archive.addfile(info, reader)
+                after = os.fstat(handle.fileno())
+            if (after.st_size, after.st_mtime_ns) != (before.st_size, before.st_mtime_ns):
+                raise RuntimeError(f"{path} changed while it was archived")
             entries[name] = {"size": info.size, "sha256": reader.digest.hexdigest()}
     out.close()
     return entries
@@ -277,6 +296,10 @@ def ensure_release(repo: str, tag: str) -> None:
     if probe.returncode != 0:
         notes = "HAT data snapshot; restore: README.md and snapshots/<tag>.json of this repo."
         gh("release", "create", tag, "--repo", repo, "--title", tag, "--notes", notes)
+        return
+    # a retry of a run that failed before its record: its old parts would mix into a restore
+    for name in remote_assets(repo, tag):
+        gh("release", "delete-asset", tag, name, "--repo", repo, "--yes")
 
 
 def remote_assets(repo: str, tag: str) -> dict[str, Entry]:
@@ -312,7 +335,11 @@ def commit_record(clone: Path, path: Path, message: str) -> None:
     rel = str(path.relative_to(clone))
     git(clone, "add", "--", rel)
     git(clone, "commit", "-q", "-m", message, "--", rel)
-    git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
+    try:
+        git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
+    except subprocess.CalledProcessError:
+        subprocess.run(["git", "-C", str(clone), "rebase", "--abort"], check=False)  # noqa: S603, S607
+        raise
     git(clone, "push", "-q", "origin", "HEAD:main")
 
 
@@ -375,16 +402,19 @@ def run_release(args: argparse.Namespace) -> int:
             "removed": removed,
         }
     record["assets"] = dict(sorted(assets.items()))
-    record_path.parent.mkdir(parents=True, exist_ok=True)
-    record_path.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
+    staged = args.stage / record_path.name  # into the clone only once GitHub matches it
+    staged.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
     sums = args.stage / SUMS_NAME
     sums.write_text(sums_text(record["assets"]))
-    gh("release", "upload", args.tag, str(sums), str(record_path), "--repo", args.repo, "--clobber")
+    gh("release", "upload", args.tag, str(sums), str(staged), "--repo", args.repo, "--clobber")
     sums.unlink()
-    problems = asset_problems(record["assets"], remote_assets(args.repo, args.tag))
+    extra = (SUMS_NAME, staged.name)
+    problems = asset_problems(record["assets"], remote_assets(args.repo, args.tag), extra)
     if problems:
         print("SNAPSHOT FAILED", *problems, sep="\n  ", file=sys.stderr)
         return 1
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.move(staged, record_path)  # the stage is on another disk
     commit_record(args.record, record_path, f"snapshot {args.tag}")
     total = sum(int(a["size"]) for a in assets.values())
     print(f"snapshot {args.tag}: {len(assets)} assets, {total:,} bytes, checked on GitHub")
@@ -393,7 +423,8 @@ def run_release(args: argparse.Namespace) -> int:
 
 def run_check(args: argparse.Namespace) -> int:
     record = json.loads((args.record / RECORD_DIR / f"{args.tag}.json").read_text())
-    problems = asset_problems(record["assets"], remote_assets(args.repo, args.tag))
+    extra = (SUMS_NAME, f"{args.tag}.json")
+    problems = asset_problems(record["assets"], remote_assets(args.repo, args.tag), extra)
     if problems:
         print("CHECK FAILED", *problems, sep="\n  ", file=sys.stderr)
         return 1

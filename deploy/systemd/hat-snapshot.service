@@ -6,7 +6,9 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-Environment=HAT_DATA_ROOT=@DATA_ROOT@ HAT_DATA_REPO=@DATA_REPO@ DB_NAME=hat_live
+Environment="HAT_DATA_ROOT=@DATA_ROOT@"
+Environment="HAT_DATA_REPO=@DATA_REPO@"
+Environment=DB_NAME=hat_live
 Environment="HAT_PG_DUMP=@PG_DUMP@"
 ExecStart=@REPO@/scripts/hat_snapshot_weekly.sh
 Nice=10

@@ -72,6 +72,8 @@ def test_exclusion_by_component_or_by_prefix_from_the_root() -> None:
     assert excludes == [*snapshot.SECRET_PATTERNS, "venv", "/scratch"]
     for secret in (".env", "a/.cookies", "kotak/set_secrets.log", "x/api.key", "fyers_token.json"):
         assert snapshot.excluded(secret, snapshot.SECRET_PATTERNS)
+    assert snapshot.excluded("a/.ENV", [])  # credentials in any case, whatever the patterns
+    assert snapshot.excluded("MyToken.json", [])
 
 
 def test_an_incremental_release_carries_only_new_or_changed_files() -> None:
@@ -80,12 +82,16 @@ def test_an_incremental_release_carries_only_new_or_changed_files() -> None:
 
     full = {"created": "2026-10-29T00:00:00+00:00", "parts": {"raw": {"files": {
         "a": entry("1"), "b": entry("2"), "c": entry("3")}}}}  # fmt: skip
-    week = {"created": "2026-11-01T00:00:00+00:00", "parts": {"raw": {
+    week = {"created": "2026-11-01T00:00:00+00:00", "incremental": True, "parts": {"raw": {
         "files": {"b": entry("2x")}, "removed": ["c"]}}}  # fmt: skip
     held = snapshot.held_files([week, full])  # restored in creation order
     assert held == {"raw": {"a": entry("1"), "b": entry("2x")}}
     current = {"a": entry("1"), "b": entry("2"), "d": entry("4")}
     assert snapshot.changes(held["raw"], current) == (["b", "d"], [])
+    # a later full release starts the part afresh: a file it lacks is carried again
+    again = {"created": "2026-11-08T00:00:00+00:00", "incremental": False,
+             "parts": {"raw": {"files": {"b": entry("2x")}}}}  # fmt: skip
+    assert snapshot.held_files([full, week, again]) == {"raw": {"b": entry("2x")}}
 
 
 def test_the_asset_writer_cuts_the_stream_and_hashes_each_part(tmp_path: Path) -> None:
@@ -94,8 +100,8 @@ def test_the_asset_writer_cuts_the_stream_and_hashes_each_part(tmp_path: Path) -
     writer.write(b"abcdefghij")
     writer.close()
     assert [got[n]["size"] for n in sorted(got)] == [4, 4, 2]
-    assert got["x.tar.gz.part02"]["sha256"] == hashlib.sha256(b"ij").hexdigest()
-    assert snapshot.sums_text(got).splitlines()[0].endswith("  x.tar.gz.part00")
+    assert got["x.tar.gz.part002"]["sha256"] == hashlib.sha256(b"ij").hexdigest()
+    assert snapshot.sums_text(got).splitlines()[0].endswith("  x.tar.gz.part000")
 
 
 def test_the_asset_check_names_missing_resized_and_changed_assets() -> None:
@@ -106,3 +112,8 @@ def test_the_asset_check_names_missing_resized_and_changed_assets() -> None:
         "b digest differs from the record",
     ]
     assert snapshot.asset_problems({"b": {"size": 2, "sha256": "y"}}, {"b": {"size": 2}}) == []
+    stale = {"b": {"size": 2, "sha256": "y"}, "b.part9": {"size": 1}, "SHA256SUMS": {"size": 1}}
+    assert snapshot.asset_problems(recorded, stale, ["SHA256SUMS"]) == [
+        "b.part9 is on the release but not in the record",
+        "a is missing from the release",
+    ]

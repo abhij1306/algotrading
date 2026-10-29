@@ -10,8 +10,12 @@ pg_dump="${3:-pg_dump}"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$units"
-# a value as a literal sed replacement: its \, & and | escaped
-lit() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+# each value goes into a quoted systemd Environment= value: no quote or backslash in it; %
+# doubled (a systemd specifier), then & and | escaped for the sed replacement
+for value in "$repo" "$data_root" "$data_repo" "$pg_dump"; do
+  case "$value" in *'"'* | *'\'*) echo "refused: a quote or backslash in $value" >&2; exit 1 ;; esac
+done
+lit() { printf '%s' "$1" | sed -e 's/%/%%/g' -e 's/[&|]/\\&/g'; }
 for unit in hat-snapshot.service hat-snapshot.timer; do
   sed -e "s|@REPO@|$(lit "$repo")|g" -e "s|@DATA_ROOT@|$(lit "$data_root")|g" \
     -e "s|@DATA_REPO@|$(lit "$data_repo")|g" -e "s|@PG_DUMP@|$(lit "$pg_dump")|g" \
