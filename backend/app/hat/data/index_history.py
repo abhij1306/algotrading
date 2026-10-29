@@ -761,6 +761,19 @@ def _print_backfill(report: BackfillReport, apply: bool) -> None:  # pragma: no 
             out.write(f"  still missing {len(left)}: {', '.join(str(d) for d in left)}\n")
 
 
+def _verify_tri(
+    store: DataStore, post: Poster, pacer: Pacer, start: date, end: date, *, fetch: bool
+) -> int:  # pragma: no cover - the network
+    """The `verify-tri` command; exit 1 on any difference or a kept answer that changed."""
+    folder = store.root / TRI_RAW_DIR
+    today = date.today()
+    years = range(start.year, end.year + 1)
+    fetched = fetch_tri_raw(folder, post, pacer, years, today) if fetch else {}
+    result = verify_tri(store, folder, start, end, today)
+    _print_tri_check(result, fetched, start, end)
+    return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
+
+
 def _reload(
     store: DataStore, archive: ArchiveIndexSource, wanted: Sequence[date], *, apply: bool
 ) -> int:  # pragma: no cover - the network
@@ -818,13 +831,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
         _print_backfill(report, args.apply)
         return 1 if report.failed or report.left else 0
     if args.command == "verify-tri":
-        folder = store.root / TRI_RAW_DIR
-        today = date.today()
-        years = range(args.start.year, args.end.year + 1)
-        fetched = fetch_tri_raw(folder, post, pacer, years, today) if args.fetch else {}
-        result = verify_tri(store, folder, args.start, args.end, today)
-        _print_tri_check(result, fetched, args.start, args.end)
-        return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
+        return _verify_tri(store, post, pacer, args.start, args.end, fetch=args.fetch)
     archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
     if args.command == "reload":
         return _reload(store, archive, args.days or [], apply=args.apply)

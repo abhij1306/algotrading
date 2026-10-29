@@ -1250,6 +1250,14 @@ def results_digest_text(results: Mapping[str, Sequence[ResultEvent]]) -> str:
     )
 
 
+def _screened(
+    intraday: BarStore, sessions: Sequence[date]
+) -> dict[tuple[str, date], frozenset[datetime]]:
+    """The refused 5-minute buckets (`intraday.screened_buckets`) when the run reads any session
+    of the store; none otherwise."""
+    return screened_buckets(intraday.read_rejects()) if sessions else {}
+
+
 def load_market(
     store: DataStore,
     session: Session,
@@ -1373,7 +1381,7 @@ def load_market(
         symbols=symbols,
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
-        screened_5m=screened_buckets(intraday.read_rejects()) if sessions_5m else {},
+        screened_5m=_screened(intraday, sessions_5m),
         results=filings,
     )
     snapshot = {
