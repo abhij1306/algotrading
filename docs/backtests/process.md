@@ -189,23 +189,23 @@ a sweep over it (the variants change the first strategy and the account). Keep t
 research files. `<s1>` and `<s2>` are strategy version ids.
 
 ```yaml
-# VCP alone (S1): the same run as --strategy-version <s1> --universe "NIFTY 500"
+# VCP alone (S1): the same run as --strategy-version <s1> --universe nifty500
 portfolio: s1-vcp
-universe: NIFTY 500
+universe: nifty500
 window: {from: 2016-01-01, to: 2021-12-31}
 strategies:
   - {version: <s1>}
 ---
 # Qullamaggie EP only: S2 with its breakout playbook off
 portfolio: s2-ep-only
-universe: NIFTY 500
+universe: nifty500
 window: {from: 2022-01-01, to: 2024-12-31}
 strategies:
   - {version: <s2>, playbooks: [episodic_pivot]}
 ---
 # S1 + S2 on one account: shared cash, the global open-risk cap across both
 portfolio: s1-s2
-universe: NIFTY 500
+universe: nifty500
 window: {from: 2022-01-01, to: 2024-12-31}
 start_capital: 2000000
 conventions: {regime_mult: policy}

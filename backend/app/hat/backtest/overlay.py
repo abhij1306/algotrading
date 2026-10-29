@@ -17,9 +17,14 @@ The rules, each fixed before any result is seen:
   Each close compares the sleeve with its target and trades at the next open only when they
   differ by more than 2% of equity (`needs_rebalance`) or the asset switches. Open positions
   plus a NIFTYBEES sleeve never exceed equity (`exposure_ok`, checked every close).
+- Prices (`sleeve_price`, `SleevePrices`): never the day's open, a thin pre-open auction print on
+  these ETFs. The open's trades fill at the close of the session's 09:15 5-minute ETF bar, a
+  funding sale at the close of the bar that ended as the entry filled; without that bar (before
+  5-minute bars, from 2021-11, or a day missing it) at the previous close, NIFTYBEES' times
+  NIFTY 50's open over its previous close, each such fill counted `sleeve_price_estimated`. A tax
+  sale and the final liquidation fill at the day's close.
 - Funding (`units_to_fund`): an entry the free cash cannot pay sells the sleeve for the
-  shortfall when it fills, at the 5-minute ETF bar holding the fill (else at the day's open,
-  counted `sleeve_price_estimated`); the sale credits `same_day_sale_credit_pct` of its proceeds
+  shortfall when it fills; the sale credits `same_day_sale_credit_pct` of its proceeds
   that day (80% before 2024-10-07, 100% from then, `CreditSchedule`) and the rest at the next
   session. An entry the cash and the credit cannot pay is sized down by the risk check; one it
   refuses for cash while the sleeve held units counts `insufficient_same_day_credit`.
@@ -35,14 +40,16 @@ The rules, each fixed before any result is seen:
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from ..costs import BacktestFills, CostSchedule
 from ..money import exact
+from ..time import IST
 from . import tax as taxes
 
 __all__ = [
@@ -57,6 +64,7 @@ __all__ = [
     "EtfData",
     "Overlay",
     "OverlayConfig",
+    "SleevePrices",
     "band_states",
     "exposure_ok",
     "implied_distribution",
@@ -65,6 +73,7 @@ __all__ = [
     "replay_overlay",
     "refusal_reason",
     "sleeve_asset",
+    "sleeve_price",
     "target_value",
     "units_to_fund",
 ]
@@ -85,6 +94,8 @@ CASH_REFUSALS = frozenset({"size_zero_cash", "size_below_min"})
 _ZERO = Decimal(0)
 _ONE = Decimal(1)
 _BAR = timedelta(minutes=5)
+_TICK = Decimal("0.0001")
+_OPEN = time(9, 15)  # the first 5-minute bar of continuous trading (IST)
 
 
 class OverlayError(ValueError):
@@ -396,11 +407,69 @@ class EtfData:
     regime_closes: Sequence[tuple[date, Decimal]]
     # the reference total-return indices (NIFTY 50 TRI, NIFTY 500 TRI), pre-tax only
     references: Mapping[str, Sequence[tuple[date, Decimal]]] = field(default_factory=dict)
+    # NIFTY 50's opens, for NIFTYBEES' estimated open price (`sleeve_price`)
+    regime_opens: Mapping[date, Decimal] = field(default_factory=dict)
 
     def record(self) -> dict[str, Any]:
         return {
             "liquidbees_tr_proxy": [[a.isoformat(), b.isoformat()] for a, b in self.proxy_ranges]
         }
+
+
+def sleeve_price(
+    bars: Sequence[tuple[datetime, EtfBar]],
+    at: datetime | None,
+    prev_close: Decimal | None,
+    index_move: Decimal | None,
+    close: Decimal,
+) -> tuple[Decimal, bool]:
+    """A sleeve fill's price on a session and whether it is estimated: the close of the
+    session's 09:15 5-minute bar of `bars` (the open's trades, `at` None) or of the bar that
+    ended in the five minutes up to `at` (a funding sale: an entry fills at its trigger bar's
+    final instant, just after that bar's end), so never a price after `at`; without that bar,
+    estimated, `prev_close` times `index_move` (NIFTY 50's open over its previous close,
+    NIFTYBEES only; else 1), or the session's `close` without a previous close. Never the day's
+    open (the module docstring)."""
+    if at is None:
+        found = next((bar for start, bar in bars if start.astimezone(IST).time() == _OPEN), None)
+    else:
+        found = next((bar for start, bar in bars if start + _BAR <= at < start + 2 * _BAR), None)
+    if found is not None:
+        return found.close, False
+    if prev_close is None:
+        return close, True
+    return (prev_close * (index_move or _ONE)).quantize(_TICK), True
+
+
+class SleevePrices:
+    """`sleeve_price` over the ETF data: each fill's bars, previous close and index move."""
+
+    def __init__(self, data: EtfData) -> None:
+        self.data = data
+        self.days = {a: sorted(data.daily.get(a, {})) for a in ASSETS}
+        self.index_closes = dict(data.regime_closes)
+
+    def prev_close(self, asset: str, day: date) -> tuple[date, Decimal] | None:
+        """The asset's last daily close before `day`, with its date."""
+        days = self.days.get(asset, [])
+        n = bisect_left(days, day)
+        return None if n == 0 else (days[n - 1], self.data.daily[asset][days[n - 1]].close)
+
+    def at(self, asset: str, day: date, at: datetime | None = None) -> tuple[Decimal, bool] | None:
+        """The asset's fill price on `day` (`sleeve_price`); None without a daily bar that day."""
+        bar = self.data.daily.get(asset, {}).get(day)
+        if bar is None:
+            return None
+        before = self.prev_close(asset, day)
+        move = None
+        if before is not None and asset == NIFTYBEES:
+            index_open, index_close = (
+                self.data.regime_opens.get(day),
+                self.index_closes.get(before[0]),
+            )
+            move = index_open / index_close if index_open and index_close else None
+        bars = self.data.bars_5m.get(asset, {}).get(day, ())
+        return sleeve_price(bars, at, None if before is None else before[1], move, bar.close)
 
 
 # --- the sleeve, day by day --------------------------------------------------------------------
@@ -469,6 +538,7 @@ class Overlay:
         self.config = config
         self.data = data
         self.fills = {a: BacktestFills(schedule, config.slippage_bps[a]) for a in ASSETS}
+        self.prices = SleevePrices(data)
         self.regime = band_states(data.regime_closes, config.band)
         gold = [(d, b.close) for d, b in data.daily.get(GOLDBEES, {}).items()]
         self.gold = band_states(gold, config.gold_band)
@@ -482,7 +552,7 @@ class Overlay:
         self.book = taxes.TaxBook(config.slab_rate) if config.tax else None
         self.rows: list[OverlayRow] = []
         self.events: list[dict[str, Any]] = []
-        # the entries refused for credit, the sales priced at the open, the funding sales
+        # the entries refused for credit, the fills at an estimated price, the funding sales
         self.counts: dict[str, int] = {
             INSUFFICIENT_CREDIT: 0,
             SLEEVE_PRICE_ESTIMATED: 0,
@@ -524,11 +594,20 @@ class Overlay:
 
     # --- trades ------------------------------------------------------------------------------
 
-    def _sell(self, asset: str, qty: int, price: Decimal, day: date, credit: Decimal) -> Decimal:
+    def _sell(
+        self,
+        asset: str,
+        qty: int,
+        price: Decimal,
+        day: date,
+        credit: Decimal,
+        estimated: bool = False,
+    ) -> Decimal:
         """Sell `qty` units at `price`; the proceeds net of charges, `credit` of them credited now
         and the rest pending to the next session. Returns the credited amount."""
         if qty <= 0:
             return _ZERO
+        self.counts[SLEEVE_PRICE_ESTIMATED] += estimated
         filled, fees = self.fills[asset].fill("sell", qty, price, day)
         proceeds = filled * qty - fees
         self.units[asset] -= qty
@@ -542,11 +621,12 @@ class Overlay:
             self.book.sell(asset, qty, proceeds, day)
         return now
 
-    def _buy(self, asset: str, budget: Decimal, price: Decimal, day: date) -> None:
+    def _buy(self, asset: str, budget: Decimal, price: Decimal, day: date, estimated: bool) -> None:
         """Buy as many units at `price` as `budget` pays for (slippage and charges included)."""
         qty = self.fills[asset].affordable(budget, price, day)
         if qty <= 0:
             return
+        self.counts[SLEEVE_PRICE_ESTIMATED] += estimated
         filled, fees = self.fills[asset].fill("buy", qty, price, day)
         outlay = filled * qty + fees
         self.units[asset] += qty
@@ -579,9 +659,10 @@ class Overlay:
     # --- the session -------------------------------------------------------------------------
 
     def open_session(self, day: date, free_cash: Decimal) -> None:
-        """Release the last session's pending credit, then trade the plan at `day`'s open:
-        sell what the target asset is not (and any excess), then buy up to the target with
-        what the free cash allows (`free_cash` the account's, pending excluded)."""
+        """Release the last session's pending credit, then trade the plan at `day`'s open (at
+        `SleevePrices`' price): sell what the target asset is not (and any excess), then buy up
+        to the target with what the free cash allows (`free_cash` the account's, pending
+        excluded)."""
         free_cash += self.pending
         self.pending = _ZERO
         plan, self.plan = self.plan, None
@@ -589,46 +670,37 @@ class Overlay:
             return
         for asset in ASSETS:
             units = self.units[asset]
-            bar = self._bar(asset, day)
-            if not units or bar is None:
-                continue
-            if asset != plan.asset:
-                free_cash += self._sell(asset, units, bar.open, day, _ONE)
+            found = self.prices.at(asset, day) if units and asset != plan.asset else None
+            if found is not None:
+                free_cash += self._sell(asset, units, found[0], day, _ONE, found[1])
         asset = plan.asset
-        bar = None if asset is None else self._bar(asset, day)
-        if asset is None or bar is None:
+        found = None if asset is None else self.prices.at(asset, day)
+        if asset is None or found is None:
             return
-        held = self.units[asset] * bar.open
+        price, estimated = found
+        held = self.units[asset] * price
         if held > plan.target:
-            excess = held - plan.target
-            qty = int((excess / bar.open).to_integral_value(ROUND_FLOOR))
-            free_cash += self._sell(asset, min(qty, self.units[asset]), bar.open, day, _ONE)
+            qty = int(((held - plan.target) / price).to_integral_value(ROUND_FLOOR))
+            free_cash += self._sell(asset, min(qty, self.units[asset]), price, day, _ONE, estimated)
         elif plan.target > held:
-            self._buy(asset, min(plan.target - held, max(free_cash, _ZERO)), bar.open, day)
+            self._buy(asset, min(plan.target - held, max(free_cash, _ZERO)), price, day, estimated)
         self.events.append(
             {
                 "date": day.isoformat(),
                 "event": plan.reason,
                 "asset": asset,
                 "target": str(plan.target),
+                "price": str(price),
+                "estimated": estimated,
             }
         )
-
-    def _price_at(self, asset: str, day: date, at: datetime) -> tuple[Decimal, bool] | None:
-        """The sale price at instant `at`: the open of the 5-minute bar holding it, else the
-        day's open (estimated); None without a bar that day."""
-        for start, bar in self.data.bars_5m.get(asset, {}).get(day, ()):
-            if start <= at < start + _BAR:
-                return bar.open, False
-        bar = self._bar(asset, day)
-        return None if bar is None else (bar.open, True)
 
     def credit_for(self, day: date, at: datetime) -> Decimal:
         """What selling the whole sleeve at `at` would credit today (net of charges)."""
         total = _ZERO
         pct = self.config.credit.on(day)
         for asset, units in self.units.items():
-            found = self._price_at(asset, day, at) if units else None
+            found = self.prices.at(asset, day, at) if units else None
             if found is not None:
                 total += self._proceeds(asset, units, found[0], day) * pct
         return total
@@ -639,16 +711,14 @@ class Overlay:
         for asset in ASSETS:
             if shortfall <= 0:
                 return
-            found = self._price_at(asset, day, at) if self.units[asset] else None
+            found = self.prices.at(asset, day, at) if self.units[asset] else None
             if found is None:
                 continue
             price, estimated = found
             qty = self._units_for(asset, shortfall, price, day, pct)
             if qty:
-                shortfall -= self._sell(asset, qty, price, day, pct)
+                shortfall -= self._sell(asset, qty, price, day, pct, estimated)
                 self.counts[FUNDING_SALES] += 1
-                if estimated:
-                    self.counts[SLEEVE_PRICE_ESTIMATED] += 1
 
     def refused_for_credit(self) -> None:
         self.counts[INSUFFICIENT_CREDIT] += 1

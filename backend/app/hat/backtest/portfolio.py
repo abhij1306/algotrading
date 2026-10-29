@@ -6,7 +6,7 @@ command line would build. A leaf over `runs`: it reads no database and no file b
 file a `policy` key names (`read_policy`).
 
     portfolio: s1-s2-etf              # the run's label (its `variant`)
-    universe: NIFTY 500               # a research universe, by name or id
+    universe: nifty500                # a research universe's stored name, or its id
     window: {from: 2016-01-01, to: 2026-10-23}
     start_capital: 1000000            # optional, as the CLI's flags: slippage_bps, cost_model,
     slippage_bps: 20                  #   cooldown_sessions, risk_pct, max_positions,

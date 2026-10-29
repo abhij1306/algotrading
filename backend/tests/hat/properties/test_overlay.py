@@ -5,13 +5,14 @@ inputs; no run of the loop."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from app.hat.backtest import etf_data, tax
 from app.hat.backtest import overlay as ov
-from app.hat.backtest import tax
 from app.hat.costs import load_cost_schedule
 from app.hat.time import IST
 
@@ -163,16 +164,103 @@ def test_funding_sells_the_sleeve_and_credits_by_date(day: date, pct: Decimal) -
     assert proceeds * pct >= 1000 > short * pct  # the fewest units that cover it
     assert sleeve.cash == proceeds  # the account has all of it
     assert sleeve.pending == proceeds - proceeds * pct  # the rest credited next session
-    assert sleeve.counts[ov.SLEEVE_PRICE_ESTIMATED] == 1  # no 5-minute bar: the day's open
+    assert sleeve.counts[ov.SLEEVE_PRICE_ESTIMATED] == 1  # no 5-minute bar: estimated
 
 
 def test_funding_prices_at_the_5_minute_bar_of_the_fill() -> None:
     day = date(2025, 1, 6)
     sleeve = _overlay([day], bars_5m=True)
     sleeve.units[ov.LIQUIDBEES] = 100
-    at = datetime.combine(day, datetime.min.time(), IST).replace(hour=9, minute=32)
-    assert sleeve._price_at(ov.LIQUIDBEES, day, at) == (D(101), False)  # noqa: SLF001
+    at = datetime.combine(day, datetime.min.time(), IST).replace(hour=9, minute=35, second=2)
+    assert sleeve.prices.at(ov.LIQUIDBEES, day, at) == (D(101), False)
     sleeve.fund(day, at, D(500))
+    assert sleeve.counts[ov.SLEEVE_PRICE_ESTIMATED] == 0
+
+
+def _at(day: date, hour: int, minute: int) -> datetime:
+    return datetime.combine(day, datetime.min.time(), IST).replace(hour=hour, minute=minute)
+
+
+def _ohlc(o: str, c: str) -> ov.EtfBar:
+    return ov.EtfBar(D(o), max(D(o), D(c)), min(D(o), D(c)), D(c))
+
+
+DAY0, DAY1 = date(2022, 5, 10), date(2022, 5, 11)
+BARS = [(_at(DAY1, 9, 15), _ohlc("176.4", "176.72")), (_at(DAY1, 9, 20), _ohlc("176.7", "176.61"))]
+
+
+@pytest.mark.parametrize(
+    ("at", "price"),
+    [
+        (None, D("176.72")),  # the open's trades: the 09:15 bar's close, not its open
+        # a fill at its trigger bar's final instant sells at the bar that just ended
+        (_at(DAY1, 9, 20).replace(second=2), D("176.72")),
+        (_at(DAY1, 9, 24), D("176.72")),
+        (_at(DAY1, 9, 25).replace(second=2), D("176.61")),
+    ],
+)
+def test_sleeve_price_reads_the_5_minute_bar_close(at: datetime | None, price: Decimal) -> None:
+    assert ov.sleeve_price(BARS, at, D("176.16"), None, D("175.34")) == (price, False)
+
+
+def test_sleeve_price_without_its_bar_is_estimated_from_the_previous_close() -> None:
+    assert ov.sleeve_price(BARS, _at(DAY1, 9, 15), D("100"), None, D("90"))[1]  # none ended
+    assert ov.sleeve_price(BARS[1:], None, D("100"), None, D("90"))[1]  # no 09:15 bar
+    late = _at(DAY1, 9, 31)  # the 09:25 bar is missing
+    assert ov.sleeve_price(BARS, late, D("100"), None, D("90")) == (D("100.0000"), True)
+    move = D("17000") / D("16800")  # NIFTY 50 opened 1.19% up
+    assert ov.sleeve_price([], None, D("176.16"), move, D("1")) == (D("178.2571"), True)
+    assert ov.sleeve_price([], None, None, move, D("175.34")) == (D("175.34"), True)
+
+
+def _data(five: bool) -> ov.EtfData:
+    # NIFTYBEES' stored open on DAY1 is a pre-open print 13% below the previous close
+    daily = {
+        ov.NIFTYBEES: {DAY0: _ohlc("184.6", "176.16"), DAY1: _ohlc("153.3", "175.34")},
+        ov.LIQUIDBEES: {DAY0: _bar("1000"), DAY1: _ohlc("1030", "1000.01")},
+    }
+    return ov.EtfData(
+        daily,
+        {ov.NIFTYBEES: {DAY1: BARS}} if five else {},
+        {},
+        (),
+        [(DAY0, D("16240"))],
+        regime_opens={DAY1: D("16000")},
+    )
+
+
+def test_sleeve_prices_never_fill_at_the_daily_open() -> None:
+    with_bars, without = ov.SleevePrices(_data(True)), ov.SleevePrices(_data(False))
+    assert with_bars.at(ov.NIFTYBEES, DAY1) == (D("176.72"), False)
+    # without 5-minute bars: the previous close times NIFTY 50's open move (16000 / 16240)
+    assert without.at(ov.NIFTYBEES, DAY1) == (D("173.5567"), True)
+    assert without.at(ov.LIQUIDBEES, DAY1) == (D("1000.0000"), True)  # its previous close
+    assert without.at(ov.NIFTYBEES, DAY0) == (D("176.16"), True)  # no previous close: the close
+    assert without.at(ov.GOLDBEES, DAY1) is None  # no daily bar
+
+
+def test_open_gaps_flag_the_auction_print_only() -> None:
+    gaps = etf_data.open_gaps(_data(True))
+    assert [g["date"] for g in gaps[ov.NIFTYBEES]] == ["2022-05-11"]
+    assert gaps[ov.NIFTYBEES][0]["fill_price"] == "176.72"
+    assert [g["date"] for g in gaps[ov.LIQUIDBEES]] == ["2022-05-11"]  # 3%: estimated at 1000
+    # an open the index moved as much is a real gap, not flagged
+    moved = replace(_data(False), regime_opens={DAY1: D("14200")})
+    assert etf_data.open_gaps(moved)[ov.NIFTYBEES] == []
+
+
+def test_open_session_trades_at_the_sleeve_price_and_records_it() -> None:
+    zero = {a: D(0) for a in ov.ASSETS}
+    sleeve = ov.Overlay(
+        ov.OverlayConfig(sleeve=ov.NIFTY, slippage_bps=zero, tax=False),
+        _data(True),
+        load_cost_schedule(),
+    )
+    sleeve.plan = ov._Plan(ov.NIFTYBEES, D(100_000), "rebalance")  # noqa: SLF001
+    sleeve.open_session(DAY1, D(100_000))
+    assert sleeve.events[-1]["price"] == "176.72"
+    assert sleeve.events[-1]["estimated"] is False
+    assert sleeve.units[ov.NIFTYBEES] * D("176.72") <= 100_000
     assert sleeve.counts[ov.SLEEVE_PRICE_ESTIMATED] == 0
 
 

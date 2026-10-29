@@ -27,7 +27,8 @@ under it, one file per request, and never overwritten: a rerun asks only for wha
   1D Rate Index less the expense ratio, flagged by date range), the index series and
   `coverage.json` (per series: span, sessions, gaps against the trading calendar, sources).
 - `store` writes `build/` and the raw 5-minute bars into the store a backtest's overlay reads,
-  `HAT_DATA_ROOT/etf/` (`app.hat.backtest.etf_data`), and prints its manifest.
+  `HAT_DATA_ROOT/etf/` (`app.hat.backtest.etf_data`), and prints its manifest, with the
+  `open_gaps` data check (the daily opens a sleeve fill avoids).
 """
 
 from __future__ import annotations

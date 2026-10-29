@@ -201,14 +201,15 @@ GAP_PLAYBOOKS: dict[str, Callable[[Playbook], bool]] = {
 # independent of that strategy's selection.
 CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
 # Reported by a run with the ETF overlay (`RunSpec.overlay`): today's tax rules on every year, the
-# year's tax paid on its last session, a sleeve sale priced at the day's open without 5-minute ETF
-# bars (counted `sleeve_price_estimated`), LIQUIDBEES' return from the 1D Rate Index less its
-# expense ratio where its dividends are not known (the ranges in `overlay.liquidbees_tr_proxy`),
-# ETF trades on the stock cost model (equity delivery STT on every ETF, LIQUIDBEES included).
+# year's tax paid on its last session, a sleeve fill without its 5-minute ETF bar priced from the
+# previous close (counted `sleeve_price_estimated`, `overlay.sleeve_price`), LIQUIDBEES' return
+# from the 1D Rate Index less its expense ratio where its dividends are not known (the ranges in
+# `overlay.liquidbees_tr_proxy`), ETF trades on the stock cost model (equity delivery STT on every
+# ETF, LIQUIDBEES included).
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",
-    "sleeve_price_estimated_at_open",
+    "sleeve_price_estimated_from_prev_close",
     "liquidbees_tr_proxy",
     "etf_costs_on_stock_cost_model",
 )
