@@ -218,18 +218,23 @@ def quarter_announcement(
     """The results announcement of a quarter no filing dates (a secondary-source row): among the
     results announcements after the quarter end and by its deadline plus 30 days that no other
     quarter's filing already took (`used`, by `Announcement.public`), the first that names the
-    quarter, else the first that names no quarter."""
+    quarter, else the first 'Financial Result Updates' item that names no quarter, else the first
+    board outcome naming the results that names none."""
     hi = deadline(period_end) + timedelta(days=30)
-    fallback = None
+    unnamed: list[Announcement] = []
     for item in items:
         if not (period_end < item.at.date() and item.at <= hi and item.public not in used):
             continue
         quarters = named_quarter_ends(item.text)
         if period_end in quarters:
             return item
-        if not quarters and fallback is None:
-            fallback = item
-    return fallback
+        if not quarters:
+            unnamed.append(item)
+    for rule in ("result_updates", "board_outcome"):
+        for item in unnamed:
+            if is_results_announcement(item) == rule:
+                return item
+    return None
 
 
 def last_quarter_end(day: date) -> date:

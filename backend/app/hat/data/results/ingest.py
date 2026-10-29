@@ -27,8 +27,9 @@ considered is written to `<report_dir>/filings.csv` with its outcome.
 
 Last, every stored row's `public_at` is worked out again under today's rules and the cache
 (`MemberIngest.retime`); one that comes out later is moved later, one that comes out earlier only
-onto an announcement's dissemination time (the only timing changes the table allows), and each
-move is written to `<report_dir>/retimed.csv`.
+onto an announcement's dissemination time after the quarter's end and by at most 120 days (the
+only timing changes the table allows), and each move is written to
+`<report_dir>/retimed-<UTC time>.csv` (one file per run, kept).
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ import logging
 import uuid
 from collections.abc import Iterable, Sequence
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ...models import HatFinancialResult, HatInstrument
+from ...time import IST, utc_now
 from .fetch import in_scope, listing_urls
 from .growth import derive_q4, quarter_ends_before, year_ago
 from .nse import (
@@ -133,6 +135,12 @@ class Retimed:
     new_at: str
     new_source: str
     lead_s: int
+    old_estimated: bool
+    new_estimated: bool
+    old_xbrl_at: str
+    old_xbrl_estimated: bool | None
+    new_xbrl_at: str
+    new_xbrl_estimated: bool | None
 
 
 @dataclass(frozen=True)
@@ -188,7 +196,8 @@ def member_filings(
     cache: RawCache, member: Member, insurance: Sequence[Filing], owners: dict[str, str]
 ) -> list[Filing]:
     """The member's filings from the cached listings of each symbol it had, one per XBRL URL
-    (earliest broadcast first); a row whose ISIN names another covered instrument is left out."""
+    (earliest broadcast first); a row that names an ISIN outside the member's chain (`owners`:
+    each covered ISIN, an earlier one too, -> its company's instrument) is left out."""
     answers = []
     for symbol in member.symbols:
         for listing, url in listing_urls(symbol):
@@ -198,8 +207,7 @@ def member_filings(
     filings = filings_of(answers) + [f for f in insurance if f.symbol in member.symbols]
     out: dict[str, Filing] = {}
     for filing in sorted(filings, key=_filing_order):
-        owner = owners.get(filing.isin)
-        if filing.isin and owner is not None and owner != member.instrument_id:
+        if filing.isin and owners.get(filing.isin) != member.instrument_id:
             continue
         if filing.xbrl_url and filing.xbrl_url not in out:
             out[filing.xbrl_url] = filing
@@ -233,10 +241,9 @@ def parse(
     ensure_live_schema(live_writer_engine)
     announced = announcements_index(nse)
     insurance = insurance_filings(nse)
-    owners = {m.isin: m.instrument_id for m in members}
     with db_session_scope() as session:
         listed = first_listed(session)
-        owners |= {isin: m.instrument_id for m in members for isin in _isins(session, m.older)}
+        owners = chain_owners(session, members)
     report = ParseReport()
     outcomes: list[Outcome] = []
     retimed: list[Retimed] = []
@@ -268,7 +275,8 @@ def parse(
     )
     report.retimed = len(retimed)
     write_outcomes(report_dir / "filings.csv", outcomes)
-    write_rows(report_dir / "retimed.csv", retimed, Retimed)
+    stamp = utc_now().strftime("%Y%m%dT%H%M%SZ")
+    write_rows(report_dir / f"retimed-{stamp}.csv", retimed, Retimed)
     return report
 
 
@@ -282,6 +290,14 @@ WITH RECURSIVE chain(id, head) AS (
 SELECT CAST(c.head AS TEXT), min(i.listed_on) FROM chain c
 JOIN hat_instrument i ON i.id = c.id GROUP BY c.head
 """
+
+
+def chain_owners(
+    session: Session, members: Sequence[Member]
+) -> dict[str, str]:  # pragma: no cover - the database
+    """Each covered ISIN, an earlier one of a chain too, -> its company's (latest) instrument."""
+    owners = {m.isin: m.instrument_id for m in members}
+    return owners | {isin: m.instrument_id for m in members for isin in _isins(session, m.older)}
 
 
 def _isins(session: Session, ids: Sequence[str]) -> list[str]:  # pragma: no cover - the database
@@ -404,22 +420,25 @@ class MemberIngest:  # pragma: no cover - the database
                 .order_by(HatFinancialResult.version)
             )
         )
-        for row in self.rows:
-            self.shas.add(row.sha256)
-            self._hold(row)
         # the rows its earlier ISINs' instruments hold: read for the trades of those years, so
-        # they are re-timed too (`retime`), never extended
+        # they are re-timed too (`retime`), never extended; a document or quarter they hold is
+        # held by the company, so it is never stored again under the latest instrument
         self.older_rows: list[HatFinancialResult] = (
             list(
                 session.scalars(
-                    select(HatFinancialResult).where(
+                    select(HatFinancialResult)
+                    .where(
                         HatFinancialResult.instrument_id.in_([uuid.UUID(i) for i in member.older])
                     )
+                    .order_by(HatFinancialResult.version)
                 )
             )
             if member.older
             else []
         )
+        for row in [*self.older_rows, *self.rows]:  # its own rows win a quarter both hold
+            self.shas.add(row.sha256)
+            self._hold(row)
 
     def nse_consolidated(self) -> set[date]:
         """The period ends with a stored consolidated NSE row."""
@@ -576,11 +595,12 @@ class MemberIngest:  # pragma: no cover - the database
     def _announced_for(self, filing: Filing, period_end: date) -> datetime | None:
         """When the results announcement of `filing` (for `period_end`) was disseminated: the one
         near the filing's day, else the quarter's own results announcement (an XBRL filed days
-        after the results PDF; `timing.quarter_announcement`, none another quarter took)."""
+        after the results PDF; `late_announcement`)."""
         anchor = anchor_date(filing)
         match = match_announcement(self.items, anchor, period_end) if anchor else None
         if match is None:
-            match = quarter_announcement(self.items, period_end, self._taken(period_end))
+            found = quarter_announcement(self.items, period_end, self._taken(period_end))
+            match = late_announcement(filing, found)
         return match.public if match else None
 
     def _taken(self, period_end: date) -> set[datetime]:
@@ -616,7 +636,7 @@ class MemberIngest:  # pragma: no cover - the database
             when, filed = self._when_again(row, by_url)
             if when is None or when.at == row.public_at:
                 continue
-            if when.at < row.public_at and when.source != "announcement":
+            if not may_move(row.public_at, when, row.period_end):
                 continue
             moved.append(self._move(row, when, filed))
         if moved:
@@ -647,26 +667,33 @@ class MemberIngest:  # pragma: no cover - the database
 
     def _move(self, row: HatFinancialResult, when: PublicAt, filed: FiledAt | None) -> Retimed:
         lead = int((when.at - row.public_at).total_seconds())
-        out = Retimed(
-            str(row.id),
-            row.symbol,
-            row.period_end.isoformat(),
-            row.basis,
-            row.source,
-            row.version,
-            row.public_at.isoformat(),
-            row.public_at_source,
-            when.at.isoformat(),
-            when.source,
-            lead,
-        )
+        old = (row.public_at, row.public_at_source, row.public_at_estimated)
+        old_xbrl = (row.xbrl_at, row.xbrl_at_estimated)
         row.public_at = when.at
         row.public_at_source = when.source
         row.public_at_estimated = when.estimated
         if filed is not None and row.xbrl_at is not None and filed.at > row.xbrl_at:
             row.xbrl_at = filed.at
             row.xbrl_at_estimated = filed.estimated
-        return out
+        return Retimed(
+            str(row.id),
+            row.symbol,
+            row.period_end.isoformat(),
+            row.basis,
+            row.source,
+            row.version,
+            old[0].isoformat(),
+            old[1],
+            when.at.isoformat(),
+            when.source,
+            lead,
+            old[2],
+            when.estimated,
+            old_xbrl[0].isoformat() if old_xbrl[0] else "",
+            old_xbrl[1],
+            row.xbrl_at.isoformat() if row.xbrl_at else "",
+            row.xbrl_at_estimated,
+        )
 
     def _nine_months(self, period_end: date, basis: str, fy_start: date | None) -> Figures | None:
         q3_end = quarter_ends_before(period_end, 1)[0]
@@ -838,6 +865,35 @@ def _xbrl_columns(filed: FiledAt | None) -> dict[str, Any]:
     if filed is None:
         return {"xbrl_at": None, "xbrl_at_estimated": False}
     return {"xbrl_at": filed.at, "xbrl_at_estimated": filed.estimated}
+
+
+LATE_FILING = timedelta(days=7)
+EARLIEST_MOVE = timedelta(days=120)
+
+
+def may_move(old_at: datetime, when: PublicAt, period_end: date) -> bool:
+    """Whether a stored time may become `when` (the table's trigger allows no other): later, or
+    earlier onto an announcement after the quarter's end and by at most `EARLIEST_MOVE`."""
+    if when.at >= old_at:
+        return True
+    return (
+        when.source == "announcement"
+        and when.at.astimezone(IST).date() > period_end
+        and old_at - when.at <= EARLIEST_MOVE
+    )
+
+
+def late_announcement(filing: Filing, found: Announcement | None) -> Announcement | None:
+    """`found` (the quarter's own results announcement) as the time of a first filing whose XBRL
+    came after it, or None: never for a revision (a later filing of the quarter carries figures
+    that were not public then), nor for a filing made more than `LATE_FILING` after it (the
+    figures need not be the announced ones)."""
+    if found is None or filing.revision:
+        return None
+    filed = xbrl_at(filing)
+    if filed is not None and filed.at - found.public > LATE_FILING:
+        return None
+    return found
 
 
 def _secondary_public_at(

@@ -1204,10 +1204,10 @@ def test_d5_a_company_is_judged_over_its_isin_chain() -> None:
     )
 
 
-def test_d5_reviewed_exceptions_cover_a_company_or_a_quarter() -> None:
+def test_d5_reviewed_exceptions_cover_one_quarter_of_one_company(tmp_path: Path) -> None:
     rules = [
         filings.Excepted("results_quarter_missing", "INE1", "2022-06-30", "NSE lists no XBRL"),
-        filings.Excepted("unmatched", "INE7", "*", "files with BSE only"),
+        filings.Excepted("unmatched", "INE7", "2024-03-31", "files with BSE only"),
     ]
     holes = [
         {"isin": "INE2", "isins": ["INE1", "INE2"], "quarter": "2022-06-30"},
@@ -1217,12 +1217,22 @@ def test_d5_reviewed_exceptions_cover_a_company_or_a_quarter() -> None:
     assert failing == [holes[1]]
     assert [(e["quarter"], e["reason"]) for e in excepted] == [("2022-06-30", "NSE lists no XBRL")]
     assert used == {rules[0]}
-    timing = [{"isin": "INE7", "period_end": "2024-03-31"}, {"isin": "INE8", "period_end": "x"}]
+    # another finding: its exact ISIN and period only (a chain's other ISIN, a new quarter fail)
+    timing = [
+        {"isin": "INE7", "isins": ["INE6", "INE7"], "period_end": "2024-03-31"},
+        {"isin": "INE7", "period_end": "2024-06-30"},
+        {"isin": "INE6", "isins": ["INE6", "INE7"], "period_end": "2024-03-31"},
+    ]
     failing, excepted, used = filings.except_items("unmatched", timing, rules)
-    assert failing == [timing[1]]
+    assert failing == timing[1:]
     assert used == {rules[1]}
     # an exception for another finding code covers nothing
     assert filings.except_items("estimate_unproven", timing, rules)[0] == timing
+    # every exception names a period end and a reason: no wildcard
+    path = tmp_path / "x.csv"
+    path.write_text("code,isin,symbol,period_end,reason\nunmatched,INE7,X,*,BSE only\n")
+    with pytest.raises(ValueError, match="period end"):
+        filings.read_exceptions(path)
 
 
 def _at(*parts: int) -> datetime:

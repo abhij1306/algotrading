@@ -15,9 +15,9 @@ from __future__ import annotations
 import json
 import re
 import time
-from collections.abc import Callable, Iterable, Mapping
-from dataclasses import dataclass
-from datetime import date, datetime
+from collections.abc import Callable, Iterable, Mapping, Sequence
+from dataclasses import dataclass, replace
+from datetime import date, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode
 
@@ -97,7 +97,7 @@ class Filing:
     broadcast_at: datetime | None  # the listing's broadcast time, to the second
     created_at: datetime | None  # integrated: the document's creation time
     xbrl_url: str | None
-    revision: bool  # integrated `type_Sub` Revision
+    revision: bool  # integrated `type_Sub` Revision, or a later filing of a filed quarter
     markers: str  # the listing's own format markers, joined
 
 
@@ -191,6 +191,11 @@ def parse_integrated_listing(body: bytes) -> tuple[list[Filing], int]:
 # --- announcements --------------------------------------------------------------------------
 
 
+# 99.5% of results announcements are disseminated within 2.4 minutes of their submission; one
+# without a dissemination time counts from 15 minutes after it (99.7% of those with one are)
+UNDISSEMINATED_PAD = timedelta(minutes=15)
+
+
 @dataclass(frozen=True)
 class Announcement:
     symbol: str
@@ -202,8 +207,9 @@ class Announcement:
     @property
     def public(self) -> datetime:
         """When the market could read it: the later of `at` and the exchange's dissemination
-        (NSE disseminates seconds to days after the submission; a missing one is `at`)."""
-        return max(self.at, self.disseminated or self.at)
+        (NSE disseminates seconds to days after the submission; a missing one, as in most of
+        April to July 2020, is `at` plus `UNDISSEMINATED_PAD`)."""
+        return max(self.at, self.disseminated or self.at + UNDISSEMINATED_PAD)
 
 
 def parse_announcements(body: bytes) -> list[Announcement]:
@@ -351,11 +357,34 @@ class Client:
 
 
 def filings_of(answers: Iterable[tuple[str, bytes]]) -> list[Filing]:
-    """The filings of a mix of listing answers, by the listing each came from."""
+    """The filings of a mix of listing answers, by the listing each came from, revisions marked
+    (`later_filings`)."""
     out: list[Filing] = []
     for listing, body in answers:
         if listing == LISTING_INTEGRATED:
             out += parse_integrated_listing(body)[0]
         else:
             out += parse_results_listing(body, listing)
+    return later_filings(out)
+
+
+REVISION_GAP = timedelta(days=1)
+
+
+def later_filings(filings: Sequence[Filing]) -> list[Filing]:
+    """`filings` with each one filed more than `REVISION_GAP` after another filing of the same
+    quarter and basis marked a revision: the reg33 listing has no revision flag (its `reInd`
+    names the format: N Ind-AS, A non-Ind-AS, F NBFC), so a later row is told by its time."""
+    first: dict[tuple[date, str], datetime] = {}
+    for f in filings:
+        when = f.created_at or f.broadcast_at
+        key = (f.period_end, f.basis)
+        if when is not None and (key not in first or when < first[key]):
+            first[key] = when
+    out = []
+    for f in filings:
+        when = f.created_at or f.broadcast_at
+        early = first.get((f.period_end, f.basis))
+        later = when is not None and early is not None and when - early > REVISION_GAP
+        out.append(replace(f, revision=True) if later and not f.revision else f)
     return out

@@ -371,8 +371,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   whose results carry it as the preceding quarter; a later change to its figures is a new version public from when the
   page was fetched (`observed`). A stored row's figures never change; its `public_at` is
   corrected when a rule fix finds another time (`parse` re-times every row): later, or earlier
-  only onto an announcement's dissemination time, so a late time (an XBRL filed days after the
-  results PDF: the quarter's own results announcement counts) is corrected and an early one never
+  only onto an announcement's dissemination time, so a late time (an XBRL filed up to 7 days
+  after the results PDF: the quarter's own results announcement counts, a 'Financial Result
+  Updates' before a board outcome; never for a revision, a filing more than a day after another
+  of its quarter, as NSE's reg33 listing has no revision flag) is corrected and an early one never
   made; the table's trigger refuses anything else. The secondary source shows only the latest 13
   quarters, so older gaps stay gaps. Growth compares like with like: consolidated when both
   quarters have it, else standalone, never mixed (`data/results/growth.py`); under the default
@@ -537,7 +539,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 Regime v2 (HMM/GMM), fundamentals beyond quarterly revenue, profit and EPS, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
-live trading of `entry_timing: daily_close`.
+live trading of `entry_timing: daily_close`. Results data: ingest NSE's Annual and Others results
+listings (a few year-end quarters are filed only there, excepted in D5 meanwhile); one row per
+NSE sha in `results_events` (filings stored under an older ISIN of the same company before the
+chain rule); no secondary rows after a company's last traded day.
 
 ## Defaults awaiting owner confirmation
 

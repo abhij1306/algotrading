@@ -24,6 +24,8 @@ from app.hat.data.results.ingest import (
     document_period,
     figures_key,
     filed_consolidated,
+    late_announcement,
+    may_move,
     secondary_by_rule,
     year_before_listing,
 )
@@ -397,7 +399,7 @@ def test_results__an_announcement_counts_from_its_dissemination() -> None:
     late, missing = nse.parse_announcements(body)
     assert late.public == _ist(2021, 10, 30, 23, 9, 13)
     assert missing.disseminated is None
-    assert missing.public == _ist(2021, 11, 1, 10, 0)
+    assert missing.public == _ist(2021, 11, 1, 10, 15)  # padded: no dissemination time
     # a quarter's taken announcement is recognised by its dissemination time
     item = nse.Announcement(
         "X", _ist(2025, 8, 1, 16, 0), "Financial Result Updates", "", _ist(2025, 8, 1, 16, 4)
@@ -442,6 +444,50 @@ def test_results__every_isin_of_a_chain_maps_to_its_latest_instrument() -> None:
     newer = {"old": "middle", "middle": "latest"}
     assert latest_of(newer, newer) == {"old": "latest", "middle": "latest"}
     assert latest_of({"a": "b", "b": "a"}, ["a"]) == {"a": "b"}  # a cycle ends
+
+
+def test_results__a_late_xbrl_takes_its_quarters_announcement_only_as_a_first_filing() -> None:
+    found = nse.Announcement("X", _ist(2022, 5, 30, 19, 49), "Financial Result Updates", "")
+
+    def filing(broadcast: datetime, *, revision: bool = False) -> nse.Filing:
+        return nse.Filing(
+            "reg33",
+            "X",
+            "INE1",
+            "1",
+            date(2022, 3, 31),
+            "consolidated",
+            broadcast,
+            None,
+            "u.xml",
+            revision,
+            "-",
+        )
+
+    xbrl = filing(_ist(2022, 6, 4, 10, 13))
+    assert late_announcement(xbrl, found) == found
+    assert late_announcement(filing(_ist(2022, 6, 4, 10, 13), revision=True), found) is None
+    assert late_announcement(filing(_ist(2022, 7, 4, 10, 13)), found) is None  # over 7 days
+    assert late_announcement(xbrl, None) is None
+    # the reg33 listing has no revision flag: a row filed over a day after another of the same
+    # quarter and basis is one
+    marked = nse.later_filings(
+        [xbrl, filing(_ist(2022, 6, 4, 18, 0)), filing(_ist(2022, 8, 1, 10, 0))]
+    )
+    assert [f.revision for f in marked] == [False, False, True]
+
+
+def test_results__an_earlier_time_moves_only_onto_an_announcement_within_bounds() -> None:
+    old = _ist(2022, 6, 4, 10, 13)
+    on = timing.PublicAt(_ist(2022, 5, 30, 19, 49), "announcement", False)
+    assert may_move(old, on, date(2022, 3, 31))
+    assert may_move(
+        old, timing.PublicAt(old + timedelta(minutes=5), "xbrl", False), date(2022, 3, 31)
+    )
+    assert not may_move(old, timing.PublicAt(on.at, "xbrl", False), date(2022, 3, 31))
+    assert not may_move(old, on, date(2022, 6, 30))  # before the quarter ended
+    long_ago = timing.PublicAt(old - timedelta(days=121), "announcement", False)
+    assert not may_move(old, long_ago, date(2021, 12, 31))
 
 
 def test_results__public_at() -> None:
@@ -509,7 +555,11 @@ def test_results__deadline_and_quarter_announcement() -> None:
     a = nse.Announcement("X", _ist(2025, 8, 1, 16, 0), "Financial Result Updates", "")
     b = nse.Announcement("X", _ist(2025, 8, 9, 16, 0), "Financial Result Updates", "")
     assert timing.quarter_announcement([a, b], date(2025, 6, 30), set()) == a
-    assert timing.quarter_announcement([a, b], date(2025, 6, 30), {a.at}) == b
+    assert timing.quarter_announcement([a, b], date(2025, 6, 30), {a.public}) == b
+    # a results update wins over an earlier board outcome that names no quarter
+    board = nse.Announcement("X", _ist(2025, 7, 30, 16, 0), "Outcome of Board Meeting", "results")
+    assert timing.quarter_announcement([board, a], date(2025, 6, 30), set()) == a
+    assert timing.quarter_announcement([board], date(2025, 6, 30), set()) == board
     assert timing.quarter_announcement([a], date(2025, 9, 30), set()) is None
 
 

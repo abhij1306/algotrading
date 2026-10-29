@@ -245,9 +245,14 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Financial results are point in time.** A result is used at a moment only if its `public_at`
   is at or before it (`results_as_of`); a revision counts from its own filing, never from the
   original's announcement; a stored result's figures are never changed and only its timing may
-  be corrected: later, or earlier only onto an announcement's dissemination time
-  (`hat_financial_result` refuses DELETE and any other UPDATE). `public_at` is
-  never before the exchange disseminated the figures; an estimated one is late, never early.
+  be corrected: later, or earlier only onto an announcement's dissemination time after the
+  quarter's end and by at most 120 days, with `public_at_estimated` true exactly for a
+  deadline, XBRL-date or observed time (`hat_financial_result` refuses DELETE and any other
+  UPDATE). `public_at` is never before the exchange disseminated the figures; an announcement
+  without a dissemination time counts from 15 minutes after its submission (99.7% of those with
+  one are disseminated by then); an estimated one is late, never early. A filing made more than
+  a day after another filing of its quarter (a revision) never takes the original's
+  announcement time.
 - **Ranked universe.** `rs_pct`, `mom_rank` and breadth rank only ordinary equity (ISIN `IN` + `E`
   or `9` + issuer + type `01`, read from the bar's own ISIN); ETFs, funds, rights entitlements,
   InvITs and REITs get features but no rank. The scan's `rs_eligible` ranks only the members

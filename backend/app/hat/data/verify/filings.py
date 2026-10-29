@@ -41,8 +41,10 @@ the deadline), never excuse it. Only announcements of results count
 meeting's outcome that does not name results is matched but never proves they were public.
 An XBRL-timed filing at or after the exchange's broadcast of that XBRL in NSE's results listing
 (the raw cache it was parsed from) is in order. A failure on the reviewed exceptions list
-(`D5_EXCEPTIONS`: code, ISIN, period end or `*`, and the reason) is reported as `excepted` (warn),
-and an exception that no failure needs as `exception_unused` (warn).
+(`D5_EXCEPTIONS`: code, ISIN, one period end and the reason; a missing quarter matched over the
+chain, any other finding by its exact ISIN) is reported as `excepted` (warn), and an exception
+that no failure needs as `exception_unused` (warn). A membership history starting after the
+store's first quarter fails (`scope_unknown`): the members are not all known.
 The summary counts the filings per year and source, the 23:59 `public_at` times by how they were
 made (`public_at_source`), the reference's announcements in the years the store has none of (the
 pre-2020 gap), and the fundamentals figures that are not point in time (screener.in pages).
@@ -437,8 +439,9 @@ def judge_all(
 
 @dataclass(frozen=True)
 class Excepted:
-    """A reviewed exception (`D5_EXCEPTIONS`): a finding `code` for a company (any ISIN of its
-    chain) and a period end (`*`: every period) that is explained and known, with why."""
+    """A reviewed exception (`D5_EXCEPTIONS`): a finding `code` for a company and one period end,
+    explained and known, with why. A missing quarter is matched over the company's ISIN chain;
+    any other finding by its exact ISIN. There is no wildcard: a new finding is always reported."""
 
     code: str
     isin: str
@@ -448,7 +451,8 @@ class Excepted:
 
 def read_exceptions(path: Path) -> list[Excepted]:
     """The reviewed exceptions file (CSV: code, isin, symbol for the reader, period_end, reason);
-    every row must give a reason. A missing file is no exceptions."""
+    every row must give a reason and a period end (YYYY-MM-DD). A missing file is no
+    exceptions."""
     if not path.is_file():
         return []
     with path.open(encoding="utf-8", newline="") as handle:
@@ -456,10 +460,18 @@ def read_exceptions(path: Path) -> list[Excepted]:
             Excepted(r["code"].strip(), r["isin"].strip(), r["period_end"].strip(), r["reason"])
             for r in csv.DictReader(handle)
         ]
-    unexplained = [r for r in rows if not r.reason.strip()]
-    if unexplained:
-        raise ValueError(f"D5 exceptions without a reason: {unexplained[:3]}")
+    bad = [r for r in rows if not r.reason.strip() or not _is_day(r.period_end)]
+    if bad:
+        raise ValueError(f"D5 exceptions without a reason or a period end: {bad[:3]}")
     return rows
+
+
+def _is_day(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
 
 
 def except_items(
@@ -467,25 +479,18 @@ def except_items(
 ) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]], set[Excepted]]:
     """`items` of finding `code` split into those still failing and those a reviewed exception
     covers (each with its `reason`), and the exceptions used. An item names its company by
-    `isin` (and `isins`, its chain) and its period by `quarter` or `period_end`."""
-    rules = defaultdict(list)
-    for rule in exceptions:
-        if rule.code == code:
-            rules[rule.isin].append(rule)
+    `isin` (a missing quarter also by `isins`, its chain) and its period by `quarter` or
+    `period_end`."""
+    rules = {(rule.isin, rule.period_end): rule for rule in exceptions if rule.code == code}
     failing: list[Mapping[str, Any]] = []
     excepted: list[dict[str, Any]] = []
     used: set[Excepted] = set()
     for item in items:
         period = item.get("quarter") or item.get("period_end")
-        match = next(
-            (
-                rule
-                for isin in item.get("isins") or [item.get("isin")]
-                for rule in rules.get(isin, ())
-                if rule.period_end in {"*", period}
-            ),
-            None,
-        )
+        isins = (item.get("isins") if code == "results_quarter_missing" else None) or [
+            item.get("isin")
+        ]
+        match = next((rules[i, period] for i in isins if (i, period) in rules), None)
         if match is None:
             failing.append(item)
         else:
@@ -559,7 +564,10 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         stored[isin].add(period_end)
     listings = _listings(ctx)
     as_of = min(ctx.end, _data_end(ctx), date.today())
-    chains = lineage_chains(_links(ctx), set(stored) | _scope(ctx, as_of))
+    scope, scope_gap = _scope(ctx, as_of)
+    if scope_gap:  # the membership history starts too late: members are not all known
+        findings.append(finding("scope_unknown", FAIL, [scope_gap]))
+    chains = lineage_chains(_links(ctx), set(stored) | scope)
     by_isin = by_chain(by_isin, chains)
     counts, items, leads = judge_all(filings, by_isin, by_symbol, reference_end, _broadcasts(ctx))
     summary["judged"] = dict(counts)
@@ -573,10 +581,13 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     exceptions = read_exceptions(D5_EXCEPTIONS)
     excepted: list[dict[str, Any]] = []
     used: set[Excepted] = set()
+    missing: list[Mapping[str, Any]] = []
     for code, severity in SEVERITY.items():
         kept, out, hit = except_items(code, items.get(code, []), exceptions)
         excepted += out
         used |= hit
+        if code == "results_quarter_missing":
+            missing = kept
         if not kept:
             continue
         found = {**finding(code, severity, kept), "count": len(kept)}
@@ -585,9 +596,9 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         elif severity == FAIL:
             found = dated(found, [i["public_at"][:10] for i in kept])
         findings.append(found)
-    summary["quarters_missing"] = sum(1 for i in holes if i not in excepted)
+    summary["quarters_missing"] = len(missing)  # the excepted ones are under `excepted`
     summary["quarters_missing_by_quarter"] = dict(
-        sorted(Counter(i["quarter"] for i in holes).items())
+        sorted(Counter(i["quarter"] for i in missing).items())
     )
     summary["excepted"] = dict(Counter(i["code"] for i in excepted))
     if excepted:
@@ -656,12 +667,17 @@ def _links(ctx: Context) -> list[tuple[str, str]]:  # pragma: no cover - real da
     ]
 
 
-def _scope(ctx: Context, as_of: date) -> set[str]:  # pragma: no cover - real data
+def _scope(ctx: Context, as_of: date) -> tuple[set[str], str]:  # pragma: no cover - real data
     """The ISINs the results store covers (`results.universe`, NIFTY 500 point-in-time members
-    from the store's first quarter), stored rows or not."""
+    from the store's first quarter), stored rows or not; with why they cannot be known (the
+    membership history starting after that quarter), else ""."""
     from ..results.universe import members  # noqa: PLC0415 - the check's own import cost
 
-    return {m.isin for m in members(ctx.session, ctx.store, FIRST_PERIOD_END, as_of)}
+    try:
+        found = members(ctx.session, ctx.store, FIRST_PERIOD_END, as_of)
+    except ValueError as gap:  # `universe.coverage_gap`
+        return set(), str(gap)
+    return {m.isin for m in found}, ""
 
 
 def _broadcasts(ctx: Context) -> dict[str, datetime]:  # pragma: no cover - real data

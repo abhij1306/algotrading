@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from ...time import IST
 from ..results.fetch import in_scope
-from ..results.ingest import announcements_index, insurance_filings, member_filings
+from ..results.ingest import (
+    announcements_index,
+    chain_owners,
+    insurance_filings,
+    member_filings,
+)
 from ..results.nse import Announcement, Filing
 from ..results.scope import BASIS_CONSOLIDATED_FIRST, CONSOLIDATED, by_rule
 from ..results.secondary import page_url
@@ -458,14 +463,14 @@ def extract(
 
     for model in (HatFundamentalFiling, HatFundamentalFact):
         model.__table__.create(live_writer_engine, checkfirst=True)
-    context = (
-        announcements_index(nse_cache),
-        insurance_filings(nse_cache),
-        {m.isin: m.instrument_id for m in members},
-    )
     report = ExtractReport()
     now = utc_now()
     with db_session_scope(writes_data=True) as session:
+        context = (
+            announcements_index(nse_cache),
+            insurance_filings(nse_cache),
+            chain_owners(session, members),
+        )
         cursor = raw_cursor(session, HatFundamentalFiling)
         _clear(cursor, members, replace_all=replace_all)
         for n, member in enumerate(members, 1):
