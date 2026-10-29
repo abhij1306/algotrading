@@ -78,15 +78,58 @@ def _finding(code: str, items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {"code": code, "count": len(items), "items": list(items[:MAX_LISTED])}
 
 
+def _held_diff(shares: Counter[str], book: SessionBook) -> dict[str, Any] | None:
+    """The instruments whose shares from the fills differ from the engine's at `book`'s close."""
+    held: Counter[str] = Counter()
+    for line in book.held:
+        held[line.instrument_id] += line.qty
+    wanted = {k: v for k, v in shares.items() if v}
+    if wanted == {k: v for k, v in held.items() if v}:
+        return None
+    keys = [k for k in sorted(set(wanted) | set(held)) if wanted.get(k, 0) != held[k]]
+    return {
+        "date": book.day.isoformat(),
+        "from_fills": {k: wanted.get(k, 0) for k in keys},
+        "engine": {k: held[k] for k in keys},
+    }
+
+
+def _book_checks(
+    cash: Decimal, shares: Counter[str], book: SessionBook
+) -> dict[str, dict[str, Any] | None]:
+    """One session's cash walk, holdings, position value and equity identity: the item of each
+    check that fails, None for one that passes."""
+    day = book.day.isoformat()
+    value = sum((h.qty * h.mark for h in book.held), _ZERO) + book.sleeve_value
+    return {
+        "cash_walk": (
+            {"date": day, "walked": str(cash), "engine": str(book.cash)}
+            if _off(cash, book.cash)
+            else None
+        ),
+        "holdings": _held_diff(shares, book),
+        "position_value": (
+            {"date": day, "marked": str(value), "engine": str(book.position_value)}
+            if _off(value, book.position_value)
+            else None
+        ),
+        "equity_identity": (
+            {"date": day, "cash_plus_held": str(book.cash + value), "equity": str(book.equity)}
+            if _off(book.cash + book.position_value, book.equity)
+            else None
+        ),
+    }
+
+
 def _sessions(
     start: Decimal, books: Sequence[SessionBook], fills: Sequence[FillRow]
-) -> tuple[list[dict[str, Any]], dict[str, list[dict[str, Any]]]]:
-    """The cash walk, the holdings and the equity identity of every session."""
+) -> tuple[Decimal, dict[str, list[dict[str, Any]]]]:
+    """The worst cash difference, and the cash walk, holdings and equity identity findings of
+    every session."""
     by_day: dict[date, list[FillRow]] = defaultdict(list)
     for fill in fills:
         by_day[fill.day].append(fill)
-    days = {b.day for b in books}
-    stray = sorted({f.day for f in fills} - days)
+    stray = sorted({f.day for f in fills} - {b.day for b in books})
     found: dict[str, list[dict[str, Any]]] = {
         "fill_outside_sessions": [{"date": d.isoformat()} for d in stray],
         "cash_walk": [],
@@ -102,39 +145,14 @@ def _sessions(
             cash += _flow(fill)
             shares[fill.instrument_id] += fill.qty if fill.side == "buy" else -fill.qty
         cash += book.dividends + book.overlay_flow
-        day = book.day.isoformat()
         worst = max(worst, abs(cash - book.cash))
-        if _off(cash, book.cash):
-            found["cash_walk"].append({"date": day, "walked": str(cash), "engine": str(book.cash)})
-        held: Counter[str] = Counter()
-        for line in book.held:
-            held[line.instrument_id] += line.qty
-        wanted = {k: v for k, v in shares.items() if v}
-        if wanted != {k: v for k, v in held.items() if v}:
-            keys = sorted(set(wanted) | set(held))
-            found["holdings"].append(
-                {
-                    "date": day,
-                    "from_fills": {
-                        k: wanted.get(k, 0) for k in keys if wanted.get(k, 0) != held[k]
-                    },
-                    "engine": {k: held[k] for k in keys if wanted.get(k, 0) != held[k]},
-                }
-            )
-        value = sum((h.qty * h.mark for h in book.held), _ZERO) + book.sleeve_value
-        if _off(value, book.position_value):
-            found["position_value"].append(
-                {"date": day, "marked": str(value), "engine": str(book.position_value)}
-            )
-        if _off(book.cash + book.position_value, book.equity):
-            found["equity_identity"].append(
-                {"date": day, "cash_plus_held": str(book.cash + value), "equity": str(book.equity)}
-            )
+        for code, item in _book_checks(cash, shares, book).items():
+            if item is not None:
+                found[code].append(item)
     left = {k: v for k, v in shares.items() if v}
     if left:
         found["holdings"].append({"date": "after_last_session", "from_fills": left})
-    summary = [{"worst_cash_diff": str(worst)}]
-    return summary, found
+    return worst, found
 
 
 def _trades(
@@ -199,7 +217,7 @@ def reconcile(
 ) -> dict[str, Any]:
     """The ledger report of a run (the module docstring): `status` `pass` or `fail`, what was
     checked, and a finding per kind of mismatch."""
-    summary, found = _sessions(start, books, fills)
+    worst, found = _sessions(start, books, fills)
     dividends = sum((b.dividends for b in books), _ZERO)
     found |= _trades(trades, fills, dividends)
     findings = [_finding(code, items) for code, items in found.items() if items]
@@ -211,6 +229,6 @@ def reconcile(
         "trades": len(trades),
         "dividends": str(dividends),
         "overlay_flow": str(sum((b.overlay_flow for b in books), _ZERO)),
-        **summary[0],
+        "worst_cash_diff": str(worst),
         "findings": findings,
     }

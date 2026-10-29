@@ -29,6 +29,7 @@ import argparse
 import gc
 import hashlib
 import json
+import re
 import sys
 import time
 from collections import Counter
@@ -57,9 +58,12 @@ from app.hat.confighash import config_hash  # noqa: E402
 from app.hat.data.store import DATASET_BARS, DataStore  # noqa: E402
 from app.hat.models import HatEvent  # noqa: E402
 from app.hat.settings import operator_settings  # noqa: E402
+from app.paths import PROJECT_ROOT  # noqa: E402
 
 HOLD_OUT_START = date(2025, 1, 1)  # never run: the hold-out
 MAX_LISTED = 20
+REPORTS = PROJECT_ROOT / "reports" / "bt-verify"  # where `--out` writes (gitignored)
+_REPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json")
 
 
 def _spec_of(
@@ -176,9 +180,8 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
     """The decisions of the run to `at` against those of the longer run, up to `at`."""
     checks: dict[str, dict[str, Any]] = {}
 
-    def record(
-        name: str, only_short: Sequence[str], only_long: Sequence[str], compared: int
-    ) -> None:
+    def record(name: str, diff: tuple[list[str], list[str]], compared: int) -> None:
+        only_short, only_long = diff
         checks[name] = {
             "compared": compared,
             "pass": not only_short and not only_long,
@@ -193,10 +196,10 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
     ):
         a = [key(r) for r in rows_s if day(r) <= at]
         b = [key(r) for r in rows_l if day(r) <= at]
-        record(name, *_multiset_diff(a, b), len(a))
+        record(name, _multiset_diff(a, b), len(a))
     before_s = [_fill_key(f) for f in short.fills if f.day < at]
     before_l = [_fill_key(f) for f in long.fills if f.day < at]
-    record("fills_before_t", *_multiset_diff(before_s, before_l), len(before_s))
+    record("fills_before_t", _multiset_diff(before_s, before_l), len(before_s))
     # on T the shorter run also closes what it holds at the period end: only sales, one per
     # position it closed there
     on_s = [_fill_key(f) for f in short.fills if f.day == at]
@@ -220,13 +223,13 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
     # the shorter run's period-end sales of its rotation holdings are its own
     reb_s = [k for k in reb_s if '"reason": "end_of_period"' not in k]
     reb_l = [k for k in reb_l if '"reason": "end_of_period"' not in k]
-    record("rebalances", *_multiset_diff(reb_s, reb_l), len(reb_s))
+    record("rebalances", _multiset_diff(reb_s, reb_l), len(reb_s))
     eq_s = [f"{d},{_text(e)}" for d, e in short.equity if d < at]
     eq_l = [f"{d},{_text(e)}" for d, e in long.equity if d < at]
-    record("equity_before_t", *_multiset_diff(eq_s, eq_l), len(eq_s))
+    record("equity_before_t", _multiset_diff(eq_s, eq_l), len(eq_s))
     ov_s = [",".join(r) for r in short.overlay_rows if r and r[0] < at.isoformat()]
     ov_l = [",".join(r) for r in long.overlay_rows if r and r[0] < at.isoformat()]
-    record("overlay_before_t", *_multiset_diff(ov_s, ov_l), len(ov_s))
+    record("overlay_before_t", _multiset_diff(ov_s, ov_l), len(ov_s))
     return checks
 
 
@@ -245,8 +248,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--at", type=date.fromisoformat, help="T (truncation)")
     parser.add_argument("--extra", type=int, default=63, help="N sessions after T (truncation)")
     parser.add_argument("--to", type=date.fromisoformat, help="the end (fingerprint)")
-    parser.add_argument("--out", type=Path)
+    parser.add_argument("--out", help=f"a report file name, written under {REPORTS}")
     args = parser.parse_args(argv)
+    if args.out is not None and not _REPORT_NAME.fullmatch(args.out):
+        raise SystemExit("refused: --out is a bare file name ending .json")
     doc = yaml.safe_load(args.portfolio.read_text(encoding="utf-8"))
     settings = operator_settings()
     report: dict[str, Any] = {"portfolio": doc.get("portfolio"), "mode": args.mode}
@@ -284,7 +289,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
     text_out = json.dumps(report, indent=1, default=str)
     if args.out is not None:
-        args.out.write_text(text_out + "\n", encoding="utf-8")
+        REPORTS.mkdir(parents=True, exist_ok=True)
+        (REPORTS / args.out).write_text(text_out + "\n", encoding="utf-8")
     print(text_out)
     return 0 if report.get("pass", True) else 1
 

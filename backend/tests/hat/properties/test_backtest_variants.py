@@ -183,8 +183,10 @@ def test_apply_config_changes_only_the_named_values() -> None:
         ("exits[0]", same),
         ("exits[trailing_swing_low].lookback_days", rules["trailing_swing_low"].lookback_days),
     ):
+        unchanged = Overrides(sets=((path, value),))
+        base = changed if "swing" in path else config
         with pytest.raises(OverrideError, match="backtest_override_no_op"):
-            Overrides(sets=((path, value),)).apply_config(changed if "swing" in path else config)
+            unchanged.apply_config(base)
 
 
 def test_apply_policy_and_record() -> None:

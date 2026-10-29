@@ -520,6 +520,32 @@ def check_data(
     return _check("data", {"status": status, "digest": audit.get("digest")}, findings)
 
 
+def _equity_findings(
+    run: Mapping[str, Any], equity: Sequence[Mapping[str, str]]
+) -> list[dict[str, Any]]:
+    """`equity.csv`'s own identities (`check_ledger`)."""
+    findings = []
+    unbalanced = []
+    for row in equity:
+        value, cash, held = (_dec(row.get(k)) for k in ("equity", "cash", "position_value"))
+        if value is None or cash is None or held is None or abs(cash + held - value) > _RUPEE:
+            unbalanced.append({"date": row.get("date"), "equity": row.get("equity")})
+    if unbalanced:
+        findings.append(_finding("equity_not_cash_plus_positions", FAIL, unbalanced))
+    if not equity:
+        return findings
+    last = equity[-1]
+    final = _dec((run.get("metrics") or {}).get("final_equity"))
+    value, held = _dec(last.get("equity")), _dec(last.get("position_value"))
+    if final is None or value is None or abs(final - value) > _RUPEE:
+        findings.append(
+            _finding("final_equity_disagrees", FAIL, [{"equity_csv": last.get("equity")}])
+        )
+    if held is None or abs(held) > _RUPEE:
+        findings.append(_finding("held_after_period_end", FAIL, [last.get("position_value")]))
+    return findings
+
+
 def check_ledger(
     run: Mapping[str, Any], equity: Sequence[Mapping[str, str]], ledger: Mapping[str, Any] | None
 ) -> dict[str, Any]:
@@ -530,26 +556,9 @@ def check_ledger(
     if ledger is None:
         findings.append(_finding("no_ledger", FAIL, []))
     elif ledger.get("status") != PASS:
-        findings.append(
-            _finding("ledger_mismatch", FAIL, [f.get("code") for f in ledger.get("findings") or []])
-        )
-    unbalanced = []
-    for row in equity:
-        value, cash, held = (_dec(row.get(k)) for k in ("equity", "cash", "position_value"))
-        if value is None or cash is None or held is None or abs(cash + held - value) > _RUPEE:
-            unbalanced.append({"date": row.get("date"), "equity": row.get("equity")})
-    if unbalanced:
-        findings.append(_finding("equity_not_cash_plus_positions", FAIL, unbalanced))
-    if equity:
-        last = equity[-1]
-        final = _dec((run.get("metrics") or {}).get("final_equity"))
-        value, held = _dec(last.get("equity")), _dec(last.get("position_value"))
-        if final is None or value is None or abs(final - value) > _RUPEE:
-            findings.append(
-                _finding("final_equity_disagrees", FAIL, [{"equity_csv": last.get("equity")}])
-            )
-        if held is None or abs(held) > _RUPEE:
-            findings.append(_finding("held_after_period_end", FAIL, [last.get("position_value")]))
+        codes = [f.get("code") for f in ledger.get("findings") or []]
+        findings.append(_finding("ledger_mismatch", FAIL, codes))
+    findings += _equity_findings(run, equity)
     summary = {
         "sessions": len(equity),
         "reconciled": None if ledger is None else ledger.get("status"),
