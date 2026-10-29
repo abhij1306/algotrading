@@ -57,7 +57,7 @@ results_quarter_missing,INE095A01012,INDUSINDBK,2022-09-30,"source gap: no filin
 results_quarter_missing,INE095A01012,INDUSINDBK,2022-12-31,source gap: NSE's results listing links an XBRL document that NSE answers with HTTP 404
 results_quarter_missing,INE095A01012,INDUSINDBK,2023-03-31,source gap: NSE's results listing links an XBRL document that NSE answers with HTTP 404
 results_quarter_missing,INE095A01012,INDUSINDBK,2023-06-30,source gap: NSE's results listing links an XBRL document that NSE answers with HTTP 404
-results_quarter_missing,INE09VQ01012,INDIGOPNTS,2021-03-31,the company listed during this quarter: NSE holds no results filing for it
+results_quarter_missing,INE09VQ01012,INDIGOPNTS,2021-03-31,"not ingested: NSE files this year-end quarter only in its Annual (or Others) results listing, with XBRL; the results ingest reads the Quarterly and integrated listings only (follow-up: ingest the Annual listing)"
 results_quarter_missing,INE0AJG01018,HEMIPROP,2022-06-30,"source gap: no filing for this quarter in NSE's results listings (Quarterly, and Annual, Half-Yearly and Others checked; reg33 and integrated), and it is older than the secondary page's 13 quarters; a backfill needs BSE or the results PDF"
 results_quarter_missing,INE0AJG01018,HEMIPROP,2023-03-31,source gap: NSE's reg33 listing has this quarter's row but no XBRL ('-'); the figures are only in the results PDF
 results_quarter_missing,INE0AJG01018,HEMIPROP,2024-03-31,source gap: NSE's reg33 listing has this quarter's row but no XBRL ('-'); the figures are only in the results PDF
