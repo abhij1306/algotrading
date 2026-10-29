@@ -283,7 +283,9 @@ It commits and pushes only when a file changed. The clone's pre-push guard
 (`.githooks/pre-push`; enable once with `git config core.hooksPath .githooks`) refuses a push
 that adds a credential-looking file (`.env`, `*token*`, `*.key`, ...) or text (private keys,
 GitHub/AWS/Slack tokens, JWTs, password or secret assignments); the step fails while the guard is
-off. A failed `record` (a missing clone, a refused or failed push) is reported like any step and
+off or the clone is not on `main`. A store folder that is missing while its manifest is committed
+(a wrong or unmounted data root) fails the step instead of reading as no change. A failed
+`record` (a missing clone, a refused or failed push) is reported like any step and
 stops no data step; fix it and run `--only record`.
 
 ### Index membership
@@ -654,12 +656,16 @@ recovery" (changes since the backup show as mismatches).
 `scripts/hat_snapshot.py release` uploads a snapshot as GitHub Release assets of the data repo
 (tag `snapshot-<date>`): `pg_dump --format=custom` of the databases (`<db>.dump.partNN`) and a
 gzipped tar per folder (`<part>.tar.gz.partNN`), each asset under 1.9 GB. It stages one asset at a
-time in a private folder it makes under `--stage` or `HAT_SNAPSHOT_STAGE` (the system temp folder
-by default; the unit uses `/var/tmp`, on the root disk, never the data disk), uploads and deletes
+time in a private folder it makes under `--stage` or `HAT_SNAPSHOT_STAGE` (default `/var/tmp`, on
+the root disk: `/tmp` is a small RAM tmpfs and the data disk must never fill), uploads and deletes
 it, then
 uploads `SHA256SUMS` and the record `snapshots/<tag>.json` (every asset's size and sha256 and
 every file each tar holds), checks the assets on GitHub against it (size and GitHub's sha256
-digest) and commits the record to the clone. `check --tag T --repo OWNER/algotradingdata`
+digest) and commits the record to the clone, under the clone's lock that the update's `record`
+step also takes (it waits up to 30 minutes). It refuses a tag whose release already holds its
+record (`<tag>.json`): a complete release is never rewritten; an incomplete one (a failed run) has
+its assets deleted and is taken again. Like `record`, it needs the clone on `main` with the guard
+on, and it skips writers' temporary files (`.*.tmp`) and files removed while it runs. `check --tag T --repo OWNER/algotradingdata`
 re-checks a release later. pg_dump is `--pg-dump` or `HAT_PG_DUMP` (version 18; for the database
 container `docker exec <container> pg_dump -U postgres`). The command carries its own connection:
 the unit loads no `.env`, so a host pg_dump takes `PGHOST`/`PGUSER` in the command and the

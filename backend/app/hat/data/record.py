@@ -23,6 +23,7 @@ import os
 import re
 import subprocess  # noqa: S404 - git with fixed arguments, never a shell
 import sys
+import time
 from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -251,24 +252,51 @@ def _as_date(value: object) -> date | None:
     return value if isinstance(value, date) else None
 
 
+def transient(name: str) -> bool:
+    """Whether a file name is a writer's temporary file (`ParquetStore`'s atomic replace writes
+    `.<name>.<uuid>.tmp` and renames it): never part of a store's record."""
+    return name.startswith(".") and name.endswith(".tmp")
+
+
 def store_rows(root: Path, store: str) -> list[dict[str, str]]:
-    """The manifest lines of one store under the data root."""
+    """The manifest lines of one store under the data root. Temporary files are skipped, and so
+    is a file a concurrent writer removed between the listing and the read."""
     rows = []
     base = root / store
-    for path in sorted(p for p in base.rglob("*") if p.is_file() and not p.is_symlink()):
-        rel = path.relative_to(root).as_posix()
-        facts = _parquet_facts(path) if path.suffix == ".parquet" else (None, None, None)
-        rows.append(manifest_row(rel, *facts, path.stat().st_size, _sha256(path)))
+    for path in sorted(p for p in base.rglob("*") if not transient(p.name)):
+        try:
+            if not path.is_file() or path.is_symlink():
+                continue
+            rel = path.relative_to(root).as_posix()
+            facts = _parquet_facts(path) if path.suffix == ".parquet" else (None, None, None)
+            rows.append(manifest_row(rel, *facts, path.stat().st_size, _sha256(path)))
+        except FileNotFoundError:
+            continue
     return rows
+
+
+def missing_store(store: str, present: bool, committed: str) -> str | None:
+    """Why a store cannot be recorded: its folder is gone while a manifest of it is committed (a
+    wrong or unmounted data root, a deleted store), which must fail, never read as `no change`.
+    None when the folder is there, or when it never had a manifest (not set up yet)."""
+    if present or not committed.strip():
+        return None
+    return f"{store}/ is missing under the data root but manifests/{store}.csv is committed"
 
 
 def write_manifests(root: Path, clone: Path) -> dict[str, Changes]:
     changes = {}
+    committed = {s: committed_text(clone, (MANIFESTS / f"{s}.csv").as_posix()) for s in STORES}
+    problems = [
+        m for s in STORES if (m := missing_store(s, (root / s).is_dir(), committed[s])) is not None
+    ]
+    if problems:  # before anything is written
+        raise RecordError("; ".join(problems))
     for store in STORES:
         if not (root / store).is_dir():
             continue
         target = clone / MANIFESTS / f"{store}.csv"
-        old = parse_manifest(committed_text(clone, (MANIFESTS / f"{store}.csv").as_posix()))
+        old = parse_manifest(committed[store])
         text = manifest_text(store_rows(root, store))
         changes[store] = compare(old, parse_manifest(text))
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -342,7 +370,16 @@ def commit(clone: Path, message: str, *, push: bool) -> bool:
 
 
 def guard_on(clone: Path) -> None:
-    """RecordError unless the clone's pre-push secret guard is enabled."""
+    """RecordError unless the clone is on `main` (a push goes to `HEAD:main`) and its pre-push
+    secret guard is enabled."""
+    branch = subprocess.run(  # noqa: S603
+        ["git", "-C", str(clone), "symbolic-ref", "--short", "-q", "HEAD"],  # noqa: S607
+        check=False,
+        text=True,
+        capture_output=True,
+    )
+    if branch.stdout.strip() != "main":
+        raise RecordError(f"the data repo clone {clone} is not on main")
     result = subprocess.run(  # noqa: S603
         ["git", "-C", str(clone), "config", "core.hooksPath"],  # noqa: S607
         check=False,
@@ -363,18 +400,24 @@ def refresh(root: Path, clone: Path, *, push: bool = True) -> str:
     if not (clone / ".git").exists():
         raise RecordError(f"no data repo clone at {clone} (HAT_DATA_REPO)")
     guard_on(clone)
-    with _lock(clone):
+    with lock(clone):
         return _refresh(root, clone, push=push)
 
 
 @contextmanager
-def _lock(clone: Path) -> Iterator[None]:
-    """One record run per clone at a time (a hand run and the update's step)."""
+def lock(clone: Path, wait: float = 0) -> Iterator[None]:
+    """One writer of the clone at a time (the update's step, a hand run, the snapshot's record
+    commit), waiting up to `wait` seconds; RecordError when it stays held."""
+    deadline = time.monotonic() + wait
     with (clone / ".git" / "hat-record.lock").open("w") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise RecordError("another record run holds the data repo") from exc
+        while True:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError as exc:
+                if time.monotonic() >= deadline:
+                    raise RecordError("another run holds the data repo clone") from exc
+                time.sleep(5)
         yield
 
 

@@ -67,6 +67,8 @@ SECRET_PATTERNS = (
     "*chrome*",
     "*chromium*",
 )
+# The stage's base: on the root disk; /tmp is a small RAM tmpfs and /data must never fill.
+DEFAULT_STAGE_BASE = Path("/var/tmp")  # noqa: S108  # NOSONAR - a private mkdtemp folder in it
 # A tag, part or database name, and OWNER/NAME of a repo: never an option or a path.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
@@ -236,9 +238,27 @@ def walk(root: Path, patterns: Sequence[str]) -> list[str]:
         dirnames[:] = [d for d in dirnames if not excluded(prefix + d, patterns)]
         for name in filenames:
             path = Path(dirpath) / name
-            if path.is_file() and not path.is_symlink() and not excluded(prefix + name, patterns):
+            if transient(name) or excluded(prefix + name, patterns):
+                continue
+            if path.is_file() and not path.is_symlink():
                 names.append(prefix + name)
     return sorted(names)
+
+
+def transient(name: str) -> bool:
+    """A writer's temporary file (`.<name>.<uuid>.tmp`, renamed into place when done)."""
+    return _record().transient(name)
+
+
+def present_entries(root: Path, names: Iterable[str]) -> dict[str, Entry]:
+    """Size and sha256 of each file still there (a concurrent writer may remove one)."""
+    entries = {}
+    for name in names:
+        try:
+            entries[name] = file_entry(root / name)
+        except FileNotFoundError:
+            continue
+    return entries
 
 
 def file_entry(path: Path) -> Entry:
@@ -267,7 +287,11 @@ def write_tar(root: Path, names: Sequence[str], out: AssetWriter) -> dict[str, E
             path = root / name
             if not member_name_ok(root, name):
                 raise ValueError(f"{name} is not a path inside {root}")
-            with path.open("rb") as handle:
+            try:
+                handle = path.open("rb")
+            except FileNotFoundError:  # removed by a concurrent writer since the listing
+                continue
+            with handle:
                 archive.inodes = {}  # every path a regular file, never a link to another member
                 info = archive.gettarinfo(arcname=name, fileobj=handle)
                 before = os.fstat(handle.fileno())
@@ -316,8 +340,11 @@ def ensure_release(repo: str, tag: str) -> None:
         notes = "HAT data snapshot; restore: README.md and snapshots/<tag>.json of this repo."
         gh("release", "create", tag, "--repo", repo, "--title", tag, "--notes", notes)
         return
+    assets = remote_assets(repo, tag)
+    if f"{tag}.json" in assets:  # complete: later incremental restores depend on it
+        raise ValueError(f"release {tag} is complete (it has {tag}.json): one record per tag")
     # a retry of a run that failed before its record: its old parts would mix into a restore
-    for name in remote_assets(repo, tag):
+    for name in assets:
         gh("release", "delete-asset", tag, name, "--repo", repo, "--yes")
 
 
@@ -350,16 +377,31 @@ def git(clone: Path, *args: str) -> str:
     ).stdout
 
 
+def _record():  # noqa: ANN202 - the backend module, imported once the path allows it
+    """`app.hat.data.record`: the clone's guard, branch check and lock are shared with it."""
+    backend = str(Path(__file__).resolve().parents[1] / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+    from app.hat.data import record  # noqa: PLC0415 - after the sys.path change
+
+    return record
+
+
 def commit_record(clone: Path, path: Path, message: str) -> None:
+    """Commit and push the record under the clone's lock (the daily update's `record` step
+    writes the same clone), waiting up to half an hour for it."""
+    record = _record()
+    record.guard_on(clone)
     rel = str(path.relative_to(clone))
-    git(clone, "add", "--", rel)
-    git(clone, "commit", "-q", "-m", message, "--", rel)
-    try:
-        git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
-    except subprocess.CalledProcessError:
-        subprocess.run(["git", "-C", str(clone), "rebase", "--abort"], check=False)  # noqa: S603, S607  # NOSONAR
-        raise
-    git(clone, "push", "-q", "origin", "HEAD:main")
+    with record.lock(clone, wait=1800):
+        git(clone, "add", "--", rel)
+        git(clone, "commit", "-q", "-m", message, "--", rel)
+        try:
+            git(clone, "pull", "-q", "--rebase", "--autostash", "origin", "main")
+        except subprocess.CalledProcessError:
+            subprocess.run(["git", "-C", str(clone), "rebase", "--abort"], check=False)  # noqa: S603, S607  # NOSONAR
+            raise
+        git(clone, "push", "-q", "origin", "HEAD:main")
 
 
 # --- commands -------------------------------------------------------------------------------
@@ -384,6 +426,7 @@ def read_records(clone: Path) -> list[dict]:
 
 def run_release(args: argparse.Namespace) -> int:
     parts = _parts(args.part)
+    _record().guard_on(args.record)  # fail before hours of uploads, not after
     record_path = args.record / RECORD_DIR / f"{args.tag}.json"
     if record_path.exists():
         raise ValueError(f"{record_path} exists: one record per tag")
@@ -424,7 +467,7 @@ def _release(
         names = walk(root, part_excludes(args.exclude, part))
         removed: list[str] = []
         if args.incremental:
-            current = {n: file_entry(root / n) for n in names}
+            current = present_entries(root, names)
             names, removed = changes(held.get(part, {}), current)
         print(f"part {part}: {len(names)} files from {root}", flush=True)
         writer = AssetWriter(stage, f"{part}.tar.gz", done, args.limit)
@@ -513,9 +556,9 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             cmd.add_argument(
                 "--stage",
                 type=Path,
-                default=_env_path("HAT_SNAPSHOT_STAGE"),
+                default=_env_path("HAT_SNAPSHOT_STAGE") or DEFAULT_STAGE_BASE,
                 help="base folder of the run's private stage (default HAT_SNAPSHOT_STAGE, else "
-                "the system temp folder); on a disk with 2 GB free",
+                "/var/tmp); on a disk with 2 GB free, never the data disk",
             )
             cmd.add_argument("--limit", type=int, default=ASSET_LIMIT, help=argparse.SUPPRESS)
             cmd.add_argument("--pg-dump", default=os.environ.get("HAT_PG_DUMP", "pg_dump"))
@@ -526,7 +569,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     try:
         return run_release(args) if args.command == "release" else run_check(args)
-    except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as exc:
+    except (
+        OSError,
+        ValueError,
+        RuntimeError,
+        subprocess.CalledProcessError,
+        _record().RecordError,
+    ) as exc:
         print(f"SNAPSHOT FAILED: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 

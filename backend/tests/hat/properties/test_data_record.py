@@ -138,3 +138,26 @@ def test_archive_names_stay_inside_the_root_and_arguments_are_never_options(
     for argv in (["--tag", "--x"], ["--tag", "t", "--repo", "-o/x"], ["--tag", "a b"]):
         with pytest.raises(SystemExit):
             snapshot.parse_args(["check", "--repo", "o/d", *argv])
+
+
+def test_a_missing_store_fails_only_when_its_manifest_is_committed() -> None:
+    assert record.missing_store("bars_5m", True, "path,rows\n") is None
+    assert record.missing_store("bars_5m", False, "") is None  # never recorded yet
+    assert "bars_5m/ is missing" in (record.missing_store("bars_5m", False, "path\na,1\n") or "")
+
+
+def test_writer_temporary_files_and_vanished_files_are_skipped(tmp_path: Path) -> None:
+    assert record.transient(".part-1.parquet.0f3a.tmp")
+    assert not record.transient("part-1.parquet")
+    assert not record.transient("notes.tmp")  # only the hidden atomic-replace form
+    store = tmp_path / "bars_5m" / "date=2026-10-28"
+    store.mkdir(parents=True)
+    (store / "a.csv").write_text("x")
+    (store / ".a.csv.123.tmp").write_text("y")
+    assert [r["path"] for r in record.store_rows(tmp_path, "bars_5m")] == [
+        "bars_5m/date=2026-10-28/a.csv"
+    ]
+    assert snapshot.walk(tmp_path, []) == ["bars_5m/date=2026-10-28/a.csv"]
+    assert list(snapshot.present_entries(tmp_path, ["bars_5m/date=2026-10-28/a.csv", "gone"])) == [
+        "bars_5m/date=2026-10-28/a.csv"
+    ]
