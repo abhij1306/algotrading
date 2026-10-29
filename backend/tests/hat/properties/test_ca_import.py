@@ -126,6 +126,10 @@ def test_proposals_price_rights_at_the_ex_dates_face_value() -> None:
     assert rights.rights == RightsTerms(3, 10, 450)
     (alone,) = proposals({"rights_issues": [_rights_row()]})
     assert alone.rights == RightsTerms(3, 10, 442)
+    # a split announced but not yet in effect has not changed the file's faceVal
+    tables = {"rights_issues": [_rights_row()], "splits_bonus": [split]}
+    (early,) = [p for p in proposals(tables, date(2016, 9, 1)) if p.table == "rights_issues"]
+    assert early.rights == RightsTerms(3, 10, 442)
 
 
 def test_subdivision_and_grouped_premium() -> None:

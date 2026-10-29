@@ -216,14 +216,14 @@ def check_links(
             "reason": link.reason,
         }
         if old is None or new is None:
-            no_bars.append(item)
-            continue
-        if old[1] >= new[0]:
-            overlap.append(
-                {**item, "old_last": old[1].isoformat(), "new_first": new[0].isoformat()}
-            )
-        if link.effective != new[0]:
-            misdated.append({**item, "new_first": new[0].isoformat()})
+            no_bars.append(item)  # still judged for its proof below
+        else:
+            if old[1] >= new[0]:
+                overlap.append(
+                    {**item, "old_last": old[1].isoformat(), "new_first": new[0].isoformat()}
+                )
+            if link.effective != new[0]:
+                misdated.append({**item, "new_first": new[0].isoformat()})
         listed = symbol_changes is not None and renamed(
             symbol_changes, link.old_symbol, link.new_symbol
         )
@@ -415,8 +415,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         changes = [(r.old, r.new) for r in renames]
     evidence, evidence_from = None, None
     if ctx.ca_data is not None and ctx.ca_data.is_dir():
-        evidence = read_evidence(ctx.ca_data)
-        evidence_from = min((e.day for e in evidence), default=None)
+        evidence = read_evidence(ctx.ca_data) or None  # no row read: the reference is missing
+        evidence_from = min((e.day for e in evidence or ()), default=None)
     exceptions = Exceptions(read_exceptions(D6_EXCEPTIONS, "D6"))
     link_summary, link_findings = check_links(
         links, spans, changes, evidence, evidence_from, exceptions

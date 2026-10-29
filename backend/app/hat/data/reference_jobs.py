@@ -22,6 +22,7 @@ from ..models import HatInstrument, HatMarket
 from ..ops.jobs import JobError, JobResult, SessionFactory
 from . import broker_symbols, instruments, symbol_history
 from . import calendar as hat_calendar
+from .corporate_actions import lock_reference_data
 from .isin import ordinary_equity
 from .kite_symbols import KiteSymbolData
 from .mcp_client import McpClient, McpError
@@ -145,11 +146,13 @@ def listing_refresh(
 
     def body() -> JobResult:
         csv_rows = parse_equity_list_csv(_read(equity_list, "reference_csv_unavailable"))
-        if not csv_rows:
+        stocks = [s for s in csv_rows if ordinary_equity(s.isin)]
+        if not stocks:  # a list of no stock would delist every one
             raise JobError("reference_csv_empty")
-        build = build_listing_from_csv([s for s in csv_rows if ordinary_equity(s.isin)])
+        build = build_listing_from_csv(stocks)
         with session_factory() as session:
             market_id = _market_id(session)
+            lock_reference_data(session)  # before the read: no writer activates one meanwhile
             others = {
                 (i.symbol, i.series)
                 for i in session.scalars(

@@ -1404,7 +1404,7 @@ def test_d2_a_non_equity_bonus_without_a_ratio_proves_its_day_only() -> None:
     assert ref.non_equity
     equity = {**row, "instrument_class": "equity"}
     assert adjustments._split_bonus(equity) is None  # an equity bonus with no ratio is unread
-    split = RefAction("split_bonus", D2, frozenset({"ABC"}), Fraction(1, 2), text="split")
+    split = RefAction("split_bonus", ref.ex_date, ref.keys, Fraction(1, 2), text="split")
     assert adjustments.combine_legs([ref, split]).factor == Fraction(1, 2)
     text = "Dividend bonus_instrument 140: Bonus NCDs"
     stored = StoredAction("a", D2, "dividend", Fraction(1), Decimal(140), False, "research", text)

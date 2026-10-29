@@ -98,7 +98,7 @@ from .corporate_actions import (
 )
 from .isin import voting_equity
 from .ratios import split_pair_numbers
-from .store import DataStore
+from .store import DATASET_BARS, DataStore
 
 SOURCE_FILE = "nse_ca_file"
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
@@ -368,14 +368,17 @@ def _etf(row: Mapping[str, str]) -> Proposal:
     return replace(p, legs=(Leg(TYPE_SPLIT, Fraction(new) / Fraction(old)),))
 
 
-def proposals(tables: Mapping[str, Sequence[Mapping[str, str]]]) -> list[Proposal]:
+def proposals(
+    tables: Mapping[str, Sequence[Mapping[str, str]]], asof: date | None = None
+) -> list[Proposal]:
     """What each row of the file proposes, as far as its text goes; a rights row is priced at
     the face value of its ex-date, from the file's own face-value splits of the same company
-    (same ISIN or symbol)."""
+    (same ISIN or symbol) that took effect by `asof` (the newest stored session: a split still
+    to come has not changed the file's `faceVal`)."""
     changes: dict[str, list[FaceValueChange]] = {}
     for row in tables.get(T_SPLITS, ()):
         day, ratio = nse_date(row["exDate"]), face_value_changes(row["subject_raw"])
-        if day is not None and ratio is not None:
+        if day is not None and ratio is not None and (asof is None or day <= asof):
             for key in {row["isin"], row["symbol"]} - {""}:
                 changes.setdefault(key, []).append((day, ratio))
 
@@ -547,7 +550,8 @@ def evaluate(
     session: Session, store: DataStore, tables: Mapping[str, Sequence[Mapping[str, str]]]
 ) -> list[Outcome]:
     """Every row's outcome; nothing is written."""
-    props = proposals(tables)
+    days = store.days(DATASET_BARS)
+    props = proposals(tables, days[-1] if days else None)
     reference = load_reference(session)
     needs_children = any(p.demerger is not None and not p.status for p in props)
     ctx = Context(
