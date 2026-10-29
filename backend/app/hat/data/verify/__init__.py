@@ -260,10 +260,9 @@ def pick_reports(
     """The report that judges `check_id` on `start..end`: the newest of `found` (newest first)
     that ran the check and whose snapshot is the data now (`current`, the snapshot digest of the
     report's window); `"stale"` when every report that ran it judged data since changed, or when
-    a newer report on since-changed data has a failed finding inside the window (whatever its
-    coverage) (an older pass
-    never overrides a newer failure); None when none ran it. A narrow run never hides the check
-    of an older, wider report."""
+    a newer report on since-changed data has a failed finding inside the window, whatever its
+    coverage (an older pass never overrides a newer failure); None when none ran it. A narrow
+    run never hides the check of an older, wider report."""
     ran = [
         (doc, path)
         for doc, path in found

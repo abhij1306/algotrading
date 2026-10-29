@@ -27,10 +27,13 @@ outside its coverage (the check's `coverage` ends there), and every failed findi
 the filings' `public_at`.
 
 Results announced in years the store holds no filing of (the pre-2020 gap) fail for those years,
-and so does each quarter missing from an ISIN's stored history (`results_quarter_missing`,
-`missing_quarters`, dated): a calendar quarter (a half year for a half-yearly filer) between its
-first and last stored period, or one after its last that an announcement of results reports and
-whose filing deadline has passed. Only announcements of results count
+and so does each period an ISIN must have stored and has not (`results_quarter_missing`,
+`missing_quarters`, a calendar rule: `demanded_periods`): every quarter end (half-year ends in a
+year whose stored periods are all six months long) from its first stored period, or its listing
+quarter when earlier and inside the store's coverage, through the last one past its filing
+deadline that ended before its last traded day. Announcements only date such a finding (the
+first announcement of results after the period, by its deadline plus `GRACE`, else the
+deadline), never excuse it. Only announcements of results count
 (`announcement_kind`): clarifications, replies and delay notices are left out, and a board
 meeting's outcome that does not name results is matched but never proves they were public.
 The summary counts the filings per year and source, the 23:59 `public_at` times by how they were
@@ -205,90 +208,113 @@ def deadline(quarter: date) -> date:
     return quarter + timedelta(days=60 if quarter.month == 3 else DEADLINE_DAYS)  # noqa: PLR2004
 
 
-def quarter_before(day: date) -> date:
-    """The latest calendar quarter end before `day`."""
-    start = date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)  # the quarter `day` is in
-    return start - timedelta(days=1)
+GRACE = timedelta(days=30)  # an announcement this long after a deadline still dates its period
 
 
-def _quarters(first: date, last: date, step: int) -> list[date]:
-    """Quarter ends from `first` to `last`, every `step` months."""
-    out, at = [], first
-    while at <= last:
-        out.append(at)
-        month = at.month + step
-        year = at.year + (month - 1) // 12
-        nxt = date(year, (month - 1) % 12 + 1, 1) + timedelta(days=31)
-        at = nxt.replace(day=1) - timedelta(days=1)
+def quarter_of(day: date) -> date:
+    """The end of the calendar quarter `day` is in."""
+    month = 3 * ((day.month - 1) // 3) + 3
+    return date(day.year, month, 31 if month in {3, 12} else 30)
+
+
+def next_quarter(quarter: date) -> date:
+    """The quarter end after `quarter` (a quarter end)."""
+    return quarter_of(quarter + timedelta(days=1))
+
+
+@dataclass(frozen=True)
+class Stored:
+    """One stored period of an ISIN: its end and its length in months (None: unknown)."""
+
+    end: date
+    months: int | None = 3
+
+
+@dataclass(frozen=True)
+class Listing:
+    """An ISIN's trading span: its listing (or first traded) day and last traded day."""
+
+    first: date | None
+    last: date | None
+
+
+def _half_years(periods: Iterable[Stored]) -> dict[int, set[int]]:
+    """The calendar years an ISIN reported half-yearly, by the period lengths it stored: a year
+    whose stored periods are all six months long -> the two half-year end months they fall on."""
+    by_year: dict[int, list[Stored]] = defaultdict(list)
+    for period in periods:
+        by_year[period.end.year].append(period)
+    return {
+        year: {m for p in items for m in (p.end.month, (p.end.month + 5) % 12 + 1)}
+        for year, items in by_year.items()
+        if all(p.months == 6 for p in items)  # noqa: PLR2004 - a half year
+    }
+
+
+def demanded_periods(
+    periods: Sequence[Stored], listing: Listing, coverage_start: date, as_of: date
+) -> list[date]:
+    """The period ends an ISIN must have stored: every quarter end from the first period that
+    should exist (its first stored period, or the quarter it listed in when earlier and not
+    before `coverage_start`) through the last one whose filing deadline has passed by `as_of`
+    and that ended before its last traded day. In a calendar year whose stored periods are all
+    six months long only the half-year ends are due; a year with nothing stored keeps the
+    frequency of the year before. Announcements play no part: a missing one proves nothing."""
+    if not periods:
+        return []
+    first = quarter_of(min(p.end for p in periods))
+    if listing.first is not None and coverage_start <= quarter_of(listing.first) < first:
+        first = quarter_of(listing.first)
+    half = _half_years(periods)
+    years = {p.end.year for p in periods}
+    out = []
+    at, half_months = first, None
+    while deadline(at) <= as_of and (listing.last is None or at < listing.last):
+        if at.year in years:
+            half_months = half.get(at.year)
+        if half_months is None or at.month in half_months:
+            out.append(at)
+        at = next_quarter(at)
     return out
 
 
-def _attribute(day: date, stored: set[date]) -> date:
-    """The quarter an announcement of results on `day` reports: the latest quarter end before
-    it when that one is stored; else the one before that when that one is unstored or the
-    announcement is within `MATCH_DAYS` of its end (a late filing of it); else the latest."""
-    quarter = quarter_before(day)
-    previous = quarter_before(quarter)
-    if quarter not in stored and (previous not in stored or (day - previous).days <= MATCH_DAYS):
-        return previous
-    return quarter
-
-
 def missing_quarters(  # noqa: PLR0913
-    stored: Mapping[str, Iterable[date]],
+    stored: Mapping[str, Sequence[Stored]],
+    listings: Mapping[str, Listing],
     by_isin: Mapping[str, Sequence[Announcement]],
+    coverage_start: date,
     as_of: date,
     start: date,
     end: date,
 ) -> list[dict[str, Any]]:
-    """Quarters missing from the store, one item per (ISIN, quarter), dated (`day`) by its first
-    announcement of results in `start..end`, else by its filing deadline:
-
-    - inside an ISIN's stored history (`stored`: every stored period end, whenever public), each
-      calendar quarter between its first and last stored period must be stored, or each half
-      year for an ISIN whose stored periods fall in two months six apart (a half-yearly filer);
-    - after its last stored period, a quarter an announcement of results reports (`_attribute`)
-      must be stored once its deadline has passed by `as_of`.
-
-    A day outside `start..end` is left out before the first per quarter is kept."""
-    out: dict[tuple[str, date], dict[str, Any]] = {}
-
-    def note(isin: str, quarter: date, day: date, why: str) -> None:
-        if start <= day <= end and (isin, quarter) not in out:
-            out[isin, quarter] = {
-                "isin": isin,
-                "quarter": quarter.isoformat(),
-                "day": day.isoformat(),
-                "why": why,
-            }
-
+    """Each demanded period (`demanded_periods`) an ISIN has not stored, dated (`day`) by its
+    first announcement of results in `start..end` after the period's end and by its deadline
+    plus `GRACE`, else by its deadline; kept when that day is in `start..end`. Announcements
+    only date a finding, never excuse one."""
+    out = []
     for isin, periods in stored.items():
-        ends = set(periods)
-        if not ends:
-            continue
-        first, last = min(ends), max(ends)
-        said: dict[date, date] = {}  # each quarter reported, by its first announcement
-        dating: dict[date, date] = {}  # by its first announcement inside the window
-        for item in by_isin.get(isin, ()):
-            day = item.announced.date()
-            if item.results and first < day <= as_of:
-                quarter = _attribute(day, ends)
-                said.setdefault(quarter, day)
-                if start <= day <= end:
-                    dating.setdefault(quarter, day)
-        # half-yearly: two stored months six apart and no announcement of another quarter
-        months = {d.month for d in ends}
-        half = len(months) == 2 and abs(max(months) - min(months)) == 6  # noqa: PLR2004
-        step = 6 if half and {q.month for q in said} <= months else 3
-        wanted = set(_quarters(first, last, step))
-        wanted |= {q for q in said if q > last and deadline(q) <= as_of}
-        for quarter in sorted(wanted - ends):
-            day = dating.get(quarter)
-            if day is not None:
-                note(isin, quarter, day, "announced, not stored")
-            else:
-                note(isin, quarter, deadline(quarter), "gap in the stored history")
-    return sorted(out.values(), key=lambda i: (i["isin"], i["quarter"]))
+        have = {p.end for p in periods}
+        said = sorted(
+            a.announced.date()
+            for a in by_isin.get(isin, ())
+            if a.results and start <= a.announced.date() <= end
+        )
+        listing = listings.get(isin, Listing(None, None))
+        for period in demanded_periods(periods, listing, coverage_start, as_of):
+            if period in have:
+                continue
+            due = deadline(period)
+            day = next((d for d in said if period < d <= due + GRACE), due)
+            if start <= day <= end:
+                out.append(
+                    {
+                        "isin": isin,
+                        "quarter": period.isoformat(),
+                        "day": day.isoformat(),
+                        "why": "missing quarter",
+                    }
+                )
+    return sorted(out, key=lambda i: (i["isin"], i["quarter"]))
 
 
 def lead_bucket(seconds: int) -> str:
@@ -402,19 +428,27 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
                 found = dated(found, [i["public_at"][:10] for i in items[code]])
             findings.append(found)
     # every stored period, whenever it became public (a filing public after the window still
-    # stores its quarter)
-    stored_periods: dict[str, list[date]] = defaultdict(list)
-    for isin, period_end in ctx.rows(
-        "SELECT DISTINCT isin, period_end FROM hat_financial_result WHERE isin IS NOT NULL"
+    # stores its quarter), with its length
+    stored_periods: dict[str, list[Stored]] = defaultdict(list)
+    for isin, period_end, months in ctx.rows(
+        "SELECT DISTINCT isin, period_end, (extract(year from age(period_end + 1, period_start)) "
+        "* 12 + extract(month from age(period_end + 1, period_start)))::int "
+        "FROM hat_financial_result WHERE isin IS NOT NULL"
     ):
-        stored_periods[isin].append(period_end)
-    as_of = min(reference_end.date(), ctx.end)
-    holes = missing_quarters(stored_periods, by_isin, as_of, ctx.start, ctx.end)
+        stored_periods[isin].append(Stored(period_end, months))
+    holes = missing_quarters(
+        stored_periods,
+        _listings(ctx),
+        by_isin,
+        min((p.end for ps in stored_periods.values() for p in ps), default=ctx.end),
+        ctx.end,
+        ctx.start,
+        ctx.end,
+    )
     summary["quarters_missing"] = len(holes)
     summary["quarters_missing_by_quarter"] = dict(
         sorted(Counter(i["quarter"] for i in holes).items())
     )
-    summary["quarters_missing_by_why"] = dict(Counter(i["why"] for i in holes))
     if holes:
         found = {**finding("results_quarter_missing", FAIL, holes[:25]), "count": len(holes)}
         findings.append(dated(found, [i["day"] for i in holes]))
@@ -441,3 +475,21 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             )
         )
     return covered(check_result("D5", summary, findings), ctx.start, reference_end.date())
+
+
+_TRADED_SQL = """
+SELECT CAST(instrument_id AS VARCHAR), min(date), max(date) FROM bars_daily_raw GROUP BY 1
+"""
+
+
+def _listings(ctx: Context) -> dict[str, Listing]:  # pragma: no cover - real data
+    """Each ISIN's listing (its listing day, else first traded day) and last traded day."""
+    with ctx.store.connect() as con:
+        traded = {i: (a, b) for i, a, b in con.execute(_TRADED_SQL).fetchall()}
+    out = {}
+    for instrument, isin, listed in ctx.rows(
+        "SELECT CAST(id AS TEXT), isin, listed_on FROM hat_instrument"
+    ):
+        first, last = traded.get(instrument, (None, None))
+        out[isin] = Listing(listed or first, last)
+    return out

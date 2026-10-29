@@ -1017,59 +1017,120 @@ def _say(*days: date, results: bool = True) -> list[filings.Announcement]:
     ]
 
 
-def _quarters_missing(
-    stored: dict, said: dict, as_of: date, start: date = date(2011, 1, 1)
+UNLISTED = filings.Listing(None, None)
+
+
+def _q(*ends: date, months: int = 3) -> list[filings.Stored]:
+    return [filings.Stored(e, months) for e in ends]
+
+
+def _quarters_missing(  # noqa: PLR0913
+    stored: list[filings.Stored],
+    said: list[filings.Announcement],
+    as_of: date,
+    *,
+    listing: filings.Listing = UNLISTED,
+    coverage: date = date(2011, 1, 1),
+    start: date = date(2011, 1, 1),
 ) -> list[tuple[str, str]]:
-    holes = filings.missing_quarters(stored, said, as_of, start, as_of)
-    return [(i["isin"], i["quarter"]) for i in holes]
-
-
-def test_d5_every_quarter_inside_the_stored_history_must_be_stored() -> None:
-    # third review item 3: Dec-19, Jun-20, Sep-20 stored, Mar-20 missing fails, announced or not
-    stored = {"INE1": [date(2019, 12, 31), date(2020, 6, 30), date(2020, 9, 30)]}
-    assert _quarters_missing(stored, {}, date(2021, 3, 31)) == [("INE1", "2020-03-31")]
-    # an early reporter: Sep-23 announced 28 days after its end, about 120 after Jun-23
-    early = {"INE2": [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]}
-    said = {"INE2": _say(date(2023, 7, 20), date(2023, 10, 28), date(2024, 1, 25))}
-    assert _quarters_missing(early, said, date(2024, 12, 31)) == [("INE2", "2023-09-30")]
-    # a half-yearly filer (Sep and Mar) needs only its half years
-    half = {"INE3": [date(2022, 9, 30), date(2023, 3, 31), date(2023, 9, 30)]}
-    assert _quarters_missing(half, {}, date(2024, 12, 31)) == []
-
-
-def test_d5_a_late_announcement_after_the_history_is_the_quarter_before() -> None:
-    # third review item 2: Mar-19 results announced 2019-07-10 at the end of the stored history
-    # report Mar-19 (stored), never Jun-19
-    stored = {"INE1": [date(2018, 12, 31), date(2019, 3, 31)]}
-    said = {"INE1": _say(date(2019, 7, 10))}
-    assert _quarters_missing(stored, said, date(2020, 3, 31)) == []
-    # a quarter after the history is demanded only once its deadline has passed
-    later = {"INE1": _say(date(2019, 11, 5))}  # Sep-19, past Jun-19's window
-    assert filings.deadline(date(2019, 9, 30)) == date(2019, 11, 14)
-    assert _quarters_missing(stored, later, date(2019, 11, 10)) == [("INE1", "2019-06-30")]
-    assert _quarters_missing(stored, later, date(2019, 11, 30)) == [("INE1", "2019-06-30")]
-
-
-def test_d5_stored_periods_count_whenever_public_and_the_window_comes_first() -> None:
-    # third review items 1 and 4: the stored periods are given whole (not those public in the
-    # window), and a quarter is dated by its first announcement inside the window
-    stored = {"INE1": [date(2023, 3, 31), date(2023, 9, 30)]}
-    said = {"INE1": _say(date(2023, 8, 1), date(2023, 12, 20))}
     holes = filings.missing_quarters(
-        stored, said, date(2024, 6, 30), date(2023, 1, 1), date(2024, 6, 30)
+        {"INE1": stored}, {"INE1": listing}, {"INE1": said}, coverage, as_of, start, as_of
     )
-    assert [(i["quarter"], i["day"]) for i in holes] == [("2023-06-30", "2023-08-01")]
-    inside = filings.missing_quarters(
-        stored, said, date(2024, 6, 30), date(2023, 9, 1), date(2024, 6, 30)
+    return [(i["quarter"], i["day"]) for i in holes]
+
+
+def test_d5_announcements_never_excuse_a_missing_quarter() -> None:
+    # fifth review B1: Dec-25 and Mar-26 stored, Jun-26 announced 2026-07-15, not stored
+    stored = _q(date(2025, 12, 31), date(2026, 3, 31))
+    assert _quarters_missing(stored, _say(date(2026, 7, 15)), date(2026, 10, 29)) == [
+        ("2026-06-30", "2026-07-15")
+    ]
+    # B2: Sep-19 and Mar-20 stored, Dec-19 announced 2020-01-20 (a quarterly filer) ...
+    stored = _q(date(2019, 9, 30), date(2020, 3, 31))
+    as_of = date(2020, 6, 30)
+    assert _quarters_missing(stored, _say(date(2020, 1, 20)), as_of) == [
+        ("2019-12-31", "2020-01-20")
+    ]
+    # ... and with no announcement at all, dated by its deadline
+    assert _quarters_missing(stored, [], as_of) == [("2019-12-31", "2020-02-14")]
+    # Dec-19 and Jun-20 stored, Mar-20 announced late (2020-04-25 is inside its deadline)
+    stored = _q(date(2019, 12, 31), date(2020, 6, 30))
+    assert _quarters_missing(stored, _say(date(2020, 4, 25)), date(2020, 9, 30)) == [
+        ("2020-03-31", "2020-04-25")
+    ]
+
+
+def test_d5_every_quarter_stored_passes_and_the_tail_waits_for_its_deadline() -> None:
+    # an early reporter: each quarter announced weeks after its end, all stored
+    stored = _q(date(2023, 3, 31), date(2023, 6, 30), date(2023, 9, 30), date(2023, 12, 31))
+    said = _say(date(2023, 4, 20), date(2023, 7, 20), date(2023, 10, 18), date(2024, 1, 19))
+    assert _quarters_missing(stored, said, date(2024, 2, 14)) == []
+    # Mar-24 is due 2024-05-30: not demanded the day before, demanded on it
+    assert filings.deadline(date(2024, 3, 31)) == date(2024, 5, 30)
+    assert _quarters_missing(stored, said, date(2024, 5, 29)) == []
+    assert _quarters_missing(stored, said, date(2024, 5, 30)) == [("2024-03-31", "2024-05-30")]
+
+
+def test_d5_a_late_covid_filer_is_dated_by_its_announcement_within_grace() -> None:
+    # Mar-20 announced 2020-07-20, 51 days past its deadline: beyond GRACE, dated by the deadline
+    stored = _q(date(2019, 12, 31), date(2020, 6, 30))
+    assert _quarters_missing(stored, _say(date(2020, 7, 20)), date(2020, 9, 30)) == [
+        ("2020-03-31", "2020-05-30")
+    ]
+    # announced 2020-06-25 (within GRACE of the deadline): dated by the announcement
+    assert _quarters_missing(stored, _say(date(2020, 6, 25)), date(2020, 9, 30)) == [
+        ("2020-03-31", "2020-06-25")
+    ]
+    # stored late, every quarter there: nothing missing
+    stored = _q(date(2019, 12, 31), date(2020, 3, 31), date(2020, 6, 30))
+    assert _quarters_missing(stored, _say(date(2020, 7, 20)), date(2020, 9, 30)) == []
+
+
+def test_d5_half_yearly_by_stored_period_lengths_then_quarterly() -> None:
+    # six-month periods (Sep and Mar) ask only for half-year ends; a missing Sep-23 fails
+    half = _q(date(2022, 9, 30), date(2023, 3, 31), months=6)
+    last = filings.Listing(None, date(2024, 1, 15))
+    assert _quarters_missing(half, [], date(2024, 12, 31), listing=last) == [
+        ("2023-09-30", "2023-11-14")
+    ]
+    # switching to quarterly in 2024: every 2024 quarter is due
+    switch = [*half, *_q(date(2023, 9, 30), months=6), *_q(date(2024, 3, 31), date(2024, 9, 30))]
+    assert _quarters_missing(switch, [], date(2024, 12, 31)) == [("2024-06-30", "2024-08-14")]
+    # three-month periods are never excused as half-yearly
+    assert _quarters_missing(_q(date(2022, 9, 30), date(2023, 3, 31)), [], date(2023, 6, 30)) == [
+        ("2022-12-31", "2023-02-14")
+    ]
+
+
+def test_d5_listing_and_delisting_bound_the_demanded_periods() -> None:
+    stored = _q(date(2021, 6, 30), date(2021, 9, 30))
+    # listed in Feb-21 inside coverage: Mar-21 is due; before coverage, it is not
+    listed = filings.Listing(date(2021, 2, 10), date(2021, 12, 1))
+    assert _quarters_missing(stored, [], date(2022, 12, 31), listing=listed) == [
+        ("2021-03-31", "2021-05-30")
+    ]
+    assert (
+        _quarters_missing(
+            stored, [], date(2022, 12, 31), listing=listed, coverage=date(2021, 6, 30)
+        )
+        == []
     )
-    assert inside == []  # Jun-23's announcement and deadline both fall before the window
-    again = {"INE1": _say(date(2023, 8, 1), date(2023, 8, 20), date(2023, 12, 20))}
-    late = filings.missing_quarters(
-        stored, again, date(2024, 6, 30), date(2023, 8, 10), date(2024, 6, 30)
+    # delisted (last traded 2021-12-01): Dec-21 onwards are not due
+    gone = filings.Listing(None, date(2021, 12, 1))
+    assert _quarters_missing(stored, [], date(2022, 12, 31), listing=gone) == []
+    # a finding outside the window is dropped
+    holes = filings.missing_quarters(
+        {"INE1": stored},
+        {"INE1": listed},
+        {},
+        date(2011, 1, 1),
+        date(2022, 12, 31),
+        date(2021, 6, 1),
+        date(2022, 12, 31),
     )
-    assert [(i["quarter"], i["day"]) for i in late] == [("2023-06-30", "2023-08-20")]
-    assert filings.quarter_before(date(2023, 10, 28)) == date(2023, 9, 30)
-    assert filings.quarter_before(date(2024, 1, 1)) == date(2023, 12, 31)
+    assert holes == []
+    assert filings.quarter_of(date(2024, 2, 29)) == date(2024, 3, 31)
+    assert filings.next_quarter(date(2024, 12, 31)) == date(2025, 3, 31)
 
 
 def test_a_newer_stale_failure_counts_even_outside_its_coverage() -> None:
