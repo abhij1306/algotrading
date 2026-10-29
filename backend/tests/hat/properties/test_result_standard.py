@@ -48,9 +48,23 @@ def test_exit_codes() -> None:
     assert standard.exit_code("hard_stop", D(90), D(95), ("2:step_trail",)) == "trail_step"
     assert standard.exit_code("hard_stop", D(90), D(95), ("1:trailing_atr",)) == "trailing_atr"
     assert standard.exit_code("hard_stop", D(90), D(95), ()) == "raised_stop"
-    assert standard.exit_code("close_below_sma", D(90), D(90), ()) == "sma50_close"
+    assert standard.exit_code("close_below_sma", D(90), D(90), (), 50) == "sma50_close"
+    assert standard.exit_code("close_below_sma", D(90), D(90), (), 20) == "sma20_close"
+    assert standard.exit_code("close_below_sma", D(90), D(90), ()) == "sma_close"
     assert standard.exit_code("end_of_period", D(90), D(90), ()) == "period_end"
     assert standard.exit_code("demerger", D(90), D(90), ()) == "demerger"
+
+
+def test_exit_sma_reads_the_rule_that_closed() -> None:
+    stack = [
+        SimpleNamespace(rule="hard_stop", enabled=True),
+        SimpleNamespace(rule="close_below_sma", sma=50, enabled=False),
+        SimpleNamespace(rule="time_stop", enabled=True),
+        SimpleNamespace(rule="close_below_sma", sma=20, enabled=True),
+    ]
+    assert standard.exit_sma(stack, ("3:close_below_sma",)) == 20
+    assert standard.exit_sma(stack, ()) == 20  # the only enabled one
+    assert standard.exit_sma(stack[:3], ()) is None
 
 
 # --- buckets -------------------------------------------------------------------------------------

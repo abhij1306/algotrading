@@ -477,7 +477,13 @@ def _trades(result: BacktestResult, days: Sequence[date]) -> list[_Trade]:
                 n,
                 row,
                 signal,
-                exit_code(row.exit_reason, row.initial_stop, row.final_stop, row.rules_fired),
+                exit_code(
+                    row.exit_reason,
+                    row.initial_stop,
+                    row.final_stop,
+                    row.rules_fired,
+                    row.exit_sma,
+                ),
                 {} if signal is None else signal.features,
                 sessions_held(days, row.entry_date, row.exit_date),
             )
@@ -573,7 +579,9 @@ def _trade_rows(
                     "exit_price": round(leg.price, 4),
                     "exit_reason": t.exit
                     if last
-                    else exit_code(leg.rule, row.initial_stop, row.final_stop, row.rules_fired),
+                    else exit_code(
+                        leg.rule, row.initial_stop, row.final_stop, row.rules_fired, row.exit_sma
+                    ),
                     "hold_sessions": sessions_held(days, row.entry_date, leg.day),
                     "gross_pnl": share.gross,
                     "fees": share.fees,

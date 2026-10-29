@@ -156,6 +156,8 @@ class TradeRow:
     final_stop: Decimal | None = None  # the stop when it closed
     rules_fired: tuple[str, ...] = ()  # the exit rule ids that acted on it (`index:rule`)
     legs: tuple[LegRow, ...] = ()  # its sales in order (none: the trade closed without one)
+    # the length of the `close_below_sma` rule of its exit stack (`standard.exit_sma`)
+    exit_sma: int | None = None
     # a rotation trade's rank and score on the night it entered and the night it left (none
     # when it left for another reason than the ranking: a delisting, the period end)
     entry_rank: int | None = None
@@ -206,6 +208,12 @@ class BacktestResult:
     # a rotation leg's rebalance rows (`REBALANCE_COLUMNS`): rebalances.csv; empty
     # without one
     rebalances: tuple[Mapping[str, Any], ...] = ()
+    # the ledger reconciliation (`reconcile`): its status, what it checked, its findings
+    ledger: Mapping[str, Any] = field(default_factory=dict)
+    # the reads past the as-of clock the run made on purpose, by reason (`MarketView.hindsight`)
+    hindsight: Mapping[str, int] = field(default_factory=dict)
+    # each skip and funnel count with its session, (day, kind, key): the truncation check's
+    decisions: tuple[tuple[date, str, str], ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:

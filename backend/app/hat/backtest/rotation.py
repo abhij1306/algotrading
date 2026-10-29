@@ -45,7 +45,7 @@ from ..costs import BacktestFills
 from ..engine import rotation
 from ..engine.positions import trade_r
 from ..engine.strategy.config import Rotation, StrategyConfig
-from ..money import require_exact
+from ..money import dividend_credit, require_exact
 from .report import END_OF_PERIOD, FillRow, LegRow, SignalRow, TradeRow
 
 __all__ = [
@@ -168,6 +168,7 @@ class RotationBook:
         risk_policy_version_id: uuid.UUID,
         fills: BacktestFills,
         prefix: str = "",
+        sold: set[tuple[date, str]] | None = None,
     ) -> None:
         if config.rotation is None:
             raise ValueError("not_a_rotation")
@@ -183,7 +184,8 @@ class RotationBook:
         self.trades: list[TradeRow] = []
         self.signals: list[SignalRow] = []
         self.rows: list[dict[str, Any]] = []
-        self._sold: set[tuple[date, str]] = set()  # one DP charge per name per sell day
+        # one DP charge per name per sell day: the account's set, shared with its other books
+        self._sold: set[tuple[date, str]] = set() if sold is None else sold
 
     # --- what the loop reads ---------------------------------------------------------------
 
@@ -233,7 +235,7 @@ class RotationBook:
         """Credit each holding's dividends going ex today (`per_share`); the total."""
         total = _ZERO
         for holding in self.holdings.values():
-            cash = holding.qty * per_share(holding.instrument_id)
+            cash = dividend_credit(holding.qty, per_share(holding.instrument_id))
             if cash:
                 holding.dividends += cash
                 self.flow += cash

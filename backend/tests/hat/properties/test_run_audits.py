@@ -285,15 +285,16 @@ BARS = {
     ("b", DAYS[4]): (D(189), D(195)),
 }
 EQUITY = (
-    "date,equity,position_value\n2024-01-02,1000000,10000\n2024-01-05,1001000,6000\n"
-    "2024-01-08,1000980,0\n"
+    "date,equity,position_value,cash\n2024-01-02,1000000,10000,990000\n"
+    "2024-01-05,1001000,6000,995000\n2024-01-08,1000980,0,1000980\n"
 )
+LEDGER = {"status": "pass", "findings": []}
 REFUSALS = "date,symbol,reason\n2024-01-03,CCC,max_positions\n2024-01-04,DDD,max_positions\n"
 
 
 def _audit(run: dict, trades: str = TRADES, equity: str = EQUITY, bars: dict = BARS) -> dict:
     doc = run_audit.audit_run(
-        run, {"trades": trades, "equity": equity, "refusals": REFUSALS}, bars, D(20)
+        run, {"trades": trades, "equity": equity, "refusals": REFUSALS}, bars, D(20), ledger=LEDGER
     )
     return {c["name"]: c for c in doc["checks"]} | {"_": doc}
 
@@ -470,3 +471,16 @@ def test_max_invested() -> None:
     assert compare.max_invested(equity) == 72.25
     assert compare.max_invested("date,invested_pct\n") is None
     assert compare.max_invested(None) is None
+
+
+def test_check_lookahead_warns_on_a_decision_made_in_hindsight() -> None:
+    """A read past the as-of clock a decision made warns `lookahead_hindsight` with its count; a
+    descriptive column read in hindsight does not. Harm: a result resting on same-day volume or
+    a registry delisting passing as point in time."""
+    assert run_audit.check_lookahead({})["status"] == "pass"
+    assert run_audit.check_lookahead({"breakout_vol_ratio": 9})["status"] == "pass"
+    found = run_audit.check_lookahead({"ep_estimate_volume": 3, "breakout_vol_ratio": 9})
+    assert found["status"] == "warn"
+    assert found["findings"][0]["code"] == "lookahead_hindsight"
+    assert found["findings"][0]["items"] == [{"ep_estimate_volume": 3}]
+    assert found["summary"]["hindsight"] == {"breakout_vol_ratio": 9, "ep_estimate_volume": 3}

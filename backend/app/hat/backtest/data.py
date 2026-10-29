@@ -26,7 +26,8 @@ import math
 import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from collections.abc import Collection, Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -78,7 +79,13 @@ from ..time import IST, as_utc
 from .spec import BacktestError, membership_key
 
 __all__ = [
+    "HINDSIGHT_BREAKOUT_VOL_RATIO",
+    "HINDSIGHT_DELISTED_EXIT",
+    "HINDSIGHT_EP_CLOSE",
+    "HINDSIGHT_EP_VOLUME",
+    "HINDSIGHT_FULL_DAY_PACE",
     "JUMP_SKIP_SESSIONS",
+    "LOOKAHEAD",
     "LOOKBACK_SESSIONS",
     "STOPPED_SLACK_SESSIONS",
     "Bar",
@@ -87,6 +94,8 @@ __all__ = [
     "classifications",
     "industry_on",
     "jump_skips",
+    "looks_ahead",
+    "public_by",
     "load_market",
     "membership_cover_refusal",
     "point_in_time_members",
@@ -94,6 +103,33 @@ __all__ = [
     "scan_night_members",
     "stopped_trading",
 ]
+
+LOOKAHEAD = "backtest_lookahead"  # a decision read data stamped after its instant (`MarketView`)
+# the reads `MarketView.hindsight` counts, by reason: the run audit warns `lookahead_hindsight`
+HINDSIGHT_FULL_DAY_PACE = "volume_pace_full_day"  # a 5m session paced on the day's whole volume
+HINDSIGHT_EP_VOLUME = "ep_estimate_volume"  # a daily EP estimate gated on the day's own volume
+HINDSIGHT_EP_CLOSE = "ep_estimate_close"  # a daily EP estimate fired on the day's high, low, close
+HINDSIGHT_BREAKOUT_VOL_RATIO = "breakout_vol_ratio"  # a feature column, read by no rule
+HINDSIGHT_DELISTED_EXIT = "delisted_exit"  # a delisting known from the registry, not on the day
+
+
+def public_by(filings: Iterable[ResultEvent], day: date) -> tuple[ResultEvent, ...]:
+    """The filings public by the end of `day` (IST): what a trigger on `day` may read; it reads
+    only those public by its own instant."""
+    return tuple(r for r in filings if as_utc(r.public_at).astimezone(IST).date() <= day)
+
+
+def looks_ahead(day: date, session: date | None, known: date | None, *, inclusive: bool) -> bool:
+    """Whether a read of `day` (through it if `inclusive`, else only before it) looks past the
+    clock: `session` the session in progress (None: no clock, nothing is refused) and `known` the
+    last session whose close is public (None: none is). A decision read through `day` needs
+    `day <= known`; a read before `day`, or the in-progress session's own bar, `day <= session`."""
+    if session is None:
+        return False
+    if not inclusive:
+        return day > session
+    return known is None or day > known
+
 
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
 # the window it is given holds more, so its watchlist equals a scan of the full history.
@@ -335,9 +371,18 @@ class MarketView:
     strategy's regime index (`index`). A bar without four positive prices is not tradeable and
     is left out; a skipped one (`MarketData.skipped`) is not traded on (`bar`, `last_close`)
     but stays in the history the indicators and the tick read. The bars are held per instrument as
-    arrays; a `Bar` of Decimals is built only for the bars a read returns."""
+    arrays; a `Bar` of Decimals is built only for the bars a read returns.
+
+    The as-of clock (`open`, `close`, `release`) refuses a read past the run's instant
+    (`LOOKAHEAD`, `looks_ahead`): a decision read (the scan's window, features, breadth, the
+    regime closes, an instrument's bars, volumes and ATR through a day) through the last session
+    whose close is public, the session in progress before its close; a simulation read (a
+    session's bar, previous close, tick, dividends, a mark) through the session in progress. The
+    loop releases it after the period end, for the result's after-the-fact analytics."""
 
     def __init__(self, data: MarketData, index: str) -> None:
+        self.session: date | None = None  # the clock: the session in progress
+        self.known: date | None = None  # the last session whose close is public
         self.days = tuple(sorted(set(data.days)))
         self.index = {d: n for n, d in enumerate(self.days)}
         self.bars = data.bars
@@ -354,10 +399,59 @@ class MarketView:
         self.closes = list(data.index_closes.get(index, ()))
         self.breadth = data.breadth
         self.dividends = data.dividends
+        self.results = data.results
+        # the reads made past the clock on purpose (`hindsight`), by reason
+        self.hindsight_reads: dict[str, int] = {}
         by_day: dict[date, set[str]] = defaultdict(set)
         for instrument_id, day in data.pending:
             by_day[day].add(instrument_id)
         self.pending: dict[date, frozenset[str]] = {d: frozenset(ids) for d, ids in by_day.items()}
+
+    def open(self, day: date) -> None:
+        """The clock at `day`'s open: its own bar is in progress, the one before it closed."""
+        self.session, self.known = day, self.prev(day)
+
+    def close(self, day: date) -> None:
+        """The clock at `day`'s close: its bar is public."""
+        self.session, self.known = day, day
+
+    @contextmanager
+    def hindsight(self, reason: str) -> Iterator[None]:
+        """No clock inside, the read counted under `reason` (`hindsight_reads`): a read past the
+        run's instant made on purpose, a known gap the run records (the day's own volume where
+        no 5-minute bars show it) or a result column described as read after the fact."""
+        self.count_hindsight(reason)
+        clock = self.session, self.known
+        self.session = self.known = None
+        try:
+            yield
+        finally:
+            self.session, self.known = clock
+
+    def count_hindsight(self, reason: str) -> None:
+        """Count a use of data past the clock that is not a read through the view (a delisting
+        the registry knows before the day shows it, `HINDSIGHT_DELISTED_EXIT`)."""
+        self.hindsight_reads[reason] = self.hindsight_reads.get(reason, 0) + 1
+
+    def release(self) -> None:
+        """No clock: the run is over (the result's analytics read the sessions after a trade)."""
+        self.session = self.known = None
+
+    def as_of(self, day: date, *, inclusive: bool = True) -> None:
+        """Refuse (`LOOKAHEAD`) a read of `day` past the clock (`looks_ahead`): what a reader
+        of the run's other data (the rotation's closes, the 5-minute store, the overlay's ETF
+        data) calls before it reads."""
+        if looks_ahead(day, self.session, self.known, inclusive=inclusive):
+            raise BacktestError(LOOKAHEAD)
+
+    def _check(self, day: date, *, inclusive: bool = True) -> None:
+        self.as_of(day, inclusive=inclusive)
+
+    def results_on(self, instrument_id: str, day: date) -> tuple[ResultEvent, ...]:
+        """The instrument's results filings public by the end of `day` (IST), the session in
+        progress at most: a trigger reads only those public by its instant."""
+        self._check(day, inclusive=False)
+        return public_by(self.results.get(instrument_id, ()), day)
 
     def _series(self, skipped: Collection[tuple[str, date]]) -> dict[str, _Series]:
         # a bar without four positive prices cannot be traded on
@@ -425,6 +519,7 @@ class MarketView:
 
     def bar(self, instrument_id: str, day: date) -> Bar | None:
         """The instrument's tradeable bar of `day`; None without one."""
+        self._check(day, inclusive=False)
         series, at = self._find(instrument_id, day, inclusive=False)
         if at < len(series.days) and series.days[at] == _ordinal(day) and series.traded[at] == at:
             return series.bars(at, at + 1)[0]
@@ -433,6 +528,7 @@ class MarketView:
     def last_close(self, instrument_id: str, day: date) -> tuple[date, Decimal] | None:
         """The instrument's last tradeable session on or before `day` and its close; None
         without one."""
+        self._check(day, inclusive=False)
         series, end = self._find(instrument_id, day, inclusive=True)
         at = int(series.traded[end - 1]) if end else -1
         if at < 0:
@@ -442,6 +538,7 @@ class MarketView:
     def skipped_after(self, instrument_id: str, after: date, through: date) -> int:
         """The count of the instrument's skipped sessions (`MarketData.skipped`) after `after`, up
         to `through`."""
+        self._check(through, inclusive=False)
         days = self.skipped.get(instrument_id, [])
         return bisect_right(days, through) - bisect_right(days, after)
 
@@ -450,19 +547,32 @@ class MarketView:
         return self.days[n - 1] if n > 0 else None
 
     def closes_through(self, day: date) -> list[Decimal]:
+        self._check(day)
         return [c for d, c in self.closes if d <= day]
 
     def breadth_through(self, day: date) -> list[Decimal | None]:
         """The breadth of the last `BREADTH_SESSIONS` sessions through `day`, as live reads it
         (`daily.market.breadth_series`): None for a session without one."""
+        self._check(day)
         end = self.index[day] + 1
         return [self.breadth.get(d) for d in self.days[max(0, end - BREADTH_SESSIONS) : end]]
+
+    def features_on(self, day: date) -> pl.DataFrame | None:
+        """The stored features of `day` (the scan's), None without any."""
+        self._check(day)
+        return self.features.get(day)
+
+    def breadth_on(self, day: date) -> Decimal | None:
+        """The market breadth of `day`, None without one."""
+        self._check(day)
+        return self.breadth.get(day)
 
     def feature(
         self, day: date, instrument_id: str, name: str, *, rounded: bool = True
     ) -> Decimal | None:
         """The stored feature on `day`, at the store's 4 places, or with `rounded` False as
         stored (a score ranked against others, where 4 places would make ties)."""
+        self._check(day)
         rows = self.feature_rows.get(day)
         if rows is None:
             frame = self.features.get(day)
@@ -486,6 +596,7 @@ class MarketView:
         close sees no ex-date drop; the price basis where no dividend went ex among them. With
         `since_break`, none before the last series break up to `day` (`series_break`), as the
         live trigger reads the stop inputs."""
+        self._check(day, inclusive=inclusive)
         series, end = self._find(instrument_id, day, inclusive=inclusive)
         _, through = self._find(instrument_id, day, inclusive=True)
         start = max(0, end - count)
@@ -498,6 +609,7 @@ class MarketView:
         """The volumes of the instrument's last `count` stored sessions on or before `day`,
         oldest first, a session with bad prices included (NaN where the store has none), none
         before the last series break (`series_break`)."""
+        self._check(day)
         days, volumes = self.volumes.get(instrument_id, _NO_VOLUMES)
         window = last_through(days, volumes, _ordinal(day), count)
         end = int(np.searchsorted(days, _ordinal(day), side="right"))
@@ -507,6 +619,7 @@ class MarketView:
     def bars_since(self, instrument_id: str, first: date, day: date) -> list[Bar]:
         """The instrument's bars dated from `first` on and before `day`, oldest first, on the
         scale `bars_through` reads them at `day`."""
+        self._check(day, inclusive=False)
         _, start = self._find(instrument_id, first, inclusive=False)
         _, end = self._find(instrument_id, day, inclusive=False)
         return self.bars_through(instrument_id, day, end - start, inclusive=False)
@@ -517,6 +630,7 @@ class MarketView:
         later split must not move a day to a finer slab), and the tick is scaled by the
         adjustment of its bar of `day` (or the last before it, `ticks.scaled_tick`): on a bar no
         action adjusts it is the NSE tick itself. None without an earlier raw close."""
+        self._check(day, inclusive=False)
         closes = self.raw_closes.get(instrument_id, _NO_RAW)
         end = int(np.searchsorted(closes.days, _ordinal(day), side="left"))
         month = int(np.searchsorted(closes.days[:end], _ordinal(day.replace(day=1)), side="left"))
@@ -534,6 +648,7 @@ class MarketView:
         """The instrument's adjusted close over its raw close on `day`, exactly: what puts a
         raw price of that session on the run's price basis (`intraday.session_bars`); None
         without a raw close that day."""
+        self._check(day, inclusive=False)
         closes = self.raw_closes.get(instrument_id, _NO_RAW)
         at = int(np.searchsorted(closes.days, _ordinal(day), side="left"))
         if at >= len(closes.days) or closes.days[at] != _ordinal(day) or not closes.raw[at]:
@@ -543,6 +658,7 @@ class MarketView:
     def real_shares(self, instrument_id: str, day: date, qty: int) -> int | None:
         """The whole shares `qty` price-basis shares were on `day` (`real_shares`), by the factor
         of its bar of `day` (or the last before it); None without one."""
+        self._check(day, inclusive=False)
         closes = self.raw_closes.get(instrument_id, _NO_RAW)
         through = int(np.searchsorted(closes.days, _ordinal(day), side="right"))
         return real_shares(qty, float(closes.factor[through - 1])) if through else None
@@ -556,12 +672,14 @@ class MarketView:
 
     def pending_on(self, day: date) -> frozenset[str]:
         """The instruments factor-pending on `day` (`MarketData.pending`)."""
+        self._check(day, inclusive=False)
         return self.pending.get(day, frozenset())
 
     def window(self, as_of: date) -> pl.DataFrame:
         """The bars of the `LOOKBACK_SESSIONS` sessions up to `as_of`: what the scan reads, as
         the total-return series on each instrument's scale of its last bar by `as_of` (CA3),
         without the instruments factor-pending on `as_of` (CA5: no signal)."""
+        self._check(as_of)
         first = self.days[max(0, self.index[as_of] - LOOKBACK_SESSIONS)]
         frame = self.bars.filter((pl.col("date") >= first) & (pl.col("date") <= as_of))
         pending = self.pending_on(as_of)
@@ -574,6 +692,7 @@ class MarketView:
 
     def dividends_on(self, instrument_id: str, day: date) -> Decimal:
         """The cash per price-basis share of the instrument's dividends that go ex on `day`."""
+        self._check(day, inclusive=False)
         return sum(
             (cash for ex, cash in self.dividends.get(instrument_id, ()) if ex == day), _ZERO_CASH
         )
@@ -581,6 +700,7 @@ class MarketView:
     def prev_close(self, instrument_id: str, day: date) -> Decimal | None:
         """The instrument's last close before `day`, on the price basis (the circuit bands' base);
         None without one."""
+        self._check(day, inclusive=False)
         series, end = self._find(instrument_id, day, inclusive=False)
         return _exact(series.prices[end - 1][3]) if end else None
 

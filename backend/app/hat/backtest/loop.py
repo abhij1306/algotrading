@@ -170,6 +170,7 @@ from sqlalchemy import select
 
 from ..configs.records import Bot
 from ..configs.unit import configs_of
+from ..costs import BacktestFills, CostModel
 from ..data.bars import Bar as DataBar
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
@@ -198,9 +199,20 @@ from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import IST, as_utc
 from . import ep_log
 from .auction_days import auction_risk_days
-from .data import Bar, MarketData, MarketView, industry_on, symbol_on
+from .data import (
+    HINDSIGHT_DELISTED_EXIT,
+    HINDSIGHT_EP_CLOSE,
+    HINDSIGHT_EP_VOLUME,
+    HINDSIGHT_FULL_DAY_PACE,
+    Bar,
+    MarketData,
+    MarketView,
+    industry_on,
+    symbol_on,
+)
 from .fillrules import (
     breakout_volume_ok,
+    close_lower_locked,
     first_trigger,
     full_day_pace_skip,
     inferred_band,
@@ -225,6 +237,7 @@ from .intraday import (
     replay,
     session_bars,
     trace,
+    traded_low_after,
 )
 from .ledger import exact_flows, fill_rows, fills_on, ledger, set_series
 from .ledger import trade_rows as ledger_trade_rows
@@ -237,6 +250,7 @@ from .overlay import (
     benchmarks,
     refusal_reason,
 )
+from .reconcile import NO_OVERLAY, Held, OverlayJournal, SessionBook, reconcile
 from .report import (
     DELISTED,
     DEMERGER,
@@ -272,7 +286,7 @@ from .spec import (
     RunSpec,
     sleeve_weight,
 )
-from .standard import fwd_r
+from .standard import exit_sma, fwd_r
 
 __all__ = ["run_backtest"]
 
@@ -286,6 +300,7 @@ VOLUME_SKIPS = frozenset({SKIP_LOW_VOLUME, SKIP_NO_VOLUME})
 # The day's gates of a watchlist row after the scan's (`scan.funnel_gates`), in order.
 TRIGGER_GATES = ("trigger", "breakout_volume", "stop", "max_chase")
 MAX_CHASE = "max_chase"
+SKIP_LIMIT_NOT_REACHED = "limit_not_reached"  # a 5-minute entry LIMIT nothing traded at
 # The sleeve's id in its allocations: the ledger's bot id is new each run, a result's is fixed.
 _SANDBOX_SLEEVE = uuid.UUID(int=2)
 _ZERO = Decimal(0)
@@ -587,8 +602,17 @@ class _Run:
         self.leg = self.legs[0]  # the strategy the entry phase is deciding (`_use`)
         versions = [spec.strategy_version_id, *(c.strategy_version_id for c in spec.co_sleeves)]
         # each rotation strategy's book (`rotation`), by leg: it trades outside the ledger
+        # the account's (day, instrument) sales so far: one DP charge per scrip per sell day
+        self.dp_sold: set[tuple[date, str]] = set()
         self.books = {
-            n: RotationBook(leg.config, versions[n], spec.policy.version_id, spec.fills, leg.prefix)
+            n: RotationBook(
+                leg.config,
+                versions[n],
+                spec.policy.version_id,
+                spec.fills,
+                leg.prefix,
+                self.dp_sold,
+            )
             for n, leg in enumerate(self.legs)
             if leg.config.rotation is not None
         }
@@ -605,6 +629,7 @@ class _Run:
             else Overlay(spec.overlay, _etf_data(etf), spec.fills.schedule)
         )
         if self.overlay is not None:  # the sleeve is bought at the first session's open
+            self.overlay.clock(self.view.as_of)
             self.overlay.plan = self.overlay.first_plan(self.period[0], spec.initial_equity)
         self.calendar = SessionCalendar(
             {
@@ -620,9 +645,16 @@ class _Run:
         self.ambiguous_days: set[date] = set()
         self.lower_circuit_days: set[date] = set()
         self.dividend_cash = _ZERO  # the dividends the held positions earned (CA3)
+        # the ledger reconciliation's inputs (`reconcile`): each session's book and the cash
+        # dividends credited since the last mark
+        self.books_log: list[SessionBook] = []
+        self.day_dividends = _ZERO
         self.dividend_credits = 0
         self.equity: list[tuple[date, Decimal]] = []
         self.skips: dict[str, int] = {}
+        # every skip and funnel count with its session, (day, kind, key): the truncation check's
+        self.decisions: list[tuple[date, str, str]] = []
+        self.today: date | None = None
         self.signal_rows: list[SignalRow] = []
         self.invested: list[Decimal] = []
         # The sleeves' nightly allocations (HAT-BT-014), by the trade date they size.
@@ -683,6 +715,8 @@ class _Run:
 
     def run(self) -> BacktestResult:
         for day in self.period:
+            self.view.open(day)
+            self.today = day
             prev = self.view.prev(day)
             if prev is not None:
                 for leg in self.legs:
@@ -701,6 +735,7 @@ class _Run:
             self._sync_ladder()
             if prev is not None:
                 self._entries(day, prev)
+            self.view.close(day)  # the close phase decides on the daily close (decisions.md)
             self._close_phase(day)
             if prev is not None:
                 self._entries(day, prev, at_close=True)
@@ -712,6 +747,7 @@ class _Run:
                 self._overlay_close(day, prev)
             self._mark(day)
         self._finish(self.period[-1])
+        self.view.release()
         return self._result()
 
     def _publish(self, prev: date, day: date) -> None:
@@ -724,7 +760,7 @@ class _Run:
             bars=self.night_window[1],
             regime_closes=self.view.closes_through(prev),
             breadth=self.view.breadth_through(prev),
-            features=self.view.features.get(prev),
+            features=self.view.features_on(prev),
             series=series,
             benchmark=self.benchmark[: bisect_right(self.benchmark_days, prev)],
             memo=self.leg.scan_memo,
@@ -739,11 +775,14 @@ class _Run:
             mine = self.funnel.setdefault(playbook, {})
             for gate, count in counts.items():
                 mine[gate] = mine.get(gate, 0) + count
+                self.decisions.append((day, "funnel", f"{playbook}:{gate}:{count}"))
 
     def _passed(self, playbook: str, gate: str) -> None:
         """One watchlist row of `playbook` passed the day's `gate` (`TRIGGER_GATES`)."""
         mine = self.funnel.setdefault(playbook, {})
         mine[gate] = mine.get(gate, 0) + 1
+        if self.today is not None:
+            self.decisions.append((self.today, "funnel", f"{playbook}:{gate}:1"))
 
     def _open_positions(self) -> list[HatPosition]:
         """Every strategy's open positions, by entry day and instrument."""
@@ -767,7 +806,7 @@ class _Run:
             at,
             high=held.high,
             low=held.low,
-            fills=self.spec.fills,
+            fills=AccountFills(self.spec.fills, self.dp_sold, held.instrument_id),
         )
 
     def _down_leg(self, position: HatPosition, bar: Bar, at: datetime) -> None:
@@ -828,6 +867,7 @@ class _Run:
             if per_share and position.qty_open > 0:
                 credit = dividend_credit(position.qty_open, per_share)
                 self.dividend_cash += credit
+                self.day_dividends += credit
                 self.dividend_credits += 1
                 if self.overlay is not None:
                     self.overlay.dividend(day, credit)
@@ -864,6 +904,7 @@ class _Run:
         credit = book.dividends(lambda i: self.view.dividends_on(i, day))
         if credit:
             self.rotation_dividends += credit
+            self.day_dividends += credit
             self.dividend_credits += 1
             if self.overlay is not None:
                 self.overlay.dividend(day, credit)
@@ -920,6 +961,7 @@ class _Run:
             memo=leg.scan_memo,
         )
         passers = universe_passers(leg.config, inputs)
+        self.view.as_of(prev)  # the total-return closes through `prev`, known at its close
         closes = self.tr_closes.window(passers, self.index[prev], rotation.window_rows(rules))
         gate_on = regime_allows_longs(leg.config.regime, inputs.regime_closes, inputs.breadth)
         leg.gate[day] = gate_on
@@ -985,7 +1027,7 @@ class _Run:
             open_risk=open_risk,
             equity=self._equity_now()[0],
             regime_on=leg.gate.get(day),
-            breadth_pct=self.data.breadth.get(prev),
+            breadth_pct=self.view.breadth_on(prev),
             features=self.signal_features.at(
                 instrument_id,
                 day,
@@ -1015,6 +1057,8 @@ class _Run:
 
     def _skip(self, reason: str) -> None:
         self.skips[reason] = self.skips.get(reason, 0) + 1
+        if self.today is not None:
+            self.decisions.append((self.today, "skip", reason))
 
     def _daily(
         self,
@@ -1272,7 +1316,9 @@ class _Run:
         if multiple is None:
             return None
         self.estimated.add(VOLUME_PACE_ESTIMATED)
-        volumes = self.view.volumes_through(instrument_id, day, trigger.AVG_VOLUME_DAYS + 1)
+        # the day's own volume before its close: the known gap `VOLUME_PACE_ESTIMATED`
+        with self.view.hindsight(HINDSIGHT_FULL_DAY_PACE):
+            volumes = self.view.volumes_through(instrument_id, day, trigger.AVG_VOLUME_DAYS + 1)
         return full_day_pace_skip(volumes, multiple)
 
     def _paced_live(self, playbook: Playbook) -> Playbook:
@@ -1299,6 +1345,7 @@ class _Run:
         store = self.data.intraday
         if store is None or self.spec.conventions.entry_bars != ENTRY_BARS_5M:
             return {}
+        self.view.as_of(day, inclusive=False)  # the session in progress, replayed bar by bar
         scales = {
             i: scale
             for i in instruments
@@ -1307,7 +1354,7 @@ class _Run:
         return {
             i: bars
             for i, bars in session_bars(store, day, scales).items()
-            if (bar := self.view.bar(i, day)) is not None and on_basis(day, bars, bar.close)
+            if (bar := self.view.bar(i, day)) is not None and on_basis(day, bars, bar.open)
         }
 
     def _candidate(self, row: _Row, day: date, prev: date) -> trigger.Candidate:
@@ -1333,7 +1380,7 @@ class _Run:
             daily_results=trigger.daily_trigger_results(
                 playbook, self._setup_bars(instrument_id, prev), day
             ),
-            results=tuple(self.data.results.get(instrument_id, ())) if playbook.preopen else (),
+            results=self.view.results_on(instrument_id, day) if playbook.preopen else (),
             results_since=session_open(prev) if playbook.preopen else None,
         )
 
@@ -1389,6 +1436,12 @@ class _Run:
             if bar is None:  # pragma: no cover - `_open_for` and the scan read the same bars
                 continue
             dip, high = after_trigger(bars[candidate.symbol], fired.at, bar.low)
+            traded = traded_low_after(bars[candidate.symbol], fired.at)
+            if planned.skip is None and (traded is None or traded > planned.entry):
+                # live's LIMIT rests at the trigger bar's close: no bar after the trigger traded
+                # at or below it, so nothing fills
+                self._skip(SKIP_LIMIT_NOT_REACHED)
+                continue
             criteria = tuple(
                 {"stage": stage, **outcome.to_json()}
                 for stage, outcomes in (
@@ -1602,10 +1655,12 @@ class _Run:
         values at the estimate's trigger instant (`volume_pace` is judged on the full day's volume
         after, `_full_day_pace`); the outcome goes into the EP log."""
         instrument_id = str(row.instrument_id)
-        volumes = self.view.volumes_through(instrument_id, day, 1)
+        # the day's volume at the estimate's trigger: the known gap `EP_TRIGGER_ESTIMATED`
+        with self.view.hindsight(HINDSIGHT_EP_VOLUME):
+            volumes = self.view.volumes_through(instrument_id, day, 1)
         volume = int(volumes[-1]) if volumes and math.isfinite(volumes[-1]) else None
         at = _at(day, time(0), _EP_SECONDS)
-        results = tuple(self.data.results.get(instrument_id, ()))
+        results = self.view.results_on(instrument_id, day)
         ctx = replace(
             trigger.daily_context(at, daily, {}),
             open_price=bar.open,
@@ -1621,6 +1676,8 @@ class _Run:
         evaluation = trigger.evaluate_trigger(
             playbook.model_copy(update={"trigger": rest}), ctx, NO_CATALYST_MODE, daily_results
         )
+        # the session's whole bar at the estimate's trigger: the known gap `EP_TRIGGER_ESTIMATED`
+        self.view.count_hindsight(HINDSIGHT_EP_CLOSE)
         fires = EP_ESTIMATE.fires(bar.open, bar.high, bar.low, bar.close)
         record = self._ep_of(row)
         if record is not None:
@@ -1691,6 +1748,15 @@ class _Run:
         ohlc = (bar.open, bar.high, bar.low, bar.close)
         prev_close = self.view.prev_close(instrument_id, day)
         return lower_circuit_locked(ohlc, prev_close, self.view.tick(instrument_id, day)) is True
+
+    def _close_locked(self, instrument_id: str, day: date, bar: Bar) -> bool:
+        """Whether the instrument closed `day` locked at its lower circuit (`close_lower_locked`);
+        an unknown state is not locked."""
+        if bar.close != bar.low:
+            return False  # the common case, without reading the tick
+        prev_close = self.view.prev_close(instrument_id, day)
+        tick = self.view.tick(instrument_id, day)
+        return close_lower_locked(bar.close, bar.low, prev_close, tick) is True
 
     def _entry_filters(
         self,
@@ -1798,7 +1864,10 @@ class _Run:
         outcome = entries.open_entry(
             self.session,
             request,
-            fills=self.spec.fills.within(self._free_cash() + credit),
+            # a 5-minute entry is live's LIMIT at its price: never filled above it
+            fills=self.spec.fills.within(
+                self._free_cash() + credit, plan.price if plan.basis == BASIS_5M else None
+            ),
             confidence=BACKTEST_CONFIDENCE,
         )
         signal = self.session.get(HatSignal, outcome.signal_id)
@@ -1834,7 +1903,7 @@ class _Run:
                 open_risk=open_risk,
                 equity=self._equity_now()[0],
                 regime_on=self.gate.get(row.trade_date),
-                breadth_pct=self.data.breadth.get(prev),
+                breadth_pct=self.view.breadth_on(prev),
                 features=features,
             )
         )
@@ -1895,9 +1964,12 @@ class _Run:
             if bar is None:
                 continue
             held.low = min(held.low, bar.close)
-            if self._lower_locked(held.instrument_id, day, bar):
-                # Nothing sells at a locked lower band, a close rule's sale included; a position
-                # entered today (a gap over at the band) counts the day here.
+            if self._lower_locked(held.instrument_id, day, bar) or self._close_locked(
+                held.instrument_id, day, bar
+            ):
+                # Nothing sells at a locked lower band, a close rule's sale included, nor at a
+                # close locked there since some time in the day; a position entered today (a gap
+                # over at the band) counts the day here.
                 self.lower_circuit_days.add(day)
                 continue
             stop = Decimal(position.current_stop)
@@ -1941,7 +2013,7 @@ class _Run:
             at,
             high=held.high,
             low=held.low,
-            fills=self.spec.fills,
+            fills=AccountFills(self.spec.fills, self.dp_sold, held.instrument_id),
         )
 
     def _demergers(self, day: date) -> None:
@@ -1968,7 +2040,9 @@ class _Run:
 
     def _delistings(self, day: date) -> None:
         """An instrument's last traded session closes its open position at that close
-        (HAT-BT-012): a delisted stock's loss stays in the results."""
+        (HAT-BT-012): a delisted stock's loss stays in the results. Which session is the last
+        is known from the registry and the later bars, not on the day (no point-in-time rule
+        exists in the data), so each such exit is counted `HINDSIGHT_DELISTED_EXIT`."""
         for position in self._open_positions():
             held = self.held[position.id]
             if self.data.last_traded.get(held.instrument_id) != day:
@@ -1980,6 +2054,7 @@ class _Run:
                 last = self._last_close(held.instrument_id)
                 price = last[1] if last is not None else None
             if price is not None:
+                self.view.count_hindsight(HINDSIGHT_DELISTED_EXIT)
                 self._close(position, price, DELISTED, _at(day, _AT_END))
         for book in self.books.values():
             for name in sorted(book.holdings):
@@ -1989,6 +2064,7 @@ class _Run:
                 last = self._last_close(name)
                 price = bar.close if bar is not None else None if last is None else last[1]
                 if price is not None:
+                    self.view.count_hindsight(HINDSIGHT_DELISTED_EXIT)
                     book.close_out(name, day, price, DELISTED, self._symbol(day))
 
     def _finish(self, last: date) -> None:
@@ -2019,6 +2095,7 @@ class _Run:
             )
             if self.invested:
                 self.invested[-1] = _ZERO  # and holds no position: `invested_share` agrees
+            self._log_book(self.sessions[-1])
 
     def _sync_ladder(self) -> None:
         """Step each strategy's exposure ladder for each of its trades closed since the last
@@ -2097,17 +2174,46 @@ class _Run:
         tick = self.view.tick(instrument_id, day) or _FINEST_TICK
         return suspended_mark(last, sessions, after, SUSPENSION_BAND_PCT, tick)
 
-    def _marked(self, day: date) -> tuple[Decimal, Decimal]:
-        """(the account's mark on `day`, the marked value of its open positions)."""
-        held_value = _ZERO
+    def _held_lines(self, day: date) -> list[Held]:
+        """The open positions and rotation holdings at their marks on `day`."""
+        lines = []
         for position in self._open_positions():
             held = self.held[position.id]
             price = self._mark_price(held.instrument_id, day, Decimal(position.avg_entry))
-            held_value += position.qty_open * price
+            lines.append(Held(held.instrument_id, position.qty_open, price))
+        mark = self._rotation_mark(day)
         for book in self.books.values():
-            held_value += book.value(self._rotation_mark(day))
+            lines += [
+                Held(h.instrument_id, h.qty, mark(h.instrument_id, h.avg))
+                for h in book.holdings.values()
+            ]
+        return lines
+
+    def _marked(self, day: date) -> tuple[Decimal, Decimal]:
+        """(the account's mark on `day`, the marked value of its open positions)."""
+        held_value = sum((line.qty * line.mark for line in self._held_lines(day)), _ZERO)
         sleeve = _ZERO if self.overlay is None else self.overlay.value(day)
         return self._cash() + held_value + sleeve, held_value
+
+    def _log_book(self, row: SessionRow) -> None:
+        """The session's book for the ledger reconciliation (`reconcile`), replacing the
+        session's earlier one (the period end's closes rewrite the last session)."""
+        if self.books_log and self.books_log[-1].day == row.day:
+            dividends = self.books_log.pop().dividends
+        else:
+            dividends = _ZERO
+        self.books_log.append(
+            SessionBook(
+                day=row.day,
+                equity=row.equity,
+                cash=row.cash,
+                position_value=row.position_value,
+                held=tuple(self._held_lines(row.day)),
+                sleeve_value=_ZERO if self.overlay is None else self.overlay.value(row.day),
+                dividends=dividends + self.day_dividends,
+            )
+        )
+        self.day_dividends = _ZERO
 
     def _book(self) -> tuple[int, Decimal]:
         """(the open positions, their open risk: (entry - stop) x shares, none below 0)."""
@@ -2141,9 +2247,10 @@ class _Run:
                 # the run's own strategy's (the first leg's) ladder and gate
                 ladder_level=self.legs[0].ladder.level,
                 regime_on=self.legs[0].gate.get(day),
-                breadth_pct=None if prev is None else self.data.breadth.get(prev),
+                breadth_pct=None if prev is None else self.view.breadth_on(prev),
             )
         )
+        self._log_book(self.sessions[-1])
 
     def _path(self, instrument_id: str, day: date, sessions: int) -> list[Bar | None]:
         """The instrument's tradeable bar (None without one) of each of the `sessions` store
@@ -2200,7 +2307,10 @@ class _Run:
     def _rows_of(self, leg: _Leg) -> tuple[tuple[WatchRow, ...], tuple[TradeRow, ...]]:
         """The strategy's watchlist and trade rows, its playbooks named with its prefix."""
         watched = ledger_watch_rows(self.session, leg.bot_id)
-        trades = ledger_trade_rows(self.session, leg.bot_id, watched)
+        trades = tuple(
+            replace(t, exit_sma=exit_sma(leg.config.exits_for(t.playbook), t.rules_fired))
+            for t in ledger_trade_rows(self.session, leg.bot_id, watched)
+        )
         if not leg.prefix:
             return watched, trades
         return (
@@ -2284,12 +2394,21 @@ class _Run:
                     self.period,
                 ),
             }
+        fills = self._all_fills()
+        ledger_report = reconcile(
+            self.spec.initial_equity,
+            self.books_log,
+            fills,
+            trade_rows,
+            _LedgerMarket(self.view, self.spec, self.overlay),
+            NO_OVERLAY if self.overlay is None else _journal(self.overlay),
+        )
         result = BacktestResult(
             trades=trade_rows,
             equity=equity,
             watchlists=watch_rows,
             signals=tuple(self._forward(s) for s in self._all_signals()),
-            fills=self._all_fills(),
+            fills=fills,
             skips=skips,
             metrics=metrics,
             invested=invested,
@@ -2300,9 +2419,87 @@ class _Run:
             overlay=overlay,
             overlay_rows=() if self.overlay is None else tuple(r.csv() for r in self.overlay.rows),
             rebalances=tuple(row for book in self.books.values() for row in book.rows),
+            ledger=ledger_report,
+            hindsight=dict(sorted(self.view.hindsight_reads.items())),
+            decisions=tuple(self.decisions),
         )
         self.session.close()
         return result
+
+
+@dataclass(frozen=True)
+class AccountFills:
+    """The run's fills for one instrument's strategy sales, sharing the account's DP set with
+    the rotation books: the depository charges one debit per scrip per sell day per demat,
+    whichever book sold it (`shadow.FillModel`)."""
+
+    fills: BacktestFills
+    sold: set[tuple[date, str]]
+    instrument_id: str
+
+    def fill(
+        self, side: str, qty: int, price: Decimal, day: date, /, *, sold_today: bool = False
+    ) -> tuple[Decimal, Decimal]:
+        key = (day, self.instrument_id)
+        found = self.fills.fill(side, qty, price, day, sold_today=sold_today or key in self.sold)
+        if side == "sell":
+            self.sold.add(key)
+        return found
+
+
+def _journal(overlay: Overlay) -> OverlayJournal:
+    """The sleeve's fills, tax payments and distributed units, for `reconcile`."""
+    fills = tuple(
+        FillRow(day, asset, "overlay", side, qty, price, fees)
+        for day, asset, side, qty, price, fees, _ in overlay.journal
+    )
+    estimated = frozenset(n for n, row in enumerate(overlay.journal) if row[-1])
+    return OverlayJournal(fills, estimated, tuple(overlay.taxes), tuple(overlay.distributions))
+
+
+class _LedgerMarket:
+    """`reconcile.Market` over the run's data, read after the period (the clock released): the
+    stocks' bars, last traded closes, ticks and dividends from the view, the ETFs' from the
+    overlay's data, the cost schedule and slippage from the run's spec."""
+
+    def __init__(self, view: MarketView, spec: RunSpec, overlay: Overlay | None) -> None:
+        self.view = view
+        self.schedule = spec.fills.schedule
+        self.bps = spec.fills.slippage_bps
+        self.suspension_sessions = spec.conventions.suspension_sessions
+        self.etf = {} if overlay is None else overlay.data.daily
+        self.etf_days = {a: sorted(bars) for a, bars in self.etf.items()}
+        self.etf_bps = {} if overlay is None else dict(overlay.config.slippage_bps)
+
+    def model(self, day: date) -> CostModel:
+        return self.schedule.on(day)
+
+    def slippage_bps(self, instrument_id: str) -> Decimal:
+        return self.etf_bps.get(instrument_id, self.bps)
+
+    def bar(self, instrument_id: str, day: date) -> tuple[Decimal, Decimal, Decimal] | None:
+        if instrument_id in self.etf:
+            etf = self.etf[instrument_id].get(day)
+            return None if etf is None else (etf.low, etf.high, etf.close)
+        found = self.view.bar(instrument_id, day)
+        return None if found is None else (found.low, found.high, found.close)
+
+    def last_close(self, instrument_id: str, day: date) -> tuple[date, Decimal] | None:
+        if instrument_id in self.etf:
+            days = self.etf_days[instrument_id]
+            n = bisect_right(days, day)
+            return None if n == 0 else (days[n - 1], self.etf[instrument_id][days[n - 1]].close)
+        return self.view.last_close(instrument_id, day)
+
+    def stale_sessions(self, instrument_id: str, seen: date, day: date) -> int:
+        index = self.view.index
+        return index[day] - index[seen] - self.view.skipped_after(instrument_id, seen, day)
+
+    def tick(self, instrument_id: str, day: date) -> Decimal:
+        return self.view.tick(instrument_id, day) or _FINEST_TICK
+
+    def dividend(self, instrument_id: str, day: date) -> Decimal:
+        return self.view.dividends_on(instrument_id, day)
 
 
 def _etf_data(etf: EtfData | None) -> EtfData:

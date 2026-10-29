@@ -74,7 +74,15 @@ from .evidence import (
 )
 from .loop import run_backtest
 from .overlay import EtfData, OverlayConfig, OverlayError, replay_overlay
-from .overrides import OverrideError, Overrides, parse_policy_set, parse_set, read_policy_file
+from .overrides import (
+    NO_EFFECT,
+    NO_OP,
+    OverrideError,
+    Overrides,
+    parse_policy_set,
+    parse_set,
+    read_policy_file,
+)
 from .run_audit import audit_run
 from .spec import (
     ENTRY_BARS_5M,
@@ -806,6 +814,10 @@ def _execute(
 
     try:
         result = run_backtest(spec, data, market.etf)
+        if result.ledger.get("status") != "pass":
+            # the money does not add up from the fills: no result to read (`reconcile`)
+            docs = {**docs, "ledger": result.ledger}
+            raise BacktestError("backtest_ledger_mismatch")
         # what the run took for estimates, known only now (`spec.known_gaps`)
         config_doc = {**config_doc, "known_gaps": result.metrics["known_gaps"]}
         resolved_hash = config_hash(resolved_of(spec))
@@ -840,6 +852,8 @@ def _execute(
             spec.fills.slippage_bps,
             data_audit=market.audit,
             explained=data_audit.explanation_of(root, market.audit.get("digest")),
+            ledger=result.ledger,
+            hindsight=result.hindsight,
         )
         pbo = built.pbo
         evidence = evidence_doc(
@@ -858,7 +872,7 @@ def _execute(
             },
             trades=((t.playbook, t.score, t.r_multiple) for t in result.trades),
         )
-        docs = {**docs, "audit": audit, "evidence": evidence}
+        docs = {**docs, "audit": audit, "evidence": evidence, "ledger": result.ledger}
         folder.publish(root, run_id, doc, config_doc, csvs, docs=docs)
     except BacktestError as exc:
         return give_up(FAILED, exc.code)
@@ -1052,8 +1066,16 @@ def _bundle(item: Mapping[str, object]) -> str | None:
     return reason
 
 
+# a path naming nothing, or an override that changes nothing (`overrides.NO_OP`, `NO_EFFECT`):
+# refused for the whole sweep before any variant runs
 PATH_CODES = frozenset(
-    {"backtest_bad_override_path", "backtest_override_no_item", "backtest_override_ambiguous"}
+    {
+        "backtest_bad_override_path",
+        "backtest_override_no_item",
+        "backtest_override_ambiguous",
+        NO_OP,
+        NO_EFFECT,
+    }
 )
 
 

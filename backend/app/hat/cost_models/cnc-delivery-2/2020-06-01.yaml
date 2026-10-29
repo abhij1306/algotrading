@@ -1,0 +1,12 @@
+# NSE delivery (CNC) charges in force from 2020-06-01 until the next file's effective_from.
+# Change: SEBI turnover fee halved (SEBI PR 24/2020). Sources: docs/backtests/costs.md.
+version: cnc-delivery-2
+effective_from: "2020-06-01"
+gst_rate: "0.18"  # GST 18% on financial services (CGST + SGST / IGST Acts 2017)
+dp_per_sell_day: "18.29"  # Fyers Rs 15.50 + 18% GST per scrip per sell day, flat, tax included
+components:
+  - {name: brokerage, sides: [buy, sell], rate: "0", per_order: "0", taxable: true}
+  - {name: stt, sides: [buy, sell], rate: "0.001", taxable: false}  # 0.1% delivery, Finance Act 2004 s.98 as amended 2013
+  - {name: stamp_duty, sides: [buy, sell], rate: "0.0001", taxable: false}  # 0.01% both sides, Maharashtra Stamp Act Sch. I Art. 51A(b)(i)
+  - {name: exchange_txn, sides: [buy, sell], rate: "0.0000325", taxable: true}  # NSE 0.00325% (Rs 3.25 per lakh)
+  - {name: sebi_fee, sides: [buy, sell], rate: "0.0000005", taxable: false}  # Rs 5 per crore June 2020 to March 2021, SEBI PR 24/2020; no GST before 2022-07-18

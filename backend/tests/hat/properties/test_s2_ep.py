@@ -27,6 +27,7 @@ from app.hat.engine.criteria.live import (
     ResultEvent,
     early_volume,
     earnings_catalyst,
+    growth_passes,
 )
 from app.hat.engine.criteria.setup import NeglectParams, neglect, range_pct
 from app.hat.engine.live_entry import ep_gate, ep_stock_log, reads_results
@@ -91,6 +92,25 @@ def test_earnings_catalyst_growth_rule(
     assert result.value == pytest.approx(float(Decimal(sales) * 100))
     assert result.extras["sales_yoy_pct"] == pytest.approx(float(Decimal(sales) * 100))
     assert "results_public_at" in result.extras
+
+
+def test_earnings_catalyst_thresholds_switch_off() -> None:
+    """A null threshold is off: no sales floor, no EPS minimum, no sales-alone path; all three
+    null, any filing in the window passes, undefined growth included."""
+    undefined = ResultEvent(AT - timedelta(hours=1), date(2024, 3, 31))
+    off = EarningsCatalystParams(sales_yoy_pct=None, eps_yoy_pct=None, sales_alone_pct=None)
+    assert growth_passes(undefined, off) is True
+    assert growth_passes(undefined, EarningsCatalystParams()) is None
+    weak = ResultEvent(AT, date(2024, 3, 31), Decimal("-0.5"), Decimal("-0.5"), turnaround=False)
+    assert growth_passes(weak, EarningsCatalystParams()) is False
+    assert growth_passes(weak, EarningsCatalystParams(sales_yoy_pct=None)) is False  # eps short
+    no_eps = EarningsCatalystParams(sales_yoy_pct=None, eps_yoy_pct=None)
+    assert growth_passes(weak, no_eps) is True
+    sales_only = EarningsCatalystParams(eps_yoy_pct=None, sales_alone_pct=None)
+    assert growth_passes(_event(1, "0.25"), sales_only) is True
+    assert growth_passes(_event(1, "0.2"), sales_only) is False
+    alone_off = EarningsCatalystParams(sales_alone_pct=None)
+    assert growth_passes(_event(1, "0.9", "0.1"), alone_off) is False
 
 
 def test_earnings_catalyst_reads_the_newest_filing_and_fails_undefined_growth() -> None:
@@ -227,6 +247,20 @@ def test_ep_gate_judges_the_playbook_universe() -> None:
     assert ep_gate(playbook, frame(rows), gap_day, previous, universe, "SM") == "universe"
     fell = frame(_closes(6_000))
     assert ep_gate(playbook, fell, gap_day, previous, universe, "EQ") == "neglect"
+    # every hard setup criterion switched off: the gate fails closed, unless the playbook
+    # declares an empty setup; then the universe still judges
+    off = [c.model_copy(update={"enabled": False}) for c in playbook.setup.criteria]
+    empty = playbook.model_copy(
+        update={"setup": playbook.setup.model_copy(update={"criteria": off})}
+    )
+    assert ep_gate(empty, fell, gap_day, previous, universe, "EQ") == "setup"
+    # off by default and left out of the stored form, so no stored config's hash moves
+    assert "allow_empty" not in empty.setup.model_dump(mode="json")
+    bare = playbook.model_copy(
+        update={"setup": playbook.setup.model_copy(update={"criteria": off, "allow_empty": True})}
+    )
+    assert ep_gate(bare, fell, gap_day, previous, universe, "EQ") is None
+    assert ep_gate(bare, fell, gap_day, previous, universe, "SM") == "universe"
 
 
 def test_override_paths_reach_the_new_fields() -> None:

@@ -297,7 +297,8 @@ before entry). `by_cap_bucket` is keyed `null` while cap is null (below).
 - `exit_reason` adds `trailing_atr`, `breakeven_stop`, `raised_stop` (a hard stop above the
   initial one that no trail is credited with) and the engine's other exits as it names them
   (`early_failure`, `demerger`, `delisted`, ...): `max_hold` is `time_stop`, `pct_gain_target`
-  a `partial_target`.
+  a `partial_target`, a close below the SMA `sma<n>_close` with the strategy's own SMA length
+  (`sma20_close`, `sma50_close`; `sma_close` when the length is unknown).
 - `refusals.csv`: `fwd_r_20d_gross`, `fwd_r_60d_gross` are the R at the close 20 and 60 sessions
   after the would-be entry day from `would_be_entry` and `would_be_stop`; −1 if a daily low
   reaches the stop first; null when the data ends first; costs excluded (hence `gross`).
@@ -460,3 +461,85 @@ gt25), `by_trigger_time` (0920_0945, 0945_1100, after_1100), `by_adr20` (lt3, 3_
 `by_range_126d` (lt30, 30_60, gt60) and `by_exit_reason` with the mean hold; run.json
 `funnel.by_playbook.<playbook>` counts candidates through `gap_scan`, `gap_up`, the hard setup criteria,
 `earnings_catalyst`, `early_volume`, `price_breaks_level`, the entry filters and `filled`.
+
+## Accuracy checks and the fills' approximations
+
+**Ledger.** Every run reconciles its money from its fills and the market data, never from the
+engine's accounts (`backtest/reconcile.py`): each fill's charges recomputed from the dated
+schedule (the DP charge once per instrument per sell day), each fill's price inside its day's
+bar (slippage moves it against the trade, so a buy prints up to the high after slippage and a
+sale down to the low after slippage; a sale without a bar between the suspended mark and the
+last traded close), each session's dividends from the shares the fills held into the ex-date,
+the cash at each close from those (never below zero), the shares held by instrument, each
+held instrument's mark from its bar's close or its last traded close (marked down after
+`suspension_sessions`), the ETF sleeve from the overlay's own fills, tax and distributed units,
+each session's position value and equity against the engine's, each trade's P&L from its entry,
+legs, charges and dividends, and each instrument's P&L against its fills, all within ₹1 (a
+charge exactly). A mismatch fails the run (`backtest_ledger_mismatch`, `ledger.json` in the
+failed folder); a complete run writes `ledger.json` and the run audit's `ledger` check
+(`process.md`).
+
+**As of.** The engine's market reads go through an as-of clock (`data.MarketView`): a decision
+reads only sessions whose close is public, a fill only the session in progress; a read past it
+fails the run (`backtest_lookahead`). The close phase decides on the session's own close
+(decisions.md). Under the clock too: the results filings (`MarketView.results_on`, those public
+by the session's end; the trigger reads only those public by its instant), the 5-minute store
+(the session in progress, its bars replayed in order; a session's bars are used when the stored
+file holds every bar of its 09:15-15:25 grid and its first open is within 5% of the daily open,
+never by its close), the rotation's total-return closes
+(through the decision's close) and the ETF overlay's prices, closes, band states and
+LIQUIDBEES' index (`Overlay.clock`).
+
+The guard's limit: the clock is per session, not per instant. From the session's open,
+`MarketView.bar` returns the whole daily bar (open, high, low, close), so the guard cannot
+refuse a read of the day's high, low or close at the open. The reads that rely on it are the
+daily bar's simulation of the day, not decisions on its outcome: the exits' path through the bar
+(`FILL_PATH`: a stop at the low, a target at the high, the lower band locked all day as open =
+high = low = close), a resting buy-stop's break (the high reaching the level), the entry day's
+low before the break (`entry_day_low_estimated`) and the upper band at the entry (the high). One
+decision reads the close: the EP daily estimate fires only when the close is in the upper half
+of the day's range (`EP_ESTIMATE.fires`, calibrated on 5-minute sessions); each such read is
+counted `ep_estimate_close`. An entry decided on a 5-minute session reads none of these: the
+replay sees each bar only once it has ended (the exits still take the daily bar's path).
+
+The reads the run makes past the clock on purpose go through `MarketView.hindsight` and are
+counted by reason (`BacktestResult.hindsight`); the run audit's `lookahead` check warns
+`lookahead_hindsight` with the counts of those a decision made: `ep_estimate_close` (above),
+`ep_estimate_volume` (the day's volume for the EP daily estimate, `episodic_pivot_trigger_estimated`; a daily bar has no earlier
+volume, so there is no point-in-time alternative), `volume_pace_full_day` (a session paced on
+its full day's volume: on a daily estimate always, the same reason; on 5-minute bars only under
+the opt-in `volume_pace: full_day` convention, the default `live` paces on the bars) and
+`delisted_exit` (each exit at a delisting's last close: which session was the last is known
+from the registry and the later bars, not on the day, and the data has no point-in-time
+delisting notice). The descriptive `breakout_vol_ratio` column is counted, not warned. What
+the run also knows ahead of time, by design: the sessions within `JUMP_SKIP_SESSIONS` of an
+unexplained price jump (skipped either side, a data-quality quarantine), the adjusted price
+basis (later splits and bonuses scale earlier bars; a ratio, so no rule reads the future through
+it), and the industry of each instrument (`hat_industry` holds one classification per
+instrument, today's, from its `effective_from`: the industry cap reads it for earlier sessions
+too). The stored features and breadth are point in time: the data audit's `lookahead` check
+recomputes a sample from the bars dated on or before each day.
+`scripts/research/bt_truncation.py` checks a run to T against one to T + N on real data: the
+watchlists, signals, skips and funnel by session, EP log, rotation orders and fills up to T must
+agree; a delisting the registry dates after T is reported apart (`delisting_known_later`):
+the runs are compared exactly up to the session before its exit and reported diverged from it.
+
+**Fills: what a daily bar cannot show and the run assumes.**
+
+| Event | The run's rule |
+| --- | --- |
+| The path through a daily bar | open, low, high, close (`FILL_PATH`): a stop and a target in one bar is a stop |
+| A buy-stop entry | the high breaking the level, one tick in (`level_break_estimated`); a gap over at the open (`gap_over_at_open`), refused beyond max chase |
+| The entry day's low before the break | max(low, min(open, level x (1 - ADR20/100))) (`entry_day_low_estimated`) |
+| A stop gapped through | the open |
+| A stop raised on the way up | holds through that day's dip unless the close is below it (`ambiguous: optimistic`, the default; counted in `ambiguous_days`) |
+| A 5-minute entry | the LIMIT at the trigger bar's close fills only if a later 5-minute bar trades at or below it (a daily low no bar shows does not count; else skip `limit_not_reached`), never above the limit after slippage; after the trigger the low comes before the high |
+| Pre-open (EP) entries on daily bars | the EP estimate (`EP_ESTIMATE`) |
+| `volume_pace` | on the full day's volume (`volume_pace_on_full_day_volume`) |
+| Close rules and close entries | the official close for live's pre-15:15 price (`close_rules_decided_on_official_close`); F&O expiry and index rebalance days tagged `auction_risk` (exits only) |
+| Circuits | read off the bar, no band table: an entry at the high within a tick of a 2/5/10/20% band is locked; no sale on a day locked down all day (O = H = L = C at the band), nor at a close that is the low at the band |
+| Suspension, delisting | no fill without a bar; the mark is the last close for 5 sessions, then 5% lower each; a delisting exits at its last close |
+| Rotation | fills at the daily open (`rotation_fills_at_daily_open`) |
+| Slippage | a flat 20 bps against every fill, no spread or impact model; entries above 5% of ADV are flagged, not refused |
+| Settlement | a sale's proceeds fund buys at once, at 100%, whatever the order of the day's fills (no T+1 hold; a broker gives same-day credit for delivery sales but the run does not time it within the day) |
+| Costs | the dated schedule, `costs.md` |

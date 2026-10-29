@@ -41,7 +41,7 @@ The rules, each fixed before any result is seen:
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
@@ -441,11 +441,17 @@ def sleeve_price(
     return (prev_close * (index_move or _ONE)).quantize(_TICK), True
 
 
+def _no_clock(day: date, *, inclusive: bool = True) -> None:
+    """No as-of clock (a run without the loop: `alone`, `benchmarks`)."""
+
+
 class SleevePrices:
-    """`sleeve_price` over the ETF data: each fill's bars, previous close and index move."""
+    """`sleeve_price` over the ETF data: each fill's bars, previous close and index move.
+    `as_of` is the run's clock (`MarketView.as_of`), refusing a read past it."""
 
     def __init__(self, data: EtfData) -> None:
         self.data = data
+        self.as_of: Callable[..., None] = _no_clock
         self.days = {a: sorted(data.daily.get(a, {})) for a in ASSETS}
         self.index_closes = dict(data.regime_closes)
 
@@ -457,6 +463,7 @@ class SleevePrices:
 
     def at(self, asset: str, day: date, at: datetime | None = None) -> tuple[Decimal, bool] | None:
         """The asset's fill price on `day` (`sleeve_price`); None without a daily bar that day."""
+        self.as_of(day, inclusive=False)  # the session in progress: its bars up to `at`
         bar = self.data.daily.get(asset, {}).get(day)
         if bar is None:
             return None
@@ -539,6 +546,7 @@ class Overlay:
         self.data = data
         self.fills = {a: BacktestFills(schedule, config.slippage_bps[a]) for a in ASSETS}
         self.prices = SleevePrices(data)
+        self.as_of: Callable[..., None] = _no_clock
         self.regime = band_states(data.regime_closes, config.band)
         gold = [(d, b.close) for d, b in data.daily.get(GOLDBEES, {}).items()]
         self.gold = band_states(gold, config.gold_band)
@@ -560,14 +568,27 @@ class Overlay:
         }
         self.by_year: dict[int, dict[str, Decimal]] = {}
         self.years_tax: list[taxes.YearTax] = []
+        self._sold: set[tuple[date, str]] = set()  # one DP charge per asset per sell day
+        # the journal the ledger reconciliation reads: each fill as (day, asset, side, qty,
+        # price, fees, estimated), each tax payment, each distribution's units
+        self.journal: list[tuple[date, str, str, int, Decimal, Decimal, bool]] = []
+        self.taxes: list[tuple[date, Decimal]] = []
+        self.distributions: list[tuple[date, str, int]] = []
 
     # --- prices and value --------------------------------------------------------------------
 
+    def clock(self, as_of: Callable[..., None]) -> None:
+        """Read the ETF data under the run's clock (`MarketView.as_of`): a price of the session
+        in progress, a close or a band state only once that close is public."""
+        self.as_of = self.prices.as_of = as_of
+
     def _bar(self, asset: str, day: date) -> EtfBar | None:
+        self.as_of(day)
         return self.data.daily.get(asset, {}).get(day)
 
     def _close(self, asset: str, day: date) -> Decimal | None:
         """The asset's last close on or before `day`."""
+        self.as_of(day)
         bars = self.data.daily.get(asset, {})
         bar = bars.get(day)
         if bar is not None:
@@ -608,7 +629,11 @@ class Overlay:
         if qty <= 0:
             return _ZERO
         self.counts[SLEEVE_PRICE_ESTIMATED] += estimated
-        filled, fees = self.fills[asset].fill("sell", qty, price, day)
+        filled, fees = self.fills[asset].fill(
+            "sell", qty, price, day, sold_today=(day, asset) in self._sold
+        )
+        self._sold.add((day, asset))
+        self.journal.append((day, asset, "sell", qty, filled, fees, estimated))
         proceeds = filled * qty - fees
         self.units[asset] -= qty
         now = proceeds * credit
@@ -628,6 +653,7 @@ class Overlay:
             return
         self.counts[SLEEVE_PRICE_ESTIMATED] += estimated
         filled, fees = self.fills[asset].fill("buy", qty, price, day)
+        self.journal.append((day, asset, "buy", qty, filled, fees, estimated))
         outlay = filled * qty + fees
         self.units[asset] += qty
         self.cash -= outlay
@@ -639,7 +665,9 @@ class Overlay:
 
     def _proceeds(self, asset: str, qty: int, price: Decimal, day: date) -> Decimal:
         """A sale's proceeds net of slippage and charges."""
-        filled, fees = self.fills[asset].fill("sell", qty, price, day)
+        filled, fees = self.fills[asset].fill(
+            "sell", qty, price, day, sold_today=(day, asset) in self._sold
+        )
         return filled * qty - fees
 
     def _units_for(
@@ -743,6 +771,7 @@ class Overlay:
             self.units[LIQUIDBEES] += whole
             if self.book is not None:
                 self.book.dividend_units(LIQUIDBEES, whole, value, day)
+            self.distributions.append((day, LIQUIDBEES, whole))
 
     def trade(self, side: str, instrument: str, qty: int, amount: Decimal, day: date) -> None:
         """A strategy fill into the tax book: a buy's outlay, a sale's net proceeds."""
@@ -774,6 +803,8 @@ class Overlay:
         self.cash -= paid
         self.tax_due -= paid
         self.tax_paid += paid
+        if paid:
+            self.taxes.append((day, paid))
 
     def _settle(self, fy: int) -> None:
         if self.book is None:
@@ -795,6 +826,7 @@ class Overlay:
         """After the day's trades: LIQUIDBEES' distribution, the year's tax on its last
         session, the exposure check, and the next open's plan. `equity` is the account's mark
         before the distribution and tax, `free_cash` its cash less what is pending."""
+        self.as_of(day)  # the day's closes, the band states and LIQUIDBEES' index
         value, cash = self.value(day), self.cash
         self._distribute(day, prev)
         if next_day is None or taxes.fy_of(next_day) != taxes.fy_of(day):

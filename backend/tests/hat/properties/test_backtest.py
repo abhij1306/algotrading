@@ -26,6 +26,7 @@ from app.hat.backtest.data import (
 )
 from app.hat.backtest.fillrules import (
     NSE_BANDS,
+    close_lower_locked,
     inferred_band,
     lower_circuit_locked,
     pre_break_low,
@@ -42,7 +43,8 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
-from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis
+from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis, traded_low_after
+from app.hat.backtest.loop import AccountFills
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
     CATALYST_NOT_EVALUATED,
@@ -220,21 +222,29 @@ def test_after_trigger() -> None:
     assert after_trigger(bars, at, D(99)) == (D(102), D(106))
     assert after_trigger(bars, at, D(98)) == (D(98), D(106))  # a low the bars missed
     assert after_trigger(bars, bars[2].final_at, D(99)) == (None, None)
+    # whether a LIMIT filled reads only what traded after it: never the day low the bars miss
+    assert traded_low_after(bars, at) == D(102)
+    assert traded_low_after(bars, bars[2].final_at) is None
 
 
 def test_on_basis() -> None:
-    """A session's 5-minute bars are read only when they fit its daily bar, the data audit's
-    rule: on the IST 5-minute grid inside the session, the last close within 5% of the daily
-    close. Harm: an entry decided on bars of another price basis or another day."""
+    """A session's 5-minute bars are read only when they fit its daily bar, by what is known at
+    the open: every bar of the IST 5-minute grid of the session present (09:15 to 15:25), none
+    off it, and the first open within 5% of the daily open (never the close). Harm: an entry
+    decided on bars of another price basis or another day, a session chosen by its close, or a
+    truncated day replayed without its later lows."""
     day = date(2024, 3, 1)
-    bars = (_bar(0, "101", "99"), _bar(5, "104", "100"))
-    assert on_basis(day, bars, D(104))
-    assert on_basis(day, bars, D("99.05"))  # 4.99% off
-    assert not on_basis(day, bars, D(110))  # the last close 5.5% off
-    assert not on_basis(day, (), D(104))
-    assert not on_basis(day, (*bars, _bar(7, "104", "100")), D(104))  # off the grid
-    assert not on_basis(day, (*bars, _bar(375, "104", "100")), D(104))  # 15:30, after the session
-    assert not on_basis(date(2024, 3, 2), bars, D(104))  # another day's bars
+    bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))  # 75 bars, each opening at 99
+    assert on_basis(day, bars, D(99))
+    assert on_basis(day, bars, D("94.3"))  # 4.98% off
+    assert not on_basis(day, bars, D("104.5"))  # the first open 5.3% off
+    assert not on_basis(day, (), D(99))
+    assert not on_basis(day, bars[:-1], D(99))  # no 15:25 bar: a truncated day
+    assert not on_basis(day, bars[:10] + bars[11:], D(99))  # a bar missing inside
+    assert not on_basis(day, (*bars, bars[3]), D(99))  # a bar twice
+    assert not on_basis(day, (*bars[:-1], _bar(7, "104", "100")), D(99))  # off the grid
+    assert not on_basis(day, (*bars[:-1], _bar(375, "104", "100")), D(99))  # 15:30
+    assert not on_basis(date(2024, 3, 2), bars, D(99))  # another day's bars
 
 
 def test_known_gaps_name_only_the_estimates_taken() -> None:
@@ -426,6 +436,17 @@ def test_lower_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
     assert lower_circuit_locked(at(between), prev_close, tick) is expected
     assert lower_circuit_locked(at(lower), None, tick) is None
     assert lower_circuit_locked(at(lower), prev_close, None) is None
+
+
+def test_close_locked_at_the_lower_band() -> None:
+    """A session that fell to its lower band and closed there (close = low at the band) closed
+    locked: a sale at that close found no buyer. Prev close 100, tick 0.05: the 10% band's
+    lower price is 90."""
+    prev, tick = D(100), D("0.05")
+    assert close_lower_locked(D(90), D(90), prev, tick) is True
+    assert close_lower_locked(D("90.05"), D(90), prev, tick) is False  # bounced off it
+    assert close_lower_locked(D(93), D(93), prev, tick) is False  # no band at 7%
+    assert close_lower_locked(D(90), D(90), None, tick) is None
 
 
 @given(
@@ -754,3 +775,19 @@ def test_research_run_sizes_an_unweighted_sleeve_and_promotion_refuses_it() -> N
             conventions=PROMOTED,
             for_promotion=True,
         )
+
+
+def test_strategy_and_rotation_sales_share_one_dp_charge_per_day() -> None:
+    """The account's strategy sales and its rotation books share one set of (day, instrument)
+    sales, so a stock sold by both on one day pays one DP charge, as the depository debits once
+    per scrip per sell day per demat; another day or stock pays again."""
+    fills = BacktestFills(load_cost_schedule(), D(0))
+    sold: set[tuple[date, str]] = set()
+    day = date(2024, 3, 1)
+    first = AccountFills(fills, sold, "X").fill("sell", 5, D(110), day)
+    sold.add((day, "Y"))  # a rotation book's sale of Y
+    again = AccountFills(fills, sold, "X").fill("sell", 5, D(110), day)
+    rotated = AccountFills(fills, sold, "Y").fill("sell", 5, D(110), day)
+    other_day = AccountFills(fills, sold, "X").fill("sell", 5, D(110), date(2024, 3, 4))
+    assert first[1] == other_day[1] == D("15.32")
+    assert again[1] == rotated[1] == D("0.57")

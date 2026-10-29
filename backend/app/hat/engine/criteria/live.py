@@ -80,11 +80,12 @@ class EarlyVolumeParams(ParamModel):
 
 class EarningsCatalystParams(ParamModel):
     """HAT-CRIT-127 (plan B1): sales_yoy >= `sales_yoy_pct` and (eps_yoy >= `eps_yoy_pct`, or a
-    turnaround, or sales_yoy >= `sales_alone_pct`), percentages."""
+    turnaround, or sales_yoy >= `sales_alone_pct`), percentages. Each threshold set to null is
+    off (`growth_passes`): all three null, any results filing in the window passes."""
 
-    sales_yoy_pct: float = Field(default=25.0, ge=-100, le=100_000)
-    eps_yoy_pct: float = Field(default=25.0, ge=-100, le=100_000)
-    sales_alone_pct: float = Field(default=50.0, ge=-100, le=100_000)
+    sales_yoy_pct: float | None = Field(default=25.0, ge=-100, le=100_000)
+    eps_yoy_pct: float | None = Field(default=25.0, ge=-100, le=100_000)
+    sales_alone_pct: float | None = Field(default=50.0, ge=-100, le=100_000)
 
 
 class CatalystAttachedParams(ParamModel):
@@ -314,14 +315,20 @@ def results_filing(
 
 
 def growth_passes(event: ResultEvent, p: EarningsCatalystParams) -> bool | None:
-    """B1's growth rule on one filing; None when its sales growth is undefined."""
-    if event.sales_yoy is None:
-        return None
-    sales = event.sales_yoy * _HUNDRED
-    if sales < dec(p.sales_yoy_pct):
-        return False
-    eps_ok = event.eps_yoy is not None and event.eps_yoy * _HUNDRED >= dec(p.eps_yoy_pct)
-    return eps_ok or bool(event.turnaround) or sales >= dec(p.sales_alone_pct)
+    """B1's growth rule on one filing; None when its sales growth is undefined and the sales
+    floor reads it. A null threshold is off: no sales floor (`sales_yoy_pct`), the EPS leg met by
+    any filing (`eps_yoy_pct`), no sales-alone path (`sales_alone_pct`)."""
+    sales = None if event.sales_yoy is None else event.sales_yoy * _HUNDRED
+    if p.sales_yoy_pct is not None:
+        if sales is None:
+            return None
+        if sales < dec(p.sales_yoy_pct):
+            return False
+    eps_ok = p.eps_yoy_pct is None or (
+        event.eps_yoy is not None and event.eps_yoy * _HUNDRED >= dec(p.eps_yoy_pct)
+    )
+    alone = p.sales_alone_pct is not None and sales is not None and sales >= dec(p.sales_alone_pct)
+    return eps_ok or bool(event.turnaround) or alone
 
 
 def _ratio_pct(value: Decimal | None) -> float | None:
