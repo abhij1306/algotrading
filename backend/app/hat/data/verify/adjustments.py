@@ -17,9 +17,13 @@
    - dividends (`dividends/ca_YYYY-MM.json`): the cash per share of the day's dividends; the
      stored cash must equal their total, or one row's amount only when every row of the day
      names the same amount (NSE repeats a revised purpose).
+   Of the copies of an action stored on several ISINs of a chain, the one the adjusted series
+   applies (`chains`: the copy nearest the chain's current ISIN) is judged.
    A stored action no reference holds fails (its factor or cash is unproven); a reference
    action not stored fails unless the owner deleted it (`hat_corporate_action_version`, status
-   `deleted`), which warns, as does a demerger the owner's gap rule leaves out. A rights issue
+   `deleted`), which warns, as does a demerger whose ex-date close did not gap (by the owner's
+   gap rule none is stored); one whose close gap is beyond `DEMERGER_GAP` fails (the market
+   priced it, so its factor, the close gap, belongs in the store). A rights issue
    with no price or close, and a bonus of a class nobody checked that is not stored, fail
    (unproven). A reference action whose ISIN and symbol HAT has no instrument for, and the
    reference rows that could not be read, are counted (warn). No reference fails, as does a
@@ -28,19 +32,24 @@
    the latest kind's start (`factor_coverage`) and a window before it is not run. Stocks only:
    funds (`INF` ISINs) and SME demergers are not judged. A row NSE classes preference,
    debentures or warrants is judged only when stored (some are equity bonuses by the market's
-   gap); a dividend row with no amount is judged by presence; a reference dividend with no raw
-   bar before its ex-date warns (nothing to adjust); stored dividends after the newest dividend
-   file was pulled are not judged. A reference action is matched by ISIN first, then by the
-   symbol's holder on the ex-date when the ISIN's instruments store nothing that day. A stored
-   dividend's bonus-instrument value (`StoredAction.payout`) is proven by NSE's non-equity
-   bonus row of the day, not by the dividend list. Every
-   failure a reviewed exception (`D2_EXCEPTIONS`) names moves to `excepted` (warn).
-2. Moves: the price-basis series (`bars_daily_cap`) scanned for close-to-close moves over
-   `audit.JUMP_PCT` between adjacent sessions (`audit.jumps`). A move on an ex-date (the factor
-   changed and the move stays) fails; a move shaped like a split or bonus ratio
-   (`audit.action_shaped`) with no factor fails (an action missing); a drop matching a stored
-   dividend's cash and a move within `RESULTS_DAYS` of a results announcement are explained; the
-   rest warn, listed.
+   gap); a dividend row with no amount is judged by presence (not stored fails). A reference
+   dividend not stored with no raw bar in the `PREV_DAYS` before its ex-date fails, unless the
+   instrument has no bar before it at all (it adjusts nothing: warn) or NSE lists the same
+   dividend under the issuer's new ISIN, stored there (a stale ISIN: warn). Stored dividends
+   from the newest dividend file's month (`reference_pulled`) are not judged. A reference action
+   is matched by ISIN first, then by the symbol's holder on the ex-date when the ISIN's
+   instruments store nothing that day. A stored dividend's bonus-instrument value
+   (`StoredAction.bonus`: NSE's row gives the instruments per share, not their face value) fails
+   unless a reviewed exception pins it. Every failure a reviewed exception (`D2_EXCEPTIONS`)
+   names, at its pinned value, moves to `excepted` (warn).
+2. Moves: the price-basis series (`bars_daily_cap`) of the stocks (`isin.ordinary_equity`)
+   scanned for close-to-close moves over `audit.JUMP_PCT` between adjacent sessions
+   (`audit.jumps`). A move on an ex-date (the factor changed and the move stays) fails; a move
+   shaped like a split or bonus ratio (`audit.action_shaped`) with no factor fails (an action
+   missing); a drop matching a stored dividend's cash, a move at a price band (`circuit`), a
+   move within `RESULTS_DAYS` of a results announcement and a move the way of a market-wide day
+   (`MARKET_PCT`) are explained; the rest warn, listed, each reviewed one with its cause from
+   `D2_EXCEPTIONS`.
 3. Second source (with `--fetch`, else what is kept): `SAMPLE_SIZE` NIFTY 500 stocks, seeded,
    each calendar year's total return on `bars_daily` (adjusted) against Yahoo Finance's
    adjusted close (monthly bars, split- and dividend-adjusted; no login), kept under
@@ -61,7 +70,7 @@ import json
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
@@ -71,7 +80,9 @@ from typing import TYPE_CHECKING, Any
 from app.paths import D2_EXCEPTIONS
 
 from ...money import exact
-from ..audit import FAIL, WARN, action_shaped, check_result, finding, jumps
+from ..audit import FAIL, JUMP_PCT, WARN, action_shaped, check_result, finding, jumps
+from ..isin import ordinary_equity
+from ..lineage import issuer
 from . import covered, dated, seeded_sample
 from .context import Context
 from .exceptions import Exceptions, read_exceptions
@@ -80,6 +91,7 @@ from .references import reference_file
 
 if TYPE_CHECKING:
     import duckdb
+    import polars as pl
 
 FACTOR_TOLERANCE = Fraction(1, 1000)  # relative; HAT's MCP bonus factors are rounded to 4 places
 RIGHTS_TOLERANCE = Fraction(2, 100)  # of the discount 1 - factor: P is one close, rounded
@@ -90,8 +102,11 @@ SAMPLE_SEED = 20261029
 SECOND_SOURCE_PP = 2.0
 CIRCUIT_BANDS = (5.0, 10.0, 20.0)  # NSE's price bands, percent
 CIRCUIT_SLACK = 0.25  # percentage points: a band's move after the tick rounding
+MARKET_PCT = 3.0  # percent: a day the median stock moved this far is a market-wide move
+MARKET_STOCKS = 100  # stocks: fewer traded that day, no market move is read
 PENNY = 5.0  # rupees: below it a tick of 0.05 (0.01 since 2023) is 1% or more
-DIVIDEND_SLACK = 0.1  # relative: a drop within this of a stored dividend's cash is the dividend
+PREV_DAYS = 20  # calendar days: a reference's close before the ex-date is looked for this far back
+DEMERGER_GAP = Fraction(5, 100)  # a demerger not stored whose close gap is beyond this fails
 FUND_PREFIX = "INF"  # mutual-fund units (ETFs): not stocks, not judged
 NON_EQUITY = frozenset({"preference", "debentures", "warrants"})
 PRICE_TYPES = ("split", "bonus")
@@ -284,12 +299,17 @@ class StoredAction:
     text: str = ""
 
     @property
-    def payout(self) -> Decimal | None:
-        """A dividend's cash without a bonus instrument's value (`bonus_instrument N` in the
-        stored text: debentures or preference shares given as a bonus, which NSE's dividend
-        purpose does not price)."""
+    def bonus(self) -> Decimal | None:
+        """A bonus instrument's value in a dividend (`bonus_instrument N` in the stored text:
+        debentures or preference shares given as a bonus, which NSE's dividend purpose does not
+        price)."""
         m = _BONUS_INSTRUMENT.search(self.text)
-        bonus = exact(m[1]) if m else None
+        return exact(m[1]) if m else None
+
+    @property
+    def payout(self) -> Decimal | None:
+        """A dividend's cash without a bonus instrument's value (`bonus`)."""
+        bonus = self.bonus
         return self.cash if self.cash is None or bonus is None else self.cash - bonus
 
 
@@ -482,8 +502,12 @@ SEVERITY = {
     "no_prev_close": FAIL,
     "no_issue_price": FAIL,
     "demerger_not_stored": WARN,
-    "not_stored_unpriced": WARN,
-    "no_bar": WARN,
+    "demerger_not_stored_gapped": FAIL,
+    "not_stored_unpriced": FAIL,
+    "no_bar": FAIL,
+    "no_bar_stale_isin": WARN,
+    "before_first_bar": WARN,
+    "bonus_instrument": FAIL,
     "deleted_by_owner": WARN,
     "no_instrument": WARN,
 }
@@ -497,22 +521,42 @@ def _kind(action: StoredAction) -> str:
     return "demerger" if action.demerger else "rights"
 
 
+def applied_copies(
+    per_instrument: Mapping[str, Sequence[StoredAction]],
+    heads: Mapping[str, tuple[str, int]],
+) -> dict[str, list[StoredAction]]:
+    """The stored actions the adjusted series applies, per chain: of each type, the copy of the
+    member nearest the chain's current ISIN (`chains.chain_factors`, `chain_dividends`: depth,
+    then instrument id). An instrument outside every link is its own chain."""
+    best: dict[tuple[str, str], tuple[int, str, list[StoredAction]]] = {}
+    for instrument, acts in per_instrument.items():
+        chain, depth = heads.get(instrument, (instrument, 0))
+        for kind in {a.action_type for a in acts}:
+            held = best.get((chain, kind))
+            if held is None or (depth, instrument) < held[:2]:
+                copy = [a for a in acts if a.action_type == kind]
+                best[(chain, kind)] = (depth, instrument, copy)
+    out: dict[str, list[StoredAction]] = defaultdict(list)
+    for (chain, _), (_, _, acts) in sorted(best.items()):
+        out[chain] += acts
+    return dict(out)
+
+
 def judge_ref(
-    ref: RefAction, per_instrument: Mapping[str, Sequence[StoredAction]], prev_close: Decimal | None
+    ref: RefAction, per_chain: Mapping[str, Sequence[StoredAction]], prev_close: Decimal | None
 ) -> tuple[str, dict[str, Any]]:
-    """One reference action against the stored actions of its kind on its day, per instrument
-    of its chain (an action stored on both an old and a new ISIN is applied once per chain, so
-    the instrument whose actions agree best is judged; a split and a bonus stored on two ISINs of
-    the chain are also judged together, one leg per type): its code and evidence."""
+    """One reference action against the stored actions of its kind on its day that the
+    adjusted series applies, per chain (`applied_copies`; a split and a bonus stored on two
+    ISINs of the chain are judged together, one leg per type). When the reference names more
+    than one chain, the chain whose actions agree best is judged: its code and evidence."""
     if ref.kind == "demerger":
-        first = next(iter(per_instrument.values()))[0]
+        first = next(iter(per_chain.values()))[0]
         return "present", {"factor": str(float(first.factor))}
     if ref.kind == "dividend":
         if ref.cash is None:
             return "present_unpriced", {}
         totals = [
-            sum((a.payout or Decimal(0) for a in acts), Decimal(0))
-            for acts in per_instrument.values()
+            sum((a.payout or Decimal(0) for a in acts), Decimal(0)) for acts in per_chain.values()
         ]
         best = min(totals, key=lambda t: abs(t - ref.cash))  # type: ignore[operator]
         repeated = len(ref.amounts) > 1 and len(set(ref.amounts)) == 1  # one purpose, revised
@@ -524,10 +568,7 @@ def judge_ref(
             else "cash_mismatch"
         )
         return code, {"stored": str(best), "expected": str(ref.cash)}
-    groups = list(per_instrument.values())
-    if ref.kind == "split_bonus" and len(groups) > 1:  # legs stored on two ISINs of the chain
-        legs = {a.action_type: a for acts in groups for a in acts}
-        groups.append(list(legs.values()))
+    groups = list(per_chain.values())
     products = []
     for acts in groups:
         product = Fraction(1)
@@ -585,6 +626,25 @@ def factor_coverage(starts: Mapping[str, date], end: date) -> tuple[date, date] 
 _ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
 
 
+@dataclass(frozen=True)
+class Stores:
+    """What the store says of each instrument: its chain's current id and its distance from it
+    (`chains.chains`), its own ISIN and its first raw bar."""
+
+    heads: Mapping[str, tuple[str, int]] = field(default_factory=dict)
+    isin_of: Mapping[str, str] = field(default_factory=dict)
+    first_bar: Mapping[str, date] = field(default_factory=dict)
+    ex_close: Mapping[tuple[str, date], Decimal] = field(default_factory=dict)  # demergers'
+
+
+def demerger_gap(prev_close: Decimal | None, ex_close: Decimal | None) -> Fraction | None:
+    """A demerger's close gap: the ex-date's raw close over the close before (the factor HAT
+    stores for a demerger, `audit.check_demergers`); None without both closes."""
+    if not prev_close or not ex_close:
+        return None
+    return Fraction(ex_close) / Fraction(prev_close)
+
+
 Spans = Mapping[str, Sequence[tuple[date, date | None, frozenset[str]]]]
 
 
@@ -627,16 +687,22 @@ def compare_factors(
     held: Spans | None = None,
     ends: Mapping[str, date] | None = None,
     exceptions: Exceptions | None = None,
+    stores: Stores | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """The reference actions against the stored ones (each stored action's instrument known by
     `keys_of[instrument_id]`: its ISINs and symbols; a symbol by who held it, `held`), and the
     stored actions from where their kind's reference starts (`reference_starts`) to where it
     was pulled (`ends`, exclusive) that no reference holds, by kind: the counts and the
     findings, less the reviewed `exceptions`. Funds are not judged; `prev_close` is the raw
-    close before each ex-date of the instruments that have one."""
+    close in the `PREV_DAYS` before each ex-date of the instruments that have one. `stores`
+    gives the chains the adjusted series applies a copy from, each instrument's own ISIN and
+    its first raw bar. Every stored dividend with a bonus instrument's value fails
+    (`bonus_instrument`) unless a reviewed exception pins that value: NSE's row gives the
+    instruments per share, not their face value."""
     by_key = _by_key(keys_of)
     ends = ends or {}
     exceptions = exceptions or Exceptions()
+    stores = stores or Stores()
     index: dict[tuple[str, date], list[StoredAction]] = defaultdict(list)
     for action in stored:
         index[(action.instrument_id, action.ex_date)].append(action)
@@ -646,6 +712,8 @@ def compare_factors(
     items: dict[str, list[dict[str, Any]]] = defaultdict(list)
     used: set[StoredAction] = set()
     bonus_days: set[tuple[str, date]] = set()  # NSE's bonus debentures or preference shares
+    found_dividends: set[tuple[str, date]] = set()  # (issuer, ex-date) of the stored ones
+    barless: list[tuple[RefAction, list[str]]] = []
 
     def note(code: str, ref: RefAction, **extra: object) -> None:
         counts[f"{ref.kind}:{code}"] += 1
@@ -689,8 +757,10 @@ def compare_factors(
             (prev_close[(i, ref.ex_date)] for i in ids if (i, ref.ex_date) in prev_close), None
         )
         if per_instrument:
-            code, detail = judge_ref(ref, per_instrument, close)
+            code, detail = judge_ref(ref, applied_copies(per_instrument, stores.heads), close)
             note(code, ref, **detail)
+            if ref.kind == "dividend":
+                found_dividends.update((issuer(k), ref.ex_date) for k in ref.keys if issuer(k))
         elif any((i, ref.ex_date, t) in gone for i in ids for t in WANTED[ref.kind]):
             note("deleted_by_owner", ref)
         elif (
@@ -701,16 +771,57 @@ def compare_factors(
         ):
             note("not_below_market", ref)
         elif ref.kind == "demerger":
-            note("demerger_not_stored", ref)  # the owner's rule stores only a demerger that gaps
+            gap = demerger_gap(
+                close,
+                next(
+                    (
+                        stores.ex_close[(i, ref.ex_date)]
+                        for i in ids
+                        if (i, ref.ex_date) in stores.ex_close
+                    ),
+                    None,
+                ),
+            )
+            if gap is not None and gap < 1 - DEMERGER_GAP:  # the market priced it: store it
+                own = sorted({stores.isin_of[i] for i in ids if i in stores.isin_of})
+                note(  # NSE's demerger rows name a symbol only: the item carries the ISIN
+                    "demerger_not_stored_gapped",
+                    ref,
+                    isin=own[0] if len(own) == 1 else "",
+                    close_gap=str(round(float(gap), 6)),
+                )
+            else:
+                note("demerger_not_stored", ref)  # no gap: the owner's rule stores none
         elif ref.non_equity:
             counts[f"{ref.kind}:non_equity_not_stored"] += 1  # NSE's class: no price factor
         elif ref.kind == "dividend" and ref.cash is None:
             note("not_stored_unpriced", ref)
         elif ref.kind == "dividend" and close is None:
-            note("no_bar", ref)  # no raw bar before the ex-date: nothing to adjust
+            barless.append((ref, ids))  # judged once every stored dividend is found
         else:
             note("not_stored" if ref.equity else "not_stored_class_unknown", ref)
+    for ref, ids in barless:
+        firsts = [stores.first_bar.get(i) for i in ids]
+        if all(f is None or f >= ref.ex_date for f in firsts):
+            note("before_first_bar", ref)  # it adjusts no stored bar
+        elif any((issuer(k), ref.ex_date) in found_dividends for k in ref.keys if issuer(k)):
+            note("no_bar_stale_isin", ref)  # NSE lists it under the new ISIN too, stored there
+        else:
+            note("no_bar", ref, why=f"no raw bar in the {PREV_DAYS} days before the ex-date")
     for a in stored:
+        if a.bonus and _kind(a) in starts and a.ex_date >= starts[_kind(a)]:
+            code = "dividend:bonus_instrument"
+            counts[code] += 1
+            years[code][a.ex_date.year] += 1
+            items[code].append(
+                {
+                    "isin": stores.isin_of.get(a.instrument_id, ""),
+                    "ex_date": a.ex_date.isoformat(),
+                    "bonus": str(a.bonus),
+                    "cash": None if a.cash is None else str(a.cash),
+                    "nse_bonus_row": (a.instrument_id, a.ex_date) in bonus_days,
+                }
+            )
         if (
             a in used
             or a.action_type not in {*PRICE_TYPES, "other", "dividend"}
@@ -723,7 +834,7 @@ def compare_factors(
             counts[f"{_kind(a)}:fund_not_judged"] += 1
             continue
         if a.payout == 0 and (a.instrument_id, a.ex_date) in bonus_days:
-            counts["dividend:bonus_instrument"] += 1  # proven by NSE's non-equity bonus row
+            counts["dividend:bonus_instrument_day"] += 1  # NSE's non-equity bonus row that day
             continue
         code = f"{_kind(a)}:stored_not_in_reference"
         counts[code] += 1
@@ -731,6 +842,7 @@ def compare_factors(
         items[code].append(
             {
                 "instrument_id": a.instrument_id,
+                "isin": stores.isin_of.get(a.instrument_id, ""),
                 "keys": sorted(keys_of.get(a.instrument_id, ())),
                 "ex_date": a.ex_date.isoformat(),
                 "type": a.action_type,
@@ -766,26 +878,51 @@ def explained_by_results(
     return any(first <= a.announced.date() <= day for a in announcements)
 
 
+def at_band(move_pct: float) -> bool:
+    """Whether a move is a price band's (`CIRCUIT_BANDS`, within `CIRCUIT_SLACK`)."""
+    return any(abs(abs(move_pct) - band) <= CIRCUIT_SLACK for band in CIRCUIT_BANDS)
+
+
+def market_move(moves: Sequence[float]) -> float | None:
+    """The market's move on a day: the median of every stock's move that day (percent); None
+    with fewer than `MARKET_STOCKS` stocks."""
+    if len(moves) < MARKET_STOCKS:
+        return None
+    ordered = sorted(moves)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
 def classify_move(
-    move: Mapping[str, Any], explained: bool, prev_raw_close: float, cash: float = 0.0
+    move: Mapping[str, Any],
+    explained: bool,
+    prev_raw_close: float,
+    cash: float = 0.0,
+    market: float | None = None,
 ) -> str:
     """One adjusted move beyond the threshold (`audit.jumps`): `ex_date_jump` (`ex_date_circuit`
     when the move is a price band's: the market's, on an ex-date), `dividend` (a raw drop
-    within `DIVIDEND_SLACK` of the day's stored dividend `cash` over the close before), `penny`
-    (from a raw close under `PENNY`, where a tick is a large move), `action_shaped`, `results`
-    or `unexplained`."""
+    that is within `audit.JUMP_PCT` once the day's stored dividend `cash` is added back), `penny`
+    (from a raw close under `PENNY`, where a tick is a large move), `action_shaped`, `circuit`
+    (a price band's move: the stock hit its band), `results`, `market` (the day's `market`
+    move, the median stock's, at least `MARKET_PCT` the same way) or `unexplained`."""
     if move["ex_date"]:
-        circuit = any(abs(abs(move["move_pct"]) - band) <= CIRCUIT_SLACK for band in CIRCUIT_BANDS)
-        return "ex_date_circuit" if circuit else "ex_date_jump"
+        return "ex_date_circuit" if at_band(move["move_pct"]) else "ex_date_jump"
     if cash > 0 and prev_raw_close > 0:
-        paid = 100 * cash / prev_raw_close
-        if abs(-move["raw_move_pct"] - paid) <= DIVIDEND_SLACK * paid:
+        paid = 100 * cash / prev_raw_close  # the move with the cash added back stays in range
+        if move["raw_move_pct"] < 0 and abs(move["raw_move_pct"] + paid) <= JUMP_PCT:
             return "dividend"
     if prev_raw_close < PENNY:
         return "penny"
     if action_shaped(move["raw_move_pct"]):
         return "action_shaped"
-    return "results" if explained else "unexplained"
+    if at_band(move["move_pct"]) or at_band(move["raw_move_pct"]):
+        return "circuit"
+    if explained:
+        return "results"
+    if market is not None and abs(market) >= MARKET_PCT and (market > 0) == (move["move_pct"] > 0):
+        return "market"
+    return "unexplained"
 
 
 _YEAR_SQL = """
@@ -816,7 +953,10 @@ def _moves(
             continue
         frame = pl.from_arrow(con.execute(_YEAR_SQL, [first - timedelta(days=14), last]).arrow())
         assert isinstance(frame, pl.DataFrame)
-        frame = frame.sort("instrument_id", "date")
+        frame = frame.filter(
+            pl.col("isin").map_elements(ordinary_equity, return_dtype=pl.Boolean)
+        ).sort("instrument_id", "date")
+        market = _market_moves(frame)
         for (instrument,), part in frame.partition_by("instrument_id", as_dict=True).items():
             days = part["date"].to_list()
             found = jumps(
@@ -840,6 +980,7 @@ def _moves(
                     explained_by_results(day, said),
                     raws[at - 1] or 0.0,
                     dividends.get((str(instrument), day), 0.0),
+                    market.get(day),
                 )
                 member = any(
                     a <= day and (b is None or day < b) for a, b in members.get(str(instrument), ())
@@ -848,14 +989,16 @@ def _moves(
                 years[str(year)][code] += 1
                 if member:
                     counts[f"{code}_nifty500"] += 1
+                market_pct = market.get(day)
                 items[code].append(
                     {**move, "symbol": symbols[at], "isin": isins[at], "nifty500": member}
+                    | ({"market_pct": round(market_pct, 2)} if market_pct is not None else {})
                 )
     for code in items:  # members first, then the largest moves
         items[code].sort(key=lambda m: (not m["nifty500"], -abs(m["move_pct"])))
     findings = []
     for code, level in (("ex_date_jump", FAIL), ("action_shaped", FAIL), ("unexplained", WARN)):
-        kept = exceptions.split(f"move_{code}", items[code]) if level == FAIL else items[code]
+        kept = exceptions.split(f"move_{code}", items[code])
         if kept:
             found = {
                 **finding(f"move_{code}", level, kept),
@@ -866,9 +1009,32 @@ def _moves(
                 found = dated(found, [m["date"] for m in kept])
             findings.append(found)
     return {
+        "stocks_only": "ordinary equity ISINs: funds, rights entitlements and debt not scanned",
         "moves_over_pct": dict(counts),
         "by_year": {k: dict(v) for k, v in sorted(years.items())},
     }, findings
+
+
+def _market_moves(frame: pl.DataFrame) -> dict[date, float]:  # pragma: no cover - real data
+    """Each day's `market_move` over the stocks of `frame` (sorted by instrument and day) with a
+    raw close of at least `PENNY` the day before."""
+    import polars as pl  # noqa: PLC0415
+
+    prev = pl.col("close").shift(1).over("instrument_id")
+    moves = (
+        frame.with_columns(
+            (100 * (pl.col("close") / prev - 1)).alias("move"),
+            pl.col("raw_close").shift(1).over("instrument_id").alias("prev_raw"),
+        )
+        .filter(pl.col("move").is_not_null() & (pl.col("prev_raw") >= PENNY))
+        .group_by("date")
+        .agg(pl.col("move"))
+    )
+    return {
+        day: value
+        for day, values in moves.iter_rows()
+        if (value := market_move(values)) is not None
+    }
 
 
 # --- the second source --------------------------------------------------------------------------
@@ -979,7 +1145,7 @@ def _second_source(
 
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
-    from ..chains import stored_adjustment  # noqa: PLC0415
+    from ..chains import chains, stored_adjustment, stored_links  # noqa: PLC0415
 
     findings: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
@@ -1005,7 +1171,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     if ctx.ca_data is not None and ctx.ca_data.is_dir():
         refs, skipped = read_reference(ctx.ca_data)
         refs = [r for r in refs if ctx.start <= r.ex_date <= ctx.end]
-        keys_of, held = _identities(ctx)
+        keys_of, held, isin_of = _identities(ctx)
         by_key = _by_key(keys_of)
         deleted = [
             (str(i), d, t)
@@ -1014,20 +1180,24 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
                 "WHERE status = 'deleted'"
             )
         ]
-        prev = _prev_closes(
-            ctx,
-            [
-                (i, r.ex_date)
-                for r in refs
-                if r.kind in ("rights", "dividend")
-                for keys in (r.keys, [k for k in r.keys if not _ISIN.match(k)])  # and the ticker's
-                for i in ref_instruments(keys, by_key, r.ex_date, held)
-            ],
+        wanted = [
+            (i, r.ex_date)
+            for r in refs
+            if r.kind in ("rights", "dividend", "demerger")
+            for keys in (r.keys, [k for k in r.keys if not _ISIN.match(k)])  # and the ticker's
+            for i in ref_instruments(keys, by_key, r.ex_date, held)
+        ]
+        prev = _prev_closes(ctx, wanted)
+        stores = Stores(
+            chains(stored_links(ctx.session)),
+            isin_of,
+            _first_bars(ctx),
+            _prev_closes(ctx, wanted, on_day=True),
         )
         starts = reference_starts(refs, ctx.start)
-        ends = reference_pulled(ctx.ca_data)
+        ends = reference_pulled(p.name for p in (ctx.ca_data / "dividends").glob("ca_*.json"))
         factor_summary, factor_findings = compare_factors(
-            refs, stored, keys_of, prev, deleted, starts, held, ends, exceptions
+            refs, stored, keys_of, prev, deleted, starts, held, ends, exceptions, stores
         )
         summary["reference_pulled"] = {k: d.isoformat() for k, d in sorted(ends.items())}
         coverage = factor_coverage(starts, ctx.end)
@@ -1061,23 +1231,29 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     return result if coverage is None else covered(result, *coverage)
 
 
-def reference_pulled(folder: Path) -> dict[str, date]:  # pragma: no cover - files
-    """When the newest dividend file was pulled (its file's date): a dividend stored on or
-    after that day may not be listed yet, so it is not judged."""
-    files = sorted((folder / "dividends").glob("ca_*.json"))
-    if not files:
+def reference_pulled(names: Iterable[str]) -> dict[str, date]:
+    """Where the dividend files' cover ends, from the months they are named for
+    (`ca_YYYY-MM.json`, NSE's list by ex-date for the month): the first day of the newest month,
+    whose file may be a partial pull (its rows carry no broadcast date to tell); every month
+    before it is whole. A dividend stored on or after that day is not judged."""
+    months = [m for name in names if (m := re.fullmatch(r"ca_(\d{4})-(\d{2})\.json", name))]
+    if not months:
         return {}
-    newest = max(p.stat().st_mtime for p in files)
-    return {"dividend": datetime.fromtimestamp(newest, UTC).date()}
+    year, month = max((int(m[1]), int(m[2])) for m in months)
+    return {"dividend": date(year, month, 1)}
 
 
-def _identities(ctx: Context) -> tuple[dict[str, frozenset[str]], Spans]:  # pragma: no cover
+def _identities(
+    ctx: Context,
+) -> tuple[dict[str, frozenset[str]], Spans, dict[str, str]]:  # pragma: no cover
     """Each instrument's ISINs and symbols (its own, its symbol history's, and its linked
-    chain's: an action on an old ISIN is stored on the chain's current one), and each symbol's
-    holders over time (`symbol_spans`)."""
+    chain's: an action on an old ISIN is stored on the chain's current one), each symbol's
+    holders over time (`symbol_spans`) and each instrument's own ISIN."""
     keys: dict[str, set[str]] = defaultdict(set)
+    isin_of: dict[str, str] = {}
     for i, isin, symbol in ctx.rows("SELECT CAST(id AS TEXT), isin, symbol FROM hat_instrument"):
         keys[i] |= {isin.upper(), symbol.upper()}
+        isin_of[i] = isin.upper()
     history = [
         (str(i), s.upper(), a, b)
         for i, s, a, b in ctx.rows(
@@ -1096,7 +1272,7 @@ def _identities(ctx: Context) -> tuple[dict[str, frozenset[str]], Spans]:  # pra
         union = set().union(*(keys[m] for m in members))
         for m in members:
             keys[m] = union
-    return {k: frozenset(v) for k, v in keys.items()}, symbol_spans(history, chain)
+    return {k: frozenset(v) for k, v in keys.items()}, symbol_spans(history, chain), isin_of
 
 
 def chains_of(
@@ -1141,14 +1317,32 @@ def _by_key(keys_of: Mapping[str, frozenset[str]]) -> dict[str, set[str]]:
 _PREV_SQL = """
 SELECT CAST(r.instrument_id AS VARCHAR), w.ex_date, arg_max(r.close, r.date)
 FROM bars_daily_raw r JOIN wanted w ON CAST(r.instrument_id AS VARCHAR) = w.instrument_id
-WHERE r.date < w.ex_date AND r.date >= w.ex_date - INTERVAL 20 DAY
+WHERE r.date < w.ex_date AND r.date >= w.ex_date - CAST(? AS INTEGER) * INTERVAL 1 DAY
+GROUP BY ALL
+"""
+
+
+def _first_bars(ctx: Context) -> dict[str, date]:  # pragma: no cover - real data
+    with ctx.store.connect() as con:
+        return dict(
+            con.execute(
+                "SELECT CAST(instrument_id AS VARCHAR), min(date) FROM bars_daily_raw GROUP BY ALL"
+            ).fetchall()
+        )
+
+
+_DAY_SQL = """
+SELECT CAST(r.instrument_id AS VARCHAR), w.ex_date, any_value(r.close)
+FROM bars_daily_raw r JOIN wanted w ON CAST(r.instrument_id AS VARCHAR) = w.instrument_id
+WHERE r.date = w.ex_date
 GROUP BY ALL
 """
 
 
 def _prev_closes(
-    ctx: Context, wanted: Sequence[tuple[str, date]]
+    ctx: Context, wanted: Sequence[tuple[str, date]], *, on_day: bool = False
 ) -> dict[tuple[str, date], Decimal]:  # pragma: no cover - real data
+    """The raw close before each (instrument, ex-date) in `PREV_DAYS`, or on it (`on_day`)."""
     import pyarrow as pa  # noqa: PLC0415
 
     if not wanted:
@@ -1158,8 +1352,5 @@ def _prev_closes(
             "wanted",
             pa.table({"instrument_id": [w[0] for w in wanted], "ex_date": [w[1] for w in wanted]}),
         )
-        return {
-            (i, d): close
-            for i, d, c in con.execute(_PREV_SQL).fetchall()
-            if (close := exact(c, floats=True)) is not None
-        }
+        rows = (con.execute(_DAY_SQL) if on_day else con.execute(_PREV_SQL, [PREV_DAYS])).fetchall()
+        return {(i, d): close for i, d, c in rows if (close := exact(c, floats=True)) is not None}

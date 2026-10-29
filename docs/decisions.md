@@ -542,13 +542,16 @@ MCP server (advisory only); a CLI to re-run one job for a past trade date; a wee
 live trading of `entry_timing: daily_close`. Results data: ingest NSE's Annual and Others results
 listings (a few year-end quarters are filed only there, excepted in D5 meanwhile); one row per
 NSE sha in `results_events` (filings stored under an older ISIN of the same company before the
-chain rule); no secondary rows after a company's last traded day.
+chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
+D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
+adjusted series are stored but unverified; an ETF overlay needs them verified first.
 
 ## Defaults awaiting owner confirmation
 
 Chosen where the owner has not ruled; the code implements them.
 
-- Universe: NIFTY 500 plus liquidity criteria.
+- Universe: NIFTY 500 plus liquidity criteria. The BE series (trade-for-trade, delivery only)
+  is tradable beside EQ (`broker_symbols.FYERS_SERIES`, the seeds' `series_in`); BZ never is.
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

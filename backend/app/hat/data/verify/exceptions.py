@@ -1,16 +1,20 @@
 """Reviewed exceptions of D2 and D6: a failure that is explained and known, listed with why.
 
-The file (CSV) has one row per exception: `code` (the finding's code), `isin` (the item's ISIN;
-for a D2 reference action, any of its keys), `symbol` (for the reader), `day` (the item's day:
-an ex-date, a link's date, the last bar) and `reason`, which every row must give. There is no
-wildcard: an exception names one item, and a new failure is always reported. An excepted item
-moves to the `excepted` finding (warn) with its reason; an exception no failure uses is listed
-as `exception_unused` (warn), so the list cannot go stale unseen.
+The file (CSV) has one row per exception: `code` (the finding's code), `isin` (the item's own
+ISIN: a stored action's instrument, a reference action's ISIN, a link's old ISIN), `symbol` (for
+the reader), `day` (the item's day: an ex-date, a link's date, the last bar), `pin` (`field=value`:
+the value the item was reviewed at, such as `stored=0.9424` or `cash=8`) and `reason`; every row
+must give all but the symbol. There is no wildcard: an exception names one item at its reviewed
+value, so a later change to the item (another factor, another amount) fails again, and a rule
+that two items match excepts neither. An excepted item moves to the `excepted` finding (warn)
+with its reason; an exception no failure uses is listed as `exception_unused` (warn), so the
+list cannot go stale unseen.
 """
 
 from __future__ import annotations
 
 import csv
+import re
 from collections import Counter
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -20,7 +24,10 @@ from typing import Any
 
 from ..audit import WARN, finding
 
+_ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
+
 DAY_FIELDS = ("ex_date", "effective", "date", "last_bar")
+PIN_TOLERANCE = 1e-6  # relative: a pinned number read back from the report's text
 
 
 @dataclass(frozen=True)
@@ -28,8 +35,21 @@ class Excepted:
     code: str
     isin: str
     day: str
+    pin: str  # `field=value`: the item's value when it was reviewed
     reason: str
     symbol: str = ""
+
+    def pins(self, item: Mapping[str, Any]) -> bool:
+        """Whether `item` still has the reviewed value (numbers within `PIN_TOLERANCE`)."""
+        name, _, want = self.pin.partition("=")
+        got = item.get(name.strip())
+        if got is None:
+            return False
+        try:
+            a, b = float(got), float(want)
+        except (TypeError, ValueError):
+            return str(got).strip() == want.strip()
+        return abs(a - b) <= PIN_TOLERANCE * max(abs(a), abs(b), 1.0)
 
 
 def read_exceptions(path: Path, check: str) -> list[Excepted]:
@@ -43,14 +63,17 @@ def read_exceptions(path: Path, check: str) -> list[Excepted]:
                 r["code"].strip(),
                 r["isin"].strip().upper(),
                 r["day"].strip(),
+                r.get("pin", "").strip(),
                 r["reason"].strip(),
                 r.get("symbol", "").strip(),
             )
             for r in csv.DictReader(handle)
         ]
-    bad = [r for r in rows if not r.reason or not _is_day(r.day) or not r.isin or not r.code]
+    bad = [
+        r for r in rows if not (r.reason and _is_day(r.day) and r.isin and r.code and "=" in r.pin)
+    ]
     if bad:
-        raise ValueError(f"{check} exceptions without a code, ISIN, day or reason: {bad[:3]}")
+        raise ValueError(f"{check} exceptions without a code, ISIN, day, pin or reason: {bad[:3]}")
     return rows
 
 
@@ -62,13 +85,16 @@ def _is_day(text: str) -> bool:
     return True
 
 
-def item_keys(item: Mapping[str, Any]) -> tuple[set[str], str | None]:
-    """An item's ISINs (`isin`, `new_isin`, or the ISINs among a reference action's `keys`) and
-    its day (the first of `DAY_FIELDS` it has as text: a move's `ex_date` is a flag)."""
-    keys = {str(item[k]).upper() for k in ("isin", "new_isin") if item.get(k)}
-    keys |= {str(k).upper() for k in item.get("keys") or ()}
+def item_key(item: Mapping[str, Any]) -> tuple[str | None, str | None]:
+    """An item's own ISIN (`isin`, else the one ISIN among a reference action's `keys`: NSE's
+    row names one) and its day (the first of `DAY_FIELDS` it has as text: a move's `ex_date` is
+    a flag)."""
+    isin = item.get("isin")
+    if not isin:
+        named = [k for k in item.get("keys") or () if _ISIN.match(str(k).upper())]
+        isin = named[0] if len(named) == 1 else None
     day = next((item[f] for f in DAY_FIELDS if isinstance(item.get(f), str) and item[f]), None)
-    return keys, day
+    return (str(isin).upper() if isin else None), day
 
 
 @dataclass
@@ -83,11 +109,17 @@ class Exceptions:
         """The items of finding `code` no exception covers; the covered ones are kept, with
         their reason, for `findings`."""
         rules = {(r.isin, r.day): r for r in self.rules if r.code == code}
+        items = list(items)
+        matched: dict[int, Excepted] = {}
+        for n, item in enumerate(items):
+            rule = rules.get(item_key(item))
+            if rule is not None and rule.pins(item):
+                matched[n] = rule
+        twice = {r for r, k in Counter(matched.values()).items() if k > 1}
         kept = []
-        for item in items:
-            keys, day = item_keys(item)
-            rule = next((rules[k, day] for k in sorted(keys) if (k, day) in rules), None)
-            if rule is None:
+        for n, item in enumerate(items):
+            rule = matched.get(n)
+            if rule is None or rule in twice:
                 kept.append(item)
             else:
                 self.used.add(rule)
