@@ -123,12 +123,6 @@ def _value(row: SourceRow | Mapping[str, Any], name: str) -> object:
     return value
 
 
-def _differs(stored: object, source: object) -> bool:
-    if isinstance(stored, Decimal) and isinstance(source, Decimal):
-        return stored != source  # numerically: 12.5 == 12.5000
-    return stored != source
-
-
 def _checkable(row: SourceRow, day: date) -> bool:
     volume = row.volume
     return (
@@ -191,7 +185,8 @@ def compare_day(
             )
             continue
         used.add((isin, series))
-        wrong = [f for f in FIELDS if _differs(_value(bar, f), _value(match, f))]
+        # Decimals compare numerically: 12.5 == 12.5000
+        wrong = [f for f in FIELDS if _value(bar, f) != _value(match, f)]
         for name in wrong:
             out.add(
                 "value_mismatch",

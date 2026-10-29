@@ -34,7 +34,6 @@ raw evidence, and the rule this evidence recommends. Stored days that fail the e
 
 from __future__ import annotations
 
-import random
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
@@ -49,6 +48,7 @@ from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
 from ..bars5m_import import start_epoch
 from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
+from . import seeded_sample
 from .context import Context
 
 BASIS_STEP = 0.03  # a factor's mark: both extremes off by 3% or more, the same way and ratio
@@ -354,8 +354,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             causes[CAUSE[code]] += n
         summary["causes"] = dict(causes.most_common())
         summary["classes_by_year"] = {str(y): dict(c) for y, c in sorted(by_year.items())}
-        rng = random.Random(SAMPLE_SEED)  # noqa: S311 - a sample to check by hand
-        summary["hand_check_sample"] = rng.sample(sample_pool, min(SAMPLE, len(sample_pool)))
+        summary["hand_check_sample"] = seeded_sample(sample_pool, SAMPLE, SAMPLE_SEED)
         for code, level in (
             ("basis_factor", WARN),
             ("fits_now", WARN),

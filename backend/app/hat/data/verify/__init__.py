@@ -168,5 +168,15 @@ def status_for(root: Path, start: date, end: date, *, used_5m: bool) -> dict[str
     return window_status(doc, path, used_5m=used_5m)
 
 
+def seeded_sample(items: Sequence[Any], size: int, seed: int) -> list[Any]:
+    """`size` of `items` chosen by the sha256 of (seed, item): the same items and seed give the
+    same sample on every run and machine (a reproducible sample, no random generator)."""
+
+    def rank(item: Any) -> str:  # noqa: ANN401 - any item with a stable text
+        return hashlib.sha256(f"{seed}|{_canonical(item)}".encode()).hexdigest()
+
+    return sorted(items, key=rank)[:size]
+
+
 def worst(statuses: Sequence[str]) -> str:
     return max(statuses, key=_RANK.__getitem__, default=PASS)

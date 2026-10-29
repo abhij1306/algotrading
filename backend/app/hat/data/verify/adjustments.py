@@ -34,7 +34,6 @@ from __future__ import annotations
 
 import csv
 import json
-import random
 import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
@@ -47,6 +46,7 @@ from typing import TYPE_CHECKING, Any
 
 from ...money import exact
 from ..audit import FAIL, WARN, action_shaped, check_result, finding, jumps
+from . import seeded_sample
 from .context import Context
 from .filings import Announcement, read_announcements
 from .references import reference_file
@@ -91,7 +91,8 @@ def bonus_factor(ratio: str) -> Fraction | None:
 
 
 _FV = re.compile(
-    r"(?:rs|re|inr)\.?\s*([\d.]+)\s*/?-?\s*(?:per\s+share\s*)?(?:each\s*)?to\s*(?:rs|re|inr)\.?\s*([\d.]+)"
+    r"(?:rs|re|inr)[.\s]*(\d+(?:\.\d+)?)[\s/-]*(?:per\s+share[\s/-]*)?(?:each\s+)?"
+    r"to\s*(?:rs|re|inr)[.\s]*(\d+(?:\.\d+)?)"
 )
 
 
@@ -142,12 +143,12 @@ def dividend_cash(subject: str) -> Decimal | None:
             continue
         text = _NOT_PAYOUT.sub(" ", text[at.start() if at else 0 :])
         for m in _AMOUNT.finditer(text):
-            total += exact(re.sub(r"\s*\.+", ".", m[1] or m[2])) or Decimal(0)
+            total += exact(re.sub(r"\.+", ".", (m[1] or m[2]).replace(" ", ""))) or Decimal(0)
             found = True
     return total if found else None
 
 
-_PREMIUM = re.compile(r"prem[a-z]*\.?\s*(?:of\s*)?(?:rs|re|inr)?\.?\s*(\d+(?:\.\d+)?)")
+_PREMIUM = re.compile(r"prem[a-z]*[.\s]*(?:of\s+)?(?:(?:rs|re|inr)[.\s]*)?(\d+(?:\.\d+)?)")
 _PRICE = re.compile(r"@\s*(?:rs|re|inr)\.?\s*(\d+(?:\.\d+)?)")
 FACE_VALUES = (Decimal(1), Decimal(2), Decimal(5), Decimal(10))
 
@@ -709,7 +710,7 @@ def _second_source(
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - the network  # noqa: ANN401
     symbols = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
     pool = sorted(i for i in members if i in symbols)
-    sample = random.Random(SAMPLE_SEED).sample(pool, min(SAMPLE_SIZE, len(pool)))  # noqa: S311 - a sample
+    sample = seeded_sample(pool, SAMPLE_SIZE, SAMPLE_SEED)
     first_year, last_year = ctx.start.year + 1, ctx.end.year - 1  # whole years only
     start = int(datetime(ctx.start.year - 1, 12, 1, tzinfo=UTC).timestamp())
     end = int(datetime(ctx.end.year, 1, 31, tzinfo=UTC).timestamp())
