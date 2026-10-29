@@ -76,6 +76,7 @@ from ..models import (
 )
 from ..money import exact
 from ..time import IST, as_utc
+from .intraday import screened_buckets
 from .spec import BacktestError, membership_key
 
 __all__ = [
@@ -220,6 +221,9 @@ class MarketData:
     # The store's raw 5-minute bars, read one session at a time for the candidates the loop
     # decides on them (`intraday.session_bars`); None: every session uses the daily estimate.
     intraday: BarStore | None = None
+    # The 5-minute buckets the import refused, by (instrument, day) (`intraday.screened_buckets`):
+    # a session whose bars lack one is decided on the daily estimate, since the gap traded.
+    screened_5m: Mapping[tuple[str, date], frozenset[datetime]] = field(default_factory=dict)
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
     pending: frozenset[tuple[str, date]] = frozenset()
@@ -1369,6 +1373,7 @@ def load_market(
         symbols=symbols,
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
+        screened_5m=screened_buckets(intraday.read_rejects()) if sessions_5m else {},
         results=filings,
     )
     snapshot = {

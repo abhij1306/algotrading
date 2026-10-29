@@ -27,14 +27,14 @@ days; a naive high-over-the-open rule fired on 94%.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..data.audit import CLOSE_5M_PCT
 from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
-from ..data.bars_store import BarStore
+from ..data.bars_store import BarStore, RejectRow
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..engine.trigger import (
     Candidate,
@@ -56,6 +56,8 @@ __all__ = [
     "after_trigger",
     "traded_low_after",
     "on_basis",
+    "lacks_refused",
+    "screened_buckets",
     "replay",
     "session_bars",
     "trace",
@@ -150,6 +152,22 @@ def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
     if first is None or closes - BAR_WIDTH not in starts:
         return False
     return abs(first.open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
+
+
+def screened_buckets(rejects: Iterable[RejectRow]) -> dict[tuple[str, date], frozenset[datetime]]:
+    """The 5-minute buckets the import refused (ledger rows with a `bar_start`), by (instrument,
+    day). Such a bucket traded; a session whose stored bars lack one is not quiet there."""
+    found: dict[tuple[str, date], set[datetime]] = {}
+    for r in rejects:
+        if r.bar_start is not None and r.day is not None:
+            found.setdefault((r.instrument_id, r.day), set()).add(r.bar_start)
+    return {k: frozenset(v) for k, v in found.items()}
+
+
+def lacks_refused(bars: Sequence[Bar], refused: Collection[datetime]) -> bool:
+    """Whether a session's bars lack a bucket the import refused: its gap traded, so the session
+    is decided on the daily estimate (a refused bucket stored from another copy is no gap)."""
+    return bool(set(refused) - {bar.start for bar in bars})
 
 
 class _ReplayView:

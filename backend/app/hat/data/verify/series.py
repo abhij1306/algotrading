@@ -376,14 +376,13 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             r.index_name: (r.open, r.high, r.low, r.close) for r in rows if r.index_name in names
         }
         lacking = [n for n in names if n not in stored and day >= INDEX_STARTS[n]]
-        if not stored:
-            absent += [{"day": day.isoformat(), "index": n} for n in lacking]
-            continue
         data = _index_file(ctx, day)
         source = {} if data is None else read_index_file(data.decode("utf-8-sig", "replace"), names)
         for n in lacking:
             kind = uncomputed if n in source and not_computed(source[n]) else absent
             kind.append({"day": day.isoformat(), "index": n})
+        if not stored:
+            continue
         bad, missing = compare_index_day(day, stored, source)
         wrong += bad
         unstored += missing
@@ -391,7 +390,9 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             if index in source:
                 compared[index] += 1
                 continue
-            history = histories.setdefault((index, day.year), _history(ctx, index, day.year))
+            if (index, day.year) not in histories:
+                histories[index, day.year] = _history(ctx, index, day.year)
+            history = histories[index, day.year]
             if day not in history:
                 unproven.append({"day": day.isoformat(), "index": index})
                 continue

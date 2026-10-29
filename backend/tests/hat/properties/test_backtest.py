@@ -43,7 +43,14 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
-from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis, traded_low_after
+from app.hat.backtest.intraday import (
+    EP_ESTIMATE,
+    after_trigger,
+    lacks_refused,
+    on_basis,
+    screened_buckets,
+    traded_low_after,
+)
 from app.hat.backtest.loop import AccountFills
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
@@ -62,6 +69,7 @@ from app.hat.backtest.spec import (
 from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
 from app.hat.data.bars import Bar as Bar5m
+from app.hat.data.bars_store import RejectRow
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
 from app.hat.engine.portfolio.universe import Interval, members_on
@@ -245,11 +253,31 @@ def test_on_basis() -> None:
     assert on_basis(day, (bars[0], bars[-1]), D(99))  # traded only at the open and the close
     assert not on_basis(day, bars[1:], D(99))  # no 09:15 bar
     assert on_basis(day, bars[::-1], D(99))  # in any order: the 09:15 bar's open is read
-    assert not on_basis(day, (*bars[:-1], _bar(0, "104", "105")), D(99))  # 09:15 twice
+    assert not on_basis(day, (*bars, _bar(0, "104", "105")), D(99))  # 09:15 twice
     assert not on_basis(day, (*bars, bars[3]), D(99))  # a bar twice
     assert not on_basis(day, (*bars[:-1], _bar(7, "104", "100")), D(99))  # off the grid
     assert not on_basis(day, (*bars[:-1], _bar(375, "104", "100")), D(99))  # 15:30
     assert not on_basis(date(2024, 3, 2), bars, D(99))  # another day's bars
+
+
+def test_a_session_missing_a_refused_bucket_is_not_replayed() -> None:
+    """A bucket the import refused (a ledger row with its bar start) traded: a session whose bars
+    lack it is not quiet there and is never replayed; one that stores it (from another copy) is.
+    Harm: a session replayed without the trades of a bucket the import dropped, or a good
+    session refused for another copy's refusal."""
+    day = date(2024, 3, 1)
+    at = datetime(2024, 3, 1, 10, 5, tzinfo=IST)
+    rows = [
+        RejectRow("A", "A", day, at, "volume"),
+        RejectRow("B", "B", day, None, "basis_mismatch"),
+        RejectRow("C", "C", None, None, "epoch"),
+    ]
+    refused = screened_buckets(rows)
+    assert refused == {("A", day): frozenset({at})}
+    bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))
+    assert not lacks_refused(bars, refused[("A", day)])  # 10:05 stored from another copy
+    assert lacks_refused(bars[:10] + bars[11:], refused[("A", day)])  # 10:05 missing
+    assert not lacks_refused(bars[:10] + bars[11:], ())
 
 
 def test_known_gaps_name_only_the_estimates_taken() -> None:

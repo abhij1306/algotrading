@@ -808,14 +808,19 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
         return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
     archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
     if args.command == "reload":
-        changed = reload_days(store, archive, args.days or [], apply=args.apply)
+        bar_days = set(store.days(DATASET_BARS))
+        days = [d for d in args.days or [] if d in bar_days]
+        changed = reload_days(store, archive, days, apply=args.apply)
         sys.stdout.write(f"index reload ({'applied' if args.apply else 'dry run'})\n")
         for day, new, old in changed:
             sys.stdout.write(f"  {day} {new.index_name}: stored {old} -> file {new}\n")
         missing = sorted(set(archive.not_found) | set(archive.errors))
         if missing:
             sys.stdout.write(f"  no file: {', '.join(str(d) for d in missing)}\n")
-        return 1 if missing else 0
+        skipped = sorted(set(args.days or []) - bar_days)
+        if skipped:  # the archive reads only the days with daily bars (`ArchiveIndexSource`)
+            sys.stdout.write(f"  not a bar day: {', '.join(str(d) for d in skipped)}\n")
+        return 1 if missing or skipped else 0
     history = NiftyIndicesSource(post, pacer, HISTORY_URL, HISTORY_INDICES, parse_history_json)
     end = args.end or date.today()
     sources = (archive, tri_source(post, pacer), history)

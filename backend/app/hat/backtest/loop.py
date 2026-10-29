@@ -233,6 +233,7 @@ from .intraday import (
     EP_ESTIMATE,
     NO_CATALYST_MODE,
     after_trigger,
+    lacks_refused,
     on_basis,
     replay,
     session_bars,
@@ -1340,7 +1341,8 @@ class _Run:
         self, day: date, instruments: Collection[str]
     ) -> dict[str, tuple[DataBar, ...]]:
         """The stored 5-minute bars of `day` of `instruments`, on the price basis, of each
-        session that fits its daily bar (`intraday.on_basis`); none in a `daily` run or without
+        session that fits its daily bar (`intraday.on_basis`) and lacks no refused bucket
+        (`intraday.lacks_refused`); none in a `daily` run or without
         a `bars_5m` store."""
         store = self.data.intraday
         if store is None or self.spec.conventions.entry_bars != ENTRY_BARS_5M:
@@ -1354,7 +1356,9 @@ class _Run:
         return {
             i: bars
             for i, bars in session_bars(store, day, scales).items()
-            if (bar := self.view.bar(i, day)) is not None and on_basis(day, bars, bar.open)
+            if (bar := self.view.bar(i, day)) is not None
+            and not lacks_refused(bars, self.data.screened_5m.get((i, day), ()))
+            and on_basis(day, bars, bar.open)
         }
 
     def _candidate(self, row: _Row, day: date, prev: date) -> trigger.Candidate:

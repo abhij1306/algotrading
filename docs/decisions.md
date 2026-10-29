@@ -233,7 +233,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   sessions are decided on the daily estimate. An empty interior bucket is a window without a
   trade, as live's bar builder sees it (`data.bars` makes no bar for one): of the empty buckets
   the broker export also covers, it has a traded bar for 0.4%, all on six dates where the stored
-  vendor folded the trades into the next bar (volume kept, seen up to 25 minutes late). Why:
+  vendor folded the trades into the next bar (volume kept, seen up to 25 minutes late). A bucket
+  the import refused (`bars_5m_rejects` with a bar start) did trade, so a session whose bars lack
+  one is decided on the daily estimate (`intraday.lacks_refused`). Why:
   wanting every bucket refused the quiet days of thin stocks (a quarter of the under Rs 10 crore
   days) by how the afternoon traded, data the morning does not have. The 15:25 bar is still read
   at the close; the days refused for it alone are vendor truncations, and a run decides them on

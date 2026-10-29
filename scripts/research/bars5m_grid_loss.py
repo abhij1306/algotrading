@@ -97,7 +97,7 @@ with daily as (
     select instrument_id, date, symbol, open, high, low, close, volume,
            avg(traded_value) over (partition by instrument_id order by date
                                    rows between 20 preceding and 1 preceding) / 1e7 as adv,
-           count(*) over (partition by instrument_id order by date
+           count(traded_value) over (partition by instrument_id order by date
                           rows between 20 preceding and 1 preceding) as adv_n
     from read_parquet($daily, hive_partitioning = true)
     where date >= date '2021-09-01' and series in ('EQ', 'BE')
@@ -237,8 +237,8 @@ def tally(rows: list[dict[str, Any]]) -> dict[str, Any]:
             empty[band] = empty.get(band, 0) + 1
         if kind in ("full", "back"):
             chosen["replayed"].append(row)
-        elif kind == "no_last":
-            chosen["no_last"].append(row)
+        elif kind == "no_last" and row["open_off"] is not None and row["open_off"] <= CLOSE_5M_PCT:
+            chosen["no_last"].append(row)  # refused for the 15:25 bar alone
     return {
         "cells": [{"year": y, "bucket": b, **c} for (y, b), c in sorted(table.items())],
         "volume_fit": {k: volume_fit(v) for k, v in ratios.items()},
