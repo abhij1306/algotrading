@@ -213,6 +213,22 @@ strategies:
   - {version: <s1>, weight: 0.5}
   - {version: <s2>, weight: 0.5, set: ['exits[partial_after_days].days=3']}
 ---
+# momentum rotation alone (a version with a `rotation` block), idle cash in the liquid ETF
+portfolio: rotation
+universe: nifty500
+window: {from: 2016-01-01, to: 2024-12-31}
+strategies:
+  - {version: <rotation>, weight: 1}
+overlay: {sleeve: liquid, tax: false}
+---
+# S1 + rotation on one account
+portfolio: s1-rotation
+universe: nifty500
+window: {from: 2016-01-01, to: 2024-12-31}
+strategies:
+  - {version: <s1>, weight: 0.5}
+  - {version: <rotation>, weight: 0.5, set: ['rotation.top_n=15']}
+---
 # any of these plus the ETF sleeve: add an overlay block (every key optional, the plan's values)
 overlay:
   sleeve: regime          # none | liquid | nifty | regime | regime_gold
