@@ -9,6 +9,8 @@ import importlib.util
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from app.hat.data import record
 from app.paths import PROJECT_ROOT
 
@@ -117,3 +119,18 @@ def test_the_asset_check_names_missing_resized_and_changed_assets() -> None:
         "b.part9 is on the release but not in the record",
         "a is missing from the release",
     ]
+
+
+def test_archive_names_stay_inside_the_root_and_arguments_are_never_options(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "a").mkdir()
+    (tmp_path / "a" / "x.csv").write_text("1")
+    assert snapshot.member_name_ok(tmp_path, "a/x.csv")
+    for bad in ("../x", "/etc/passwd", "a/../../x", "", "a//x"):
+        assert not snapshot.member_name_ok(tmp_path, bad)
+    args = snapshot.parse_args(["check", "--tag", "snapshot-2026-10-29", "--repo", "o/data"])
+    assert (args.tag, args.repo) == ("snapshot-2026-10-29", "o/data")
+    for argv in (["--tag", "--x"], ["--tag", "t", "--repo", "-o/x"], ["--tag", "a b"]):
+        with pytest.raises(SystemExit):
+            snapshot.parse_args(["check", "--repo", "o/d", *argv])

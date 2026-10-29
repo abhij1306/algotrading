@@ -32,11 +32,13 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 import tarfile
+import tempfile
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
@@ -64,7 +66,9 @@ SECRET_PATTERNS = (
     "chrome",
     "chromium",
 )
-DEFAULT_STAGE = Path("/var/tmp/hat-snapshot")  # noqa: S108 - on the root disk, not /data
+# A tag, part or database name, and OWNER/NAME of a repo: never an option or a path.
+NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+REPO = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$")
 
 Entry = dict[str, int | str]
 
@@ -204,7 +208,7 @@ class AssetWriter:
             self._finish()
 
     def flush(self) -> None:
-        pass
+        """Nothing to flush: each part file is closed when it is handed on."""
 
 
 class _Hashing:
@@ -242,6 +246,15 @@ def file_entry(path: Path) -> Entry:
     return {"size": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
+def member_name_ok(root: Path, name: str) -> bool:
+    """Whether `name` is a relative path that stays inside `root` (no `..`, not absolute, no
+    symlink out): what an archive member may be called."""
+    parts = name.split("/")
+    if not name or name.startswith("/") or ".." in parts or "" in parts:
+        return False
+    return (root / name).resolve().is_relative_to(root.resolve())
+
+
 def write_tar(root: Path, names: Sequence[str], out: AssetWriter) -> dict[str, Entry]:
     """A gzipped tar of `names` (relative to `root`) into `out`; each file's size and sha256 as
     it went into the tar."""
@@ -249,6 +262,8 @@ def write_tar(root: Path, names: Sequence[str], out: AssetWriter) -> dict[str, E
     with tarfile.open(fileobj=out, mode="w|gz", compresslevel=1) as archive:
         for name in names:
             path = root / name
+            if not member_name_ok(root, name):
+                raise ValueError(f"{name} is not a path inside {root}")
             with path.open("rb") as handle:
                 archive.inodes = {}  # every path a regular file, never a link to another member
                 info = archive.gettarinfo(arcname=name, fileobj=handle)
@@ -350,7 +365,7 @@ def _parts(specs: Sequence[str]) -> dict[str, Path]:
     parts = {}
     for spec in specs:
         name, _, path = spec.partition("=")
-        if not path or name in parts:
+        if not path or name in parts or not NAME.match(name):
             raise ValueError(f"--part {spec!r} is not a new NAME=PATH")
         if not Path(path).is_dir():
             raise ValueError(f"--part {name}: {path} is not a directory")
@@ -369,7 +384,23 @@ def run_release(args: argparse.Namespace) -> int:
     if record_path.exists():
         raise ValueError(f"{record_path} exists: one record per tag")
     held = held_files(read_records(args.record)) if args.incremental else {}
-    args.stage.mkdir(parents=True, exist_ok=True)
+    if args.stage is not None:
+        args.stage.mkdir(parents=True, exist_ok=True)
+    # a private (0700) folder of this run: at most one asset at a time, removed at the end
+    stage = Path(tempfile.mkdtemp(prefix="hat-snapshot-", dir=args.stage))
+    try:
+        return _release(args, parts, record_path, held, stage)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+
+
+def _release(
+    args: argparse.Namespace,
+    parts: Mapping[str, Path],
+    record_path: Path,
+    held: Mapping[str, Mapping[str, Entry]],
+    stage: Path,
+) -> int:
     ensure_release(args.repo, args.tag)
     assets: dict[str, Entry] = {}
     done = uploader(args.repo, args.tag, assets)
@@ -383,7 +414,7 @@ def run_release(args: argparse.Namespace) -> int:
     for database in args.db:
         name = f"{database}.dump"
         print(f"dump {database}", flush=True)
-        dump_database(args.pg_dump, database, AssetWriter(args.stage, name, done, args.limit))
+        dump_database(args.pg_dump, database, AssetWriter(stage, name, done, args.limit))
         record["databases"][database] = name
     for part, root in parts.items():
         names = walk(root, part_excludes(args.exclude, part))
@@ -392,7 +423,7 @@ def run_release(args: argparse.Namespace) -> int:
             current = {n: file_entry(root / n) for n in names}
             names, removed = changes(held.get(part, {}), current)
         print(f"part {part}: {len(names)} files from {root}", flush=True)
-        writer = AssetWriter(args.stage, f"{part}.tar.gz", done, args.limit)
+        writer = AssetWriter(stage, f"{part}.tar.gz", done, args.limit)
         files = write_tar(root, names, writer)
         record["parts"][part] = {
             "source": str(root),
@@ -402,9 +433,9 @@ def run_release(args: argparse.Namespace) -> int:
             "removed": removed,
         }
     record["assets"] = dict(sorted(assets.items()))
-    staged = args.stage / record_path.name  # into the clone only once GitHub matches it
+    staged = stage / record_path.name  # into the clone only once GitHub matches it
     staged.write_text(json.dumps(record, indent=1, sort_keys=True) + "\n")
-    sums = args.stage / SUMS_NAME
+    sums = stage / SUMS_NAME
     sums.write_text(sums_text(record["assets"]))
     gh("release", "upload", args.tag, str(sums), str(staged), "--repo", args.repo, "--clobber")
     sums.unlink()
@@ -432,13 +463,31 @@ def run_check(args: argparse.Namespace) -> int:
     return 0
 
 
+def _matching(pattern: re.Pattern[str], what: str) -> Callable[[str], str]:
+    """An argparse type that accepts only values matching `pattern` (never an option)."""
+
+    def check(value: str) -> str:
+        if not pattern.match(value):
+            raise argparse.ArgumentTypeError(f"not a valid {what}: {value!r}")
+        return value
+
+    return check
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.environ.get(name, "").strip()
+    return Path(value) if value else None
+
+
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("release", "check"):
         cmd = sub.add_parser(name)
-        cmd.add_argument("--tag", required=True)
-        cmd.add_argument("--repo", required=True, help="OWNER/NAME of the data repo")
+        cmd.add_argument("--tag", required=True, type=_matching(NAME, "tag"))
+        cmd.add_argument(
+            "--repo", required=True, type=_matching(REPO, "OWNER/NAME"), help="the data repo"
+        )
         cmd.add_argument(
             "--record",
             type=Path,
@@ -446,11 +495,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
             help="the data repo clone (default HAT_DATA_REPO)",
         )
         if name == "release":
-            cmd.add_argument("--db", action="append", default=[], help="database to dump")
+            cmd.add_argument(
+                "--db",
+                action="append",
+                default=[],
+                type=_matching(NAME, "database name"),
+                help="database to dump",
+            )
             cmd.add_argument("--part", action="append", default=[], help="NAME=FOLDER to tar")
             cmd.add_argument("--exclude", action="append", default=[], help="PART:PATTERN")
             cmd.add_argument("--incremental", action="store_true")
-            cmd.add_argument("--stage", type=Path, default=DEFAULT_STAGE)
+            cmd.add_argument(
+                "--stage",
+                type=Path,
+                default=_env_path("HAT_SNAPSHOT_STAGE"),
+                help="base folder of the run's private stage (default HAT_SNAPSHOT_STAGE, else "
+                "the system temp folder); on a disk with 2 GB free",
+            )
             cmd.add_argument("--limit", type=int, default=ASSET_LIMIT, help=argparse.SUPPRESS)
             cmd.add_argument("--pg-dump", default=os.environ.get("HAT_PG_DUMP", "pg_dump"))
     return parser.parse_args(argv)

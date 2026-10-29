@@ -654,7 +654,9 @@ recovery" (changes since the backup show as mismatches).
 `scripts/hat_snapshot.py release` uploads a snapshot as GitHub Release assets of the data repo
 (tag `snapshot-<date>`): `pg_dump --format=custom` of the databases (`<db>.dump.partNN`) and a
 gzipped tar per folder (`<part>.tar.gz.partNN`), each asset under 1.9 GB. It stages one asset at a
-time in `--stage` (default `/var/tmp/hat-snapshot`, on the root disk), uploads and deletes it, then
+time in a private folder it makes under `--stage` or `HAT_SNAPSHOT_STAGE` (the system temp folder
+by default; the unit uses `/var/tmp`, on the root disk, never the data disk), uploads and deletes
+it, then
 uploads `SHA256SUMS` and the record `snapshots/<tag>.json` (every asset's size and sha256 and
 every file each tar holds), checks the assets on GitHub against it (size and GitHub's sha256
 digest) and commits the record to the clone. `check --tag T --repo OWNER/algotradingdata`

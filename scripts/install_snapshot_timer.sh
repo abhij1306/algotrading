@@ -13,7 +13,9 @@ mkdir -p "$units"
 # each value goes into a quoted systemd Environment= value: no quote or backslash in it; %
 # doubled (a systemd specifier), then & and | escaped for the sed replacement
 for value in "$repo" "$data_root" "$data_repo" "$pg_dump"; do
-  case "$value" in *'"'* | *'\'*) echo "refused: a quote or backslash in $value" >&2; exit 1 ;; esac
+  case "$value" in *'"'* | *'\'*) echo "refused: a quote or backslash in $value" >&2; exit 1 ;;
+    *) ;;
+  esac
 done
 lit() { printf '%s' "$1" | sed -e 's/%/%%/g' -e 's/[&|]/\\&/g'; }
 for unit in hat-snapshot.service hat-snapshot.timer; do
