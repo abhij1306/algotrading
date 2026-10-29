@@ -193,7 +193,8 @@ def test_cash_bound_fills_refuse_an_overdraw() -> None:
     ("day", "effective_from"),
     [
         (date(2016, 1, 1), date(2016, 1, 1)),
-        (date(2017, 6, 30), date(2016, 6, 1)),
+        (date(2017, 3, 31), date(2016, 6, 1)),
+        (date(2017, 6, 30), date(2017, 4, 1)),
         (date(2017, 7, 1), date(2017, 7, 1)),
         (date(2024, 9, 30), date(2024, 4, 1)),
         (date(2024, 10, 1), date(2024, 10, 1)),
@@ -212,9 +213,9 @@ def test_schedule_refuses_a_day_before_its_first_file_and_records_the_window() -
     with pytest.raises(CostError, match="cost_no_schedule"):
         schedule.on(before)
     recorded = schedule.to_json(date(2020, 5, 4), date(2021, 2, 1))
-    assert recorded["version"] == "cnc-delivery-1"
+    assert recorded["version"] == "cnc-delivery-2"
     assert [s["effective_from"] for s in recorded["schedules"]] == [
-        "2017-07-01",
+        "2019-04-01",
         "2020-06-01",
         "2020-07-01",
         "2021-01-01",
@@ -226,15 +227,25 @@ def test_schedule_refuses_a_day_before_its_first_file_and_records_the_window() -
 @pytest.mark.parametrize(
     ("day", "side", "price", "want"),
     [
-        # 100 x 500 = 50,000 on 2025-01-10: STT 50.00, stamp 7.50, NSE 1.485 -> 1.49,
-        # SEBI 0.05, GST 18% of 1.54 = 0.2772 -> 0.28
-        (date(2025, 1, 10), "buy", D(500), D("59.32")),
-        # 100 x 550 = 55,000: STT 55.00, NSE 1.6335 -> 1.63, SEBI 0.055 -> 0.06,
-        # GST 18% of 1.69 = 0.3042 -> 0.30, DP 14.75
-        (date(2025, 1, 10), "sell", D(550), D("71.74")),
-        # 2016-03-01: STT 55.00, Maharashtra stamp 0.005% 2.75 on the sell too, NSE 0.00325%
-        # 1.7875 -> 1.79, SEBI 0.06, service tax 14.5% of 1.85 = 0.26825 -> 0.27, DP 14.75
-        (date(2016, 3, 1), "sell", D(550), D("74.62")),
+        # 100 x 500 = 50,000 on 2025-01-10: STT 50.00, stamp 7.50, NSE 0.00297% 1.485 -> 1.49,
+        # SEBI 0.05, IPFT 0.05, GST 18% of 1.59 = 0.2862 -> 0.29
+        (date(2025, 1, 10), "buy", D(500), D("59.38")),
+        # 100 x 550 = 55,000: STT 55.00, NSE 1.6335 -> 1.63, SEBI 0.055 -> 0.06, IPFT 0.06,
+        # GST 18% of 1.75 = 0.315 -> 0.32, DP 14.75
+        (date(2025, 1, 10), "sell", D(550), D("71.82")),
+        # 2016-03-01: STT 55.00, Maharashtra stamp 0.01% 5.50 on the sell too, NSE 0.00325%
+        # 1.7875 -> 1.79, SEBI Rs 20/cr 0.11 (no tax), service tax 14.5% of 1.79 = 0.25955
+        # -> 0.26, DP 17.75 (Rs 15.50 + 14.5%)
+        (date(2016, 3, 1), "sell", D(550), D("80.41")),
+        # 2018-06-01 buy 50,000: STT 50.00, stamp 0.01% 5.00, NSE 1.625 -> 1.63, SEBI Rs 15/cr
+        # 0.075 -> 0.08 (no GST), GST 18% of 1.63 = 0.2934 -> 0.29
+        (date(2018, 6, 1), "buy", D(500), D("57.00")),
+        # 2021-06-01 sell 55,000: STT 55.00, no stamp, NSE 0.00345% 1.8975 -> 1.90, SEBI 0.06
+        # (no GST), GST 18% of 1.90 = 0.342 -> 0.34, DP 18.29 (Rs 15.50 + 18%)
+        (date(2021, 6, 1), "sell", D(550), D("75.59")),
+        # 2022-09-01 sell 55,000: as above but SEBI's fee bears GST (from 2022-07-18): GST 18%
+        # of 1.96 = 0.3528 -> 0.35, and DP 14.75 (Rs 12.50 + 18%, from 2021-08-05)
+        (date(2022, 9, 1), "sell", D(550), D("72.06")),
     ],
 )
 def test_charges_hand_worked(day: date, side: str, price: D, want: D) -> None:

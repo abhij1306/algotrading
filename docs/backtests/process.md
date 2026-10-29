@@ -149,6 +149,11 @@ whose audit warns or fails):
   intraday-results report: `python scripts/research/s2_ep_intraday_results.py
   --strategy-version <id> --universe <name> [--from D] [--to D]` (in-sample only), to
   `reports/s2-ep/b7/`.
+- The look-ahead check of an engine change: `python scripts/research/bt_truncation.py truncation
+  --portfolio <file> --from D --at T [--extra 63]` runs the portfolio to T and to T + N sessions
+  in memory on real data and lists any watchlist, signal, fill, rebalance or equity difference up
+  to T (empty: none); `fingerprint --from D --to E` prints a run's resolved and trade-list hashes
+  and content digests, to compare a run before and after a change. Never past 2024-12-31.
 
 ### Data audit (`data_audit.json`, `app/hat/data/audit.py`)
 
@@ -177,6 +182,7 @@ whose audit warns or fails):
 | `liquidity` | `position_pct_adv` wrong | an entry > 5% of 20-day traded value |
 | `concentration` | top-5 share disagrees | top 5 trades > 50% of net P&L; CAGR not positive without them |
 | `equity_jumps` | a > 5% session move with no position held (one opened and closed that session counts) | a move beyond 20% of the value held |
+| `ledger` | the ledger reconciliation failed (`result-standard.md`, Accuracy checks), or `equity.csv` does not add up: equity != cash + position value, the last equity is not `final_equity`, or something is held after the period end | |
 | `refusals` | `refusals.csv` counts differ from `run.json` | |
 | `trials` | no `dsr_n_trials` | no DSR |
 | `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |

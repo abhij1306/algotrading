@@ -1,0 +1,13 @@
+# NSE delivery (CNC) charges in force from 2024-04-01 until the next file's effective_from.
+# Change: NSE cuts transaction charges by 1%. Sources: docs/backtests/costs.md.
+version: cnc-delivery-2
+effective_from: "2024-04-01"
+gst_rate: "0.18"  # GST 18% on financial services (CGST + SGST / IGST Acts 2017)
+dp_per_sell_day: "14.75"  # Fyers Rs 12.50 + 18% GST per scrip per sell day, flat, tax included
+components:
+  - {name: brokerage, sides: [buy, sell], rate: "0", per_order: "0", taxable: true}
+  - {name: stt, sides: [buy, sell], rate: "0.001", taxable: false}  # 0.1% delivery, Finance Act 2004 s.98 as amended 2013
+  - {name: stamp_duty, sides: [buy], rate: "0.00015", taxable: false}  # 0.015% on buys, Indian Stamp Act as amended by Finance Act 2019
+  - {name: exchange_txn, sides: [buy, sell], rate: "0.0000322", taxable: true}  # NSE 0.00322%, NSE/FA/61137
+  - {name: sebi_fee, sides: [buy, sell], rate: "0.000001", taxable: true}  # Rs 10 per crore, SEBI/LAD-NRO/GN/2019/03
+  - {name: ipft, sides: [buy, sell], rate: "0.000001", taxable: true}  # NSE IPFT Rs 10 per crore, NSE/FA/56129

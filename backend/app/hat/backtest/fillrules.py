@@ -15,6 +15,7 @@ from ..money import require_exact
 
 __all__ = [
     "breakout_volume_ok",
+    "close_lower_locked",
     "first_trigger",
     "full_day_pace_skip",
     "inferred_band",
@@ -109,7 +110,25 @@ def lower_circuit_locked(
     if prev_close is None or prev_close <= 0 or tick is None or tick <= 0:
         return None
     open_, high, low, close = ohlc
-    if not open_ == high == low == close or close >= prev_close:
+    if not open_ == high == low == close:
+        return False
+    return _at_lower_band(close, prev_close, tick)
+
+
+def close_lower_locked(
+    close: Decimal, low: Decimal, prev_close: Decimal | None, tick: Decimal | None
+) -> bool | None:
+    """Whether a session closed locked at its lower circuit (it reached the band and stayed: the
+    close is the day's low, within one tick of an NSE band's lower price under the previous
+    close), read as `lower_circuit_locked` reads a whole day: a sale at that close (a close
+    rule's, live's 15:15 one) found no buyer. None without a previous close or a tick."""
+    if prev_close is None or prev_close <= 0 or tick is None or tick <= 0:
+        return None
+    return close == low and _at_lower_band(close, prev_close, tick)
+
+
+def _at_lower_band(close: Decimal, prev_close: Decimal, tick: Decimal) -> bool:
+    if close >= prev_close:
         return False
     for band in NSE_BANDS:
         daily = trigger.DailyInputs(

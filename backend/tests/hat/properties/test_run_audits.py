@@ -285,15 +285,16 @@ BARS = {
     ("b", DAYS[4]): (D(189), D(195)),
 }
 EQUITY = (
-    "date,equity,position_value\n2024-01-02,1000000,10000\n2024-01-05,1001000,6000\n"
-    "2024-01-08,1000980,0\n"
+    "date,equity,position_value,cash\n2024-01-02,1000000,10000,990000\n"
+    "2024-01-05,1001000,6000,995000\n2024-01-08,1000980,0,1000980\n"
 )
+LEDGER = {"status": "pass", "findings": []}
 REFUSALS = "date,symbol,reason\n2024-01-03,CCC,max_positions\n2024-01-04,DDD,max_positions\n"
 
 
 def _audit(run: dict, trades: str = TRADES, equity: str = EQUITY, bars: dict = BARS) -> dict:
     doc = run_audit.audit_run(
-        run, {"trades": trades, "equity": equity, "refusals": REFUSALS}, bars, D(20)
+        run, {"trades": trades, "equity": equity, "refusals": REFUSALS}, bars, D(20), ledger=LEDGER
     )
     return {c["name"]: c for c in doc["checks"]} | {"_": doc}
 

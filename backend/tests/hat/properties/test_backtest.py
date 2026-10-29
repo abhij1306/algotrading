@@ -26,6 +26,7 @@ from app.hat.backtest.data import (
 )
 from app.hat.backtest.fillrules import (
     NSE_BANDS,
+    close_lower_locked,
     inferred_band,
     lower_circuit_locked,
     pre_break_low,
@@ -426,6 +427,17 @@ def test_lower_circuit_inferred(prev_close: D, band: D, tick: D) -> None:
     assert lower_circuit_locked(at(between), prev_close, tick) is expected
     assert lower_circuit_locked(at(lower), None, tick) is None
     assert lower_circuit_locked(at(lower), prev_close, None) is None
+
+
+def test_close_locked_at_the_lower_band() -> None:
+    """A session that fell to its lower band and closed there (close = low at the band) closed
+    locked: a sale at that close found no buyer. Prev close 100, tick 0.05: the 10% band's
+    lower price is 90."""
+    prev, tick = D(100), D("0.05")
+    assert close_lower_locked(D(90), D(90), prev, tick) is True
+    assert close_lower_locked(D("90.05"), D(90), prev, tick) is False  # bounced off it
+    assert close_lower_locked(D(93), D(93), prev, tick) is False  # no band at 7%
+    assert close_lower_locked(D(90), D(90), None, tick) is None
 
 
 @given(

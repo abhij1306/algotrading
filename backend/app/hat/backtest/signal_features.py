@@ -213,7 +213,8 @@ class SignalFeatures:
         return {name: out.get(name) for name in FEATURE_COLUMNS}
 
     def _volume_ratio(self, instrument_id: str, day: date) -> float | None:
-        volumes = self.view.volumes_through(instrument_id, day, VOLUME_BASELINE + 1)
+        with self.view.hindsight():  # the day's own volume: known at its close (the docstring)
+            volumes = self.view.volumes_through(instrument_id, day, VOLUME_BASELINE + 1)
         if len(volumes) <= VOLUME_BASELINE or any(math.isnan(v) for v in volumes):
             return None
         base = sum(volumes[:-1]) / VOLUME_BASELINE

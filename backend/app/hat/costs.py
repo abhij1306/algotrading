@@ -48,7 +48,7 @@ __all__ = [
 
 Side = Literal["buy", "sell"]
 SIDES: tuple[Side, ...] = ("buy", "sell")
-DEFAULT_COST_MODEL = "cnc-delivery-1"
+DEFAULT_COST_MODEL = "cnc-delivery-2"
 MAX_SLIPPAGE_BPS = Decimal(10_000)  # a slippage must be below 100%
 # The slippage a run uses unless it names one (O5, PR 62): pessimistic, never perfect fills.
 DEFAULT_SLIPPAGE_BPS = Decimal(20)

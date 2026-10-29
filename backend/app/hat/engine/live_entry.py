@@ -235,8 +235,9 @@ def ep_setup_passes(
     evening; a trigger-stage type over daily bars (`neglect`) as of `trade_date`, reading the
     bars before it. Either way the trade date's own bar, which does not exist at the open, is
     never read. Like the nightly scan, which evaluates only the members with a bar on its date,
-    an instrument without a bar on `previous` does not pass, nor do no bars or a setup with no
-    enabled criterion (fail closed)."""
+    an instrument without a bar on `previous` does not pass, nor do no bars (fail closed). A
+    setup whose hard criteria are all switched off passes: the universe and the trigger still
+    decide, as a nightly setup with no enabled criterion does."""
     return ep_gate(playbook, bars, trade_date, previous, universe, series) is None
 
 
@@ -260,7 +261,7 @@ def ep_gate(
     config's universe uses `price_band_allowed`)."""
     enabled = [c for c in playbook.setup.criteria if c.enabled and c.mode == "hard"]
     before = bars.filter(pl.col("date") < trade_date)
-    if not enabled or before.is_empty() or previous is None or before["date"].max() != previous:
+    if before.is_empty() or previous is None or before["date"].max() != previous:
         return EP_SETUP
     on_gap_day = EvalContext(as_of=trade_date, instrument_id="", bars=before)
     previous_ctx = EvalContext(as_of=previous, instrument_id="", bars=before, series=series)

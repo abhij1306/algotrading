@@ -13,6 +13,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
+from typing import Any
 
 from ..risk.decision import Reason
 from .overlay import INSUFFICIENT_CREDIT
@@ -32,6 +33,7 @@ __all__ = [
     "changed_paths",
     "drawdowns",
     "exit_code",
+    "exit_sma",
     "fwd_r",
     "max_consecutive_losses",
     "quintile",
@@ -361,10 +363,25 @@ def top_share_pct(pnls: Iterable[Decimal], top: int, total: Decimal) -> float | 
     return float(sum(best, Decimal(0)) / total * 100)
 
 
+CLOSE_BELOW_SMA = "close_below_sma"
+
+
+def exit_sma(rules: Sequence[Any], rules_fired: Iterable[str]) -> int | None:
+    """The length of the `close_below_sma` rule of the exit stack `rules` that closed a trade:
+    the one that fired on it (`rules_fired`, `index:rule` ids), else the stack's only enabled
+    one; None when the stack has none or several of different lengths."""
+    fired = {
+        rules[int(rid.split(":", 1)[0])].sma
+        for rid in rules_fired
+        if rid.endswith(":" + CLOSE_BELOW_SMA) and int(rid.split(":", 1)[0]) < len(rules)
+    }
+    found = fired or {r.sma for r in rules if r.rule == CLOSE_BELOW_SMA and r.enabled}
+    return found.pop() if len(found) == 1 else None
+
+
 # The engine's exit rules onto the spec's exit codes; any other reason is written as the engine
 # names it (`demerger`, `delisted`, `early_failure`, `trailing_atr`, ...).
 EXIT_OF: Mapping[str, str] = {
-    "close_below_sma": "sma50_close",
     "time_stop": "time_stop",
     "max_hold": "time_stop",
     "partial_at_r": "partial_target",
@@ -382,11 +399,18 @@ _TRAILS = (
 
 
 def exit_code(
-    reason: str, initial_stop: Decimal, final_stop: Decimal | None, rules_fired: Iterable[str]
+    reason: str,
+    initial_stop: Decimal,
+    final_stop: Decimal | None,
+    rules_fired: Iterable[str],
+    sma: int | None = None,
 ) -> str:
     """The spec's exit code of a closed trade: a `hard_stop` exit is `initial_stop` while the
-    stop never moved, else the trail that raised it (`trail_step`, `trail_swing_low`, ...);
-    the other engine reasons through `EXIT_OF`, or as named."""
+    stop never moved, else the trail that raised it (`trail_step`, `trail_swing_low`, ...); a
+    `close_below_sma` exit is `sma<n>_close` with the rule's length `sma` (`sma_close` when the
+    stack does not say which); the other engine reasons through `EXIT_OF`, or as named."""
+    if reason == CLOSE_BELOW_SMA:
+        return f"sma{sma}_close" if sma is not None else "sma_close"
     if reason != "hard_stop":
         return EXIT_OF.get(reason, reason)
     if final_stop is None or final_stop <= initial_stop:

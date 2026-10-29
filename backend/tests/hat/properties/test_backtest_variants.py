@@ -177,6 +177,14 @@ def test_apply_config_changes_only_the_named_values() -> None:
     with pytest.raises(OverrideError, match="backtest_override_invalid"):
         no_hard_stop.apply_config(config)
     assert Overrides(sets=(("bot", "other"),)).touches_identity()
+    # a set to the value in force changes nothing, and is refused
+    same = config.to_json()["exits"][0]
+    for path, value in (
+        ("exits[0]", same),
+        ("exits[trailing_swing_low].lookback_days", rules["trailing_swing_low"].lookback_days),
+    ):
+        with pytest.raises(OverrideError, match="backtest_override_no_op"):
+            Overrides(sets=((path, value),)).apply_config(changed if "swing" in path else config)
 
 
 def test_apply_policy_and_record() -> None:
@@ -251,23 +259,32 @@ def test_candidate_policy_then_fields_then_caps() -> None:
     candidate = policy_text(json.dumps(doc))
     overrides = Overrides(
         policy=candidate,
-        policy_sets=(("health_bands.half_dd", "0.12"), ("health_bands.zero_dd", "0.15")),
+        policy_sets=(("adv_cap_pct", "0.02"), ("max_entries_per_day", 5)),
         max_positions=10,
     )
     changed = overrides.apply_policy(version)
     assert changed.version_id == version.version_id
     got = changed.policy
     assert (got.global_open_risk_pct, got.account_drawdown_pct) == (D("0.03"), D("0.20"))
-    assert (got.health_half_dd, got.health_zero_dd) == (D("0.12"), D("0.15"))
+    assert (got.adv_cap_pct, got.max_entries_per_day) == (D("0.02"), 5)
     assert got.max_open_positions == 10
+    # a playbook's key is a policy path segment as it is (hyphens included)
+    p_max = Overrides(policy_sets=(("p_max.stage2-contraction-breakout", "1"),))
+    assert p_max.apply_policy(version).policy.to_json()["p_max"]["stage2-contraction-breakout"]
     record = overrides.record()
     assert record["policy"] == {"digest": policy_digest(candidate), "document": candidate.to_json()}
-    assert record["policy_set"][0] == {"path": "health_bands.half_dd", "value": "0.12"}
+    assert record["policy_set"][0] == {"path": "adv_cap_pct", "value": "0.02"}
     assert policy_digest(candidate) != policy_digest(version.policy)
     for sets, code in (
-        ((("kill.nope", "0.1"),), "backtest_bad_override_path"),
+        ((("adv_cap_pct.x", "0.1"),), "backtest_bad_override_path"),
         ((("risk_pct.x", "0.1"),), "backtest_bad_override_path"),
-        ((("health_bands.zero_dd", "0.05"),), "backtest_override_invalid"),
+        ((("max_entries_per_day", 0),), "backtest_override_invalid"),
+        # a field no backtest reads, and a set to the value in force, change nothing
+        ((("kill.account_drawdown_pct", "0.1"),), "backtest_override_no_effect"),
+        ((("health_bands.half_dd", "0.12"),), "backtest_override_no_effect"),
+        ((("base_weight.x", "0.5"),), "backtest_override_no_effect"),
+        ((("adv_cap_pct", "0.010"),), "backtest_override_no_op"),
+        ((("p_max.stage2-contraction-breakout", "0.2"),), "backtest_override_no_op"),
     ):
         bad_sets = Overrides(policy_sets=sets)
         with pytest.raises(OverrideError, match=code):
@@ -386,7 +403,9 @@ def test_a_sweep_with_an_unknown_path_fails_before_any_run() -> None:
             "backtest_bad_override_path",
         ),
         ({"set": ["exits[nope].enabled=false"]}, "backtest_override_no_item"),
-        ({"policy_set": ["kill.bot_drawdwn_pct=0.15"]}, "backtest_bad_override_path"),
+        ({"policy_set": ["adv_cap_pctt=0.15"]}, "backtest_bad_override_path"),
+        ({"policy_set": ["kill.bot_drawdown_pct=0.15"]}, "backtest_override_no_effect"),
+        ({"set": ["exits[0].enabled=true"]}, "backtest_override_no_op"),
     ):
         sweep = parse_variants(_sweep({"label": "a"}, {"label": "b", **bad}), RunConventions())
         with pytest.raises(BacktestError, match=code):
