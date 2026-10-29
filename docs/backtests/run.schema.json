@@ -233,6 +233,18 @@
             "integer",
             "null"
           ]
+        },
+        "verified": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "verify_report": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       }
     },

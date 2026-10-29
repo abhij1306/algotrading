@@ -164,6 +164,7 @@ whose audit warns or fails):
 | `industries` | | > 5% of the member-days have no industry (`unknown`); a run (a sweep variant alone) whose policy caps positions per industry below its open positions while any member-day has no industry is refused `backtest_industry_cap_without_industries` |
 | `demergers` | | a member demerger whose ex-day open and close gaps differ > 15% and whose factor is not the close gap; the summary counts the period's undated member demergers (no `announced_on`) |
 | `golden` | a golden sample value drifted or missing; an unreadable golden file | an unresolvable key; a recorded mismatch still open; no golden file yet |
+| `verify` | | no data verification report (`python -m app.hat.data.verify`, runbook) covers the window, or a blocking check of the newest one that does failed or did not run (D1-D3, D5-D7; D4 too when the run reads 5-minute bars): the run is unverified (`run.json` `data.verified` false), not refused |
 
 ### Run audit (`audit.json`, `app/hat/backtest/run_audit.py`)
 

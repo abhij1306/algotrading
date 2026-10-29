@@ -49,7 +49,7 @@ from ..costs import (
     load_cost_schedule,
 )
 from ..data import audit as data_audit
-from ..data import golden
+from ..data import golden, verify
 from ..data.index_history import NIFTY_500_TRI
 from ..data.store import DataStore
 from ..engine.portfolio.common import market_id_of
@@ -427,11 +427,13 @@ def _load(
     used_5m = data.intraday is not None and any(
         s.conventions.entry_bars == ENTRY_BARS_5M for s in specs
     )
+    verified = verify.status_for(root, *period, used_5m=used_5m)
     key = data_audit.cache_key(
         str(snapshot["content_digest"]),
         *period,
         used_5m=used_5m,
         golden_digest=golden.current(root),
+        verify_digest=verified.get("digest"),
     )
     audit, _ = data_audit.cached(
         root,
@@ -443,6 +445,7 @@ def _load(
             snapshot,
             *period,
             used_5m=used_5m,
+            verified=verified,
         ),
     )
     if audit.get("status") == data_audit.FAIL:

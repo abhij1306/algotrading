@@ -39,13 +39,17 @@ The checks (each a pure function of plain inputs; `gather` reads them):
   `DEMERGER_GAP_PCT`, and whose factor is not the close gap (no correction took it there), warns;
   the summary counts the member demergers in the period with no `announced_on` (the run cannot
   exit before them, `demerger_notice.exit_day`), which run.json `data` carries too.
+- `verify`: the data verification report covering the window (`data/verify`, `status_for`): no
+  report, or a blocking check of it that failed or did not run, warns `verify_report_missing`,
+  `verify_blocking_failed` or `verify_blocking_not_run`, and the run is unverified (run.json
+  `data.verified`); a run is not refused for it.
 - `golden`: the newest golden sample (`data/golden.py`, docs/backtests/golden-sample.md) looked up
   in the current stores: a drifted or missing value fails, as does an unreadable golden file; an
   unresolvable key, a recorded mismatch still open, or no golden file yet warns.
 
 A run's audit is kept under `HAT_DATA_ROOT/backtests/data_audits/` by its data snapshot, window,
-use of 5-minute bars and golden file (`cache_key`), so the variants of a sweep, and
-later runs on the same data, read it instead of recomputing it. A run refuses to start on
+use of 5-minute bars, golden file and verification report (`cache_key`), so the variants of a
+sweep, and later runs on the same data, read it instead of recomputing it. A run refuses to start on
 `fail` (`backtest_data_audit_failed`). The owner explains a `warn` once, beside it, as
 `<digest>.explained.md` (`explanation_of`); the run audit and the review read it.
 """
@@ -112,14 +116,16 @@ __all__ = [
     "check_gate_inputs",
     "check_missing_sessions",
     "check_survivorship",
+    "check_result",
     "check_unique_keys",
+    "check_verify",
     "gather",
     "industry_cap_refused",
     "read_cached",
     "run_counts",
 ]
 
-AUDIT_VERSION = "3"  # a change to a check or a threshold changes it, so no stale audit is read
+AUDIT_VERSION = "4"  # a change to a check or a threshold changes it, so no stale audit is read
 PASS, WARN, FAIL, SKIPPED = "pass", "warn", "fail", "skipped"
 _RANK = {PASS: 0, SKIPPED: 0, WARN: 1, FAIL: 2}
 # Findings listed per check; the counts cover them all.
@@ -159,13 +165,15 @@ FEATURE_TOLERANCE = 1e-9  # relative; a rolling mean's last bits depend on where
 PER_INSTRUMENT = tuple(n for n in FEATURE_NAMES if n not in {"rs_pct", "mom_rank"})
 
 
-def _check(name: str, summary: Mapping[str, Any], findings: Sequence[Mapping[str, Any]]) -> dict:
+def check_result(
+    name: str, summary: Mapping[str, Any], findings: Sequence[Mapping[str, Any]]
+) -> dict:
     """A check's result: its status is its worst finding's severity."""
     status = max((f["severity"] for f in findings), key=_RANK.__getitem__, default=PASS)
     return {"name": name, "status": status, "summary": dict(summary), "findings": list(findings)}
 
 
-def _finding(code: str, severity: str, items: Sequence[Any], **extra: object) -> dict[str, Any]:
+def finding(code: str, severity: str, items: Sequence[Any], **extra: object) -> dict[str, Any]:
     return {
         "code": code,
         "severity": severity,
@@ -196,13 +204,13 @@ def check_calendar(
     findings = []
     extra = sorted(stored - sessions)
     if extra:
-        findings.append(_finding("store_day_not_session", FAIL, [_iso(d) for d in extra]))
+        findings.append(finding("store_day_not_session", FAIL, [_iso(d) for d in extra]))
     missing = sorted(sessions - stored)
     if missing:
-        findings.append(_finding("session_missing_from_store", FAIL, [_iso(d) for d in missing]))
+        findings.append(finding("session_missing_from_store", FAIL, [_iso(d) for d in missing]))
     if window and end > last and any(d > last for d in trading if d <= end):
-        findings.append(_finding("data_ends_before_period", WARN, [_iso(last)]))
-    return _check(
+        findings.append(finding("data_ends_before_period", WARN, [_iso(last)]))
+    return check_result(
         "calendar",
         {"sessions": len(sessions), "stored": len(window), "store_last": _iso(last)},
         findings,
@@ -278,10 +286,10 @@ def check_missing_sessions(
     findings = []
     heavy = [r for r in rows if r["missing_pct"] > MISSING_WARN_PCT]
     if heavy:
-        findings.append(_finding("member_sessions_missing", WARN, heavy))
+        findings.append(finding("member_sessions_missing", WARN, heavy))
     share = 100 * gaps / total if total else 0.0
     if share > MISSING_FAIL_PCT:
-        findings.append(_finding("universe_sessions_missing", FAIL, [round(share, 3)]))
+        findings.append(finding("universe_sessions_missing", FAIL, [round(share, 3)]))
     summary = {
         "member_sessions": total,
         "missing": gaps,
@@ -289,7 +297,7 @@ def check_missing_sessions(
         "symbols_with_gaps": len(rows),
         "worst": rows[:MAX_LISTED],
     }
-    return _check("missing_sessions", summary, findings)
+    return check_result("missing_sessions", summary, findings)
 
 
 def _member_on(spans: Sequence[tuple[date, date | None]], day: date) -> bool:
@@ -322,7 +330,7 @@ def check_survivorship(
     warns, and a window of `SURVIVOR_MIN_DAYS` or more whose samples hold no leaver fails."""
     sessions = sorted(d for d in sessions if start <= d <= end)
     if not sessions:
-        return _check("survivorship", {"samples": []}, [])
+        return check_result("survivorship", {"samples": []}, [])
     rows, leavers = [], set()
     for day in _year_starts(sessions):
         members = [i for i, s in spans.items() if _member_on(s, day)]
@@ -347,13 +355,13 @@ def check_survivorship(
             thin.append(row)
     findings = []
     if empty:
-        findings.append(_finding("leaver_without_bars", FAIL, empty))
+        findings.append(finding("leaver_without_bars", FAIL, empty))
     if thin:
-        findings.append(_finding("leaver_bars_thin", WARN, thin))
+        findings.append(finding("leaver_bars_thin", WARN, thin))
     if not leavers and (end - start).days >= SURVIVOR_MIN_DAYS:
-        findings.append(_finding("no_leavers", FAIL, [r["date"] for r in rows]))
+        findings.append(finding("no_leavers", FAIL, [r["date"] for r in rows]))
     summary = {"samples": rows, "leavers": len(leavers)}
-    return _check("survivorship", summary, findings)
+    return check_result("survivorship", summary, findings)
 
 
 # --- corporate actions -------------------------------------------------------------------------
@@ -445,7 +453,7 @@ def check_corporate_actions(
             if action_shaped(jump["raw_move_pct"]):
                 shaped.append(row)
     findings = [
-        _finding(code, severity, items, **extra)
+        finding(code, severity, items, **extra)
         for code, severity, items, extra in (
             ("bad_adjustment_factor", FAIL, bad, {}),
             ("ex_date_jump", WARN, at_ex, {"threshold_pct": JUMP_PCT}),
@@ -463,7 +471,7 @@ def check_corporate_actions(
         "threshold_pct": JUMP_PCT,
         "largest_elsewhere": off_ex[:MAX_LISTED],
     }
-    return _check("corporate_actions", summary, findings)
+    return check_result("corporate_actions", summary, findings)
 
 
 # --- lookahead ---------------------------------------------------------------------------------
@@ -498,7 +506,7 @@ def check_features(
         if off:
             wrong.append({"instrument_id": instrument_id, "date": _iso(day), "features": off})
     return [
-        _finding(code, FAIL, items)
+        finding(code, FAIL, items)
         for code, items in (("feature_not_point_in_time", wrong), ("feature_row_missing", missing))
         if items
     ]
@@ -531,7 +539,7 @@ def check_breadth(
             continue
         if stored is None or fresh is None or abs(stored - fresh) > 100.0 / max(counted, 1) + 1e-9:
             wrong.append({"date": _iso(day), "stored": stored, "recounted": fresh})
-    return [_finding("breadth_not_point_in_time", FAIL, wrong)] if wrong else []
+    return [finding("breadth_not_point_in_time", FAIL, wrong)] if wrong else []
 
 
 def check_gate_inputs(
@@ -557,9 +565,9 @@ def check_gate_inputs(
             no_breadth.append(_iso(day))
     findings = []
     if no_close:
-        findings.append(_finding("no_index_close_before", WARN, no_close))
+        findings.append(finding("no_index_close_before", WARN, no_close))
     if no_breadth:
-        findings.append(_finding("no_breadth_before", WARN, no_breadth))
+        findings.append(finding("no_breadth_before", WARN, no_breadth))
     return findings
 
 
@@ -576,7 +584,7 @@ def check_unique_keys(
     (index, date): any duplicate fails (the loader would keep one of them silently)."""
     findings = []
     if bar_dupes:
-        findings.append(_finding("duplicate_bar", FAIL, list(bar_dupes)))
+        findings.append(finding("duplicate_bar", FAIL, list(bar_dupes)))
     for code, keys in (
         ("duplicate_feature_row", feature_keys),
         ("duplicate_index_close", index_keys),
@@ -588,8 +596,8 @@ def check_unique_keys(
                 dupes.append([key[0], _iso(key[1])])
             seen.add(key)
         if dupes:
-            findings.append(_finding(code, FAIL, dupes))
-    return _check("unique_keys", {"daily_dates": "date (IST trade date, no time)"}, findings)
+            findings.append(finding(code, FAIL, dupes))
+    return check_result("unique_keys", {"daily_dates": "date (IST trade date, no time)"}, findings)
 
 
 @dataclass(frozen=True)
@@ -656,9 +664,9 @@ def check_bars_5m(days: Iterable[Day5m], scanned: int, *, used: bool) -> dict[st
             }
             for d in rows
         ]
-        findings.append(_finding(code, severity, items, threshold_pct=CLOSE_5M_PCT))
+        findings.append(finding(code, severity, items, threshold_pct=CLOSE_5M_PCT))
     summary = {"days_scanned": scanned, "off": by_kind, "used_by_run": used}
-    return _check("bars_5m", summary, findings)
+    return check_result("bars_5m", summary, findings)
 
 
 # --- industries and demergers ------------------------------------------------------------------
@@ -680,7 +688,7 @@ def check_industries(
     findings = []
     if pct > INDUSTRY_UNKNOWN_PCT:
         findings.append(
-            _finding("industry_unknown", WARN, items, threshold_pct=INDUSTRY_UNKNOWN_PCT)
+            finding("industry_unknown", WARN, items, threshold_pct=INDUSTRY_UNKNOWN_PCT)
         )
     summary = {
         "member_days": total,
@@ -688,7 +696,7 @@ def check_industries(
         "unknown_pct": pct,
         "unknown_members": len(per_chain),
     }
-    return _check("industries", summary, findings)
+    return check_result("industries", summary, findings)
 
 
 INDUSTRY_CAP_REFUSED = "backtest_industry_cap_without_industries"
@@ -745,13 +753,13 @@ def check_demergers(rows: Iterable[Demerger], start: date, end: date) -> dict[st
             )
     findings = []
     if thin:
-        findings.append(_finding("demerger_thin_open", WARN, thin, threshold_pct=DEMERGER_GAP_PCT))
+        findings.append(finding("demerger_thin_open", WARN, thin, threshold_pct=DEMERGER_GAP_PCT))
     summary = {
         "gaps_checked": checked,
         "undated_member_demergers": len(undated),
         "undated": undated[:MAX_LISTED],
     }
-    return _check("demergers", summary, findings)
+    return check_result("demergers", summary, findings)
 
 
 # --- golden sample ---------------------------------------------------------------------------
@@ -764,7 +772,7 @@ def check_golden(result: Mapping[str, Any] | None, problem: str | None = None) -
     if result is None:
         code = problem or "golden_file_missing"
         severity = WARN if code == "golden_file_missing" else FAIL
-        return _check("golden", {"file": None}, [_finding(code, severity, [])])
+        return check_result("golden", {"file": None}, [finding(code, severity, [])])
     shown = ("id", "kind", "risk", "status", "value", "store_value", "note")
 
     def listed(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -775,11 +783,11 @@ def check_golden(result: Mapping[str, Any] | None, problem: str | None = None) -
     still_open = [o for o in result["mismatches"] if o["status"] == golden.OPEN]
     findings = []
     if drift:
-        findings.append(_finding("golden_drift", FAIL, listed(drift)))
+        findings.append(finding("golden_drift", FAIL, listed(drift)))
     if unresolved:
-        findings.append(_finding("golden_key_unresolved", WARN, listed(unresolved)))
+        findings.append(finding("golden_key_unresolved", WARN, listed(unresolved)))
     if still_open:
-        findings.append(_finding("golden_mismatch_open", WARN, listed(still_open)))
+        findings.append(finding("golden_mismatch_open", WARN, listed(still_open)))
     summary = {
         "file": result["golden_file"],
         "digest": result["golden_digest"],
@@ -788,7 +796,7 @@ def check_golden(result: Mapping[str, Any] | None, problem: str | None = None) -
         "counts": result["counts"],
         "mismatch_counts": result["mismatch_counts"],
     }
-    return _check("golden", summary, findings)
+    return check_result("golden", summary, findings)
 
 
 def _golden(
@@ -802,6 +810,27 @@ def _golden(
     except golden.GoldenError as exc:
         return check_golden(None, exc.code)
     return check_golden(result)
+
+
+def check_verify(status: Mapping[str, Any]) -> dict[str, Any]:
+    """The window's data verification (`verify.window_status`): no report, or a blocking check
+    that failed or did not run, warns; the summary says whether the window is verified."""
+    findings = []
+    if status.get("report") is None:
+        findings.append(finding("verify_report_missing", WARN, list(status.get("not_run") or ())))
+    else:
+        if status.get("failed"):
+            findings.append(finding("verify_blocking_failed", WARN, list(status["failed"])))
+        if status.get("not_run"):
+            findings.append(finding("verify_blocking_not_run", WARN, list(status["not_run"])))
+    summary = {
+        "verified": bool(status.get("verified")),
+        "report": status.get("report"),
+        "digest": status.get("digest"),
+        "created": status.get("created"),
+        "checks": status.get("checks") or {},
+    }
+    return check_result("verify", summary, findings)
 
 
 # --- the document ------------------------------------------------------------------------------
@@ -832,12 +861,14 @@ def cache_key(
     *,
     used_5m: bool,
     golden_digest: str | None,
+    verify_digest: str | None = None,
 ) -> str:
     """The audit's name under `data_audits/`: the audit version, the data snapshot (which covers
     the universe's members and every bar, feature and close the run reads), the window, whether
-    the run reads 5-minute bars, and the sha256 of the golden
-    file the `golden` check reads (`golden.current`), so a new golden file is checked."""
-    text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}"
+    the run reads 5-minute bars, the sha256 of the golden
+    file the `golden` check reads (`golden.current`), so a new golden file is checked, and the
+    digest of the verification report covering the window, so a new report is read."""
+    text = f"{AUDIT_VERSION}|{snapshot_id}|{start}|{end}|{used_5m}|{golden_digest}|{verify_digest}"
     return hashlib.sha256(text.encode()).hexdigest()[:32]
 
 
@@ -1181,11 +1212,17 @@ def gather(
     end: date,
     *,
     used_5m: bool = False,
+    verified: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The audit document of the market a run of `start..end` reads (`backtest.data.load_market`
     and its snapshot): reads what the checks need beyond it (the calendar, the store's duplicate
     keys, the sampled bars, features and breadth, the 5-minute store and the demergers) and runs
-    every check."""
+    every check. `verified` is the window's verification status (`verify.status_for`), read
+    here when not given."""
+    if verified is None:
+        from .verify import status_for  # noqa: PLC0415 - verify imports this module
+
+        verified = status_for(store.root, start, end, used_5m=used_5m)
     sessions = sorted(market.days)
     in_window = [d for d in sessions if start <= d <= end]
     names = _names(market)
@@ -1235,7 +1272,7 @@ def gather(
         check_missing_sessions(sessions, spans, bar_days, names, start, end),
         check_survivorship(sessions, spans, bar_days, market.last_traded, names, start, end),
         check_corporate_actions(series, sessions, market.skipped, names),
-        _check(
+        check_result(
             "lookahead",
             {
                 "feature_samples": len(feature_samples),
@@ -1252,10 +1289,11 @@ def gather(
         ),
         check_bars_5m(bars_5m, scanned_5m, used=used_5m)
         if scanned_5m
-        else _check("bars_5m", {"days_scanned": 0, "used_by_run": used_5m}, [])
+        else check_result("bars_5m", {"days_scanned": 0, "used_by_run": used_5m}, [])
         | {"status": SKIPPED},
         check_industries(in_window, spans, _history(market), names),
         check_demergers(demergers, start, end),
+        check_verify(verified),
         golden_check,
     ]
     scope = {
@@ -1274,11 +1312,15 @@ def gather(
 
 def run_counts(doc: Mapping[str, Any]) -> dict[str, Any]:
     """What run.json's `data` carries of the audit beyond its status: the share of member-days
-    with no industry and the undated member demergers (None from an audit without the check)."""
+    with no industry, the undated member demergers, and whether the window is verified and by
+    which report's digest (None from an audit without the check)."""
     found = {c.get("name"): c.get("summary") or {} for c in doc.get("checks", ())}
+    verify = found.get("verify", {})
     return {
         "industry_unknown_pct": found.get("industries", {}).get("unknown_pct"),
         "undated_member_demergers": found.get("demergers", {}).get("undated_member_demergers"),
+        "verified": verify.get("verified"),
+        "verify_report": verify.get("digest"),
     }
 
 
@@ -1316,6 +1358,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..engine.portfolio import regime  # noqa: PLC0415
     from ..models import HatUniverse  # noqa: PLC0415
     from ..settings import operator_settings  # noqa: PLC0415
+    from .verify import status_for  # noqa: PLC0415
 
     parser = argparse.ArgumentParser(prog="python -m app.hat.data.audit")
     parser.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
@@ -1349,12 +1392,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except BacktestError as exc:
             sys.stderr.write(f"data audit refused: {exc.code}\n")
             return 2
+        verified = status_for(settings.data_root, args.start, args.end, used_5m=False)
         key = cache_key(
             str(snapshot["content_digest"]),
             args.start,
             args.end,
             used_5m=False,
             golden_digest=golden.current(settings.data_root),
+            verify_digest=verified.get("digest"),
         )
         doc, path = cached(
             settings.data_root,
@@ -1366,6 +1411,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 snapshot,
                 args.start,
                 args.end,
+                verified=verified,
             ),
             refresh=args.refresh,
         )

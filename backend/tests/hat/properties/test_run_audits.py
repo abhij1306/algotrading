@@ -214,7 +214,7 @@ def test_demergers_flag_a_thin_open_not_corrected() -> None:
 
 
 def test_audit_doc_digest_and_cache(tmp_path: Path) -> None:
-    checks = [audit.check_unique_keys([], [], []), audit._check("x", {}, [])]
+    checks = [audit.check_unique_keys([], [], []), audit.check_result("x", {}, [])]
     doc = audit.audit_doc(checks, {"data_snapshot_id": "abc"})
     assert doc["status"] == audit.PASS
     assert doc["digest"] == audit.audit_doc(checks, {"data_snapshot_id": "abc"})["digest"]

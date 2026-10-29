@@ -384,6 +384,33 @@ metrics. `report` writes the coverage report (default
 `<HAT_DATA_ROOT>/fundamentals/coverage-<date>.md`). Every step is rerunnable: the same cache
 gives the same rows.
 
+### Data verification
+
+Compares the stored data with independent references (`app/hat/data/verify`, read-only: the
+database under a read-only transaction). From `backend/`, with `HAT_DATA_ROOT` and the database set:
+
+```bash
+python -m app.hat.data.verify [--check D1 ...] [--from YYYY-MM-DD] [--to YYYY-MM-DD] \
+    [--ca-data DIR] [--notices DIR] [--kotak DIR] [--fetch] [--report DIR]
+```
+
+D1 daily bars vs the bhavcopy files under `raw/`; D2 corporate actions vs NSE's corporate-action
+pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_unit_actions_*`,
+`dividends/ca_*.json`, `results_announcements_*`), the adjusted series' moves over 20% and a
+seeded sample of yearly total returns against Yahoo Finance; D3 NIFTY 500 membership vs the
+parsed notices and archived lists (`--notices`: `changes_parsed.json`, `overrides.json`); D4 the
+5-minute refused days vs the Kotak raw files (`--kotak`); D5 results `public_at` vs NSE's
+dissemination times (`--ca-data`); D6 calendar, suspensions and ISIN lineage vs NSE's symbol
+changes; D7 index, TRI and ETF series vs NSE's files. A check without its folder warns
+`reference_missing`. `--fetch` downloads a missing public reference file once, two seconds apart,
+into `raw/reference/<group>/` (NSE archives, Wayback captures, niftyindices, Yahoo); without it
+only kept files are read. The full window (2011-06-22 to the last bar) takes about 25 minutes.
+
+The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/`; the
+command exits 2 when a check fails. A backtest's data audit reads the newest report covering its
+window (`verify` check, `docs/backtests/process.md`). Findings are not corrected here: each goes
+through its own correction path (`correct-actions`, the membership and lineage tools).
+
 ### First live session checks (O2 day)
 
 Checks on the first session with a real Fyers account; note each in the Check log. They place
