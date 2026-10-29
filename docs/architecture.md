@@ -122,6 +122,10 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   credentials): the trading and runtime state. Watchlist, signal, approval, order, fill, position,
   trade result, holding baseline, kill switches, mode changes, exposure, regime state, allocations,
   events (`hat_event` monthly-partitioned), job runs, broker sessions, Telegram, snapshots.
+- **Data root and data repo**: what lives under `HAT_DATA_ROOT` and beside it is `docs/data-root.md`;
+  the private data repo holds the store manifests and reference CSVs (`app.hat.data.record`, pushed
+  by the daily update) and the snapshot releases (`scripts/hat_snapshot.py`; runbook, Data record
+  and Snapshot and restore).
 - **Configs** (`app.hat.configs`): `HAT_DATA_ROOT/admin/config/<kind>/<id>/<rev>.json`, one file
   per revision, schema-validated on load and never changed once written (`<kind>/<id>` is the
   record's uuid; a criterion type's is `<code>@<version>`). `<kind>/in_force.json` names each
@@ -228,5 +232,5 @@ and weights, so an undefined colour class or a weight above 500 generates nothin
 
 Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
 `SECRET_KEY`, `REDIRECT_URI`; `HAT_BROKER` and the Kite app `KITE_API_KEY`, `KITE_API_SECRET`,
-`KITE_REDIRECT_URI`; `DB_STATE_NAME` (hat_state's name); `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, the MCP URLs and
+`KITE_REDIRECT_URI`; `DB_STATE_NAME` (hat_state's name); `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_DATA_REPO`, the MCP URLs and
 Telegram secrets; `BACKEND_HOST`/`BACKEND_PORT` and logging for `backend/start_server.py`.

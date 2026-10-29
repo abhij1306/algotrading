@@ -1,0 +1,14 @@
+# The weekly snapshot release (docs/runbook.md, Snapshot and restore). Installed with
+# scripts/install_snapshot_timer.sh, which fills in @REPO@, @DATA_ROOT@, @DATA_REPO@ and @PG_DUMP@.
+[Unit]
+Description=HAT weekly snapshot release
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HAT_DATA_ROOT=@DATA_ROOT@ HAT_DATA_REPO=@DATA_REPO@ DB_NAME=hat_live
+Environment="HAT_PG_DUMP=@PG_DUMP@"
+ExecStart=@REPO@/scripts/hat_snapshot_weekly.sh
+Nice=10
+MemoryMax=2G
+TimeoutStartSec=6h

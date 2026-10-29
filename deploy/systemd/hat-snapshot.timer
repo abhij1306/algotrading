@@ -1,0 +1,11 @@
+# Sundays 10:00 IST, clear of the daily update (19:30 IST).
+# Persistent: a run missed while the machine was stopped or suspended runs when it is back.
+[Unit]
+Description=HAT weekly snapshot release, Sundays 10:00 IST
+
+[Timer]
+OnCalendar=Sun *-*-* 10:00:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target
