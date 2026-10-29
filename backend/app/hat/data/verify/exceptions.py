@@ -1,0 +1,108 @@
+"""Reviewed exceptions of D2 and D6: a failure that is explained and known, listed with why.
+
+The file (CSV) has one row per exception: `code` (the finding's code), `isin` (the item's ISIN;
+for a D2 reference action, any of its keys), `symbol` (for the reader), `day` (the item's day:
+an ex-date, a link's date, the last bar) and `reason`, which every row must give. There is no
+wildcard: an exception names one item, and a new failure is always reported. An excepted item
+moves to the `excepted` finding (warn) with its reason; an exception no failure uses is listed
+as `exception_unused` (warn), so the list cannot go stale unseen.
+"""
+
+from __future__ import annotations
+
+import csv
+from collections import Counter
+from collections.abc import Iterable, Mapping, Sequence
+from dataclasses import asdict, dataclass, field
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+from ..audit import WARN, finding
+
+DAY_FIELDS = ("ex_date", "effective", "date", "last_bar")
+
+
+@dataclass(frozen=True)
+class Excepted:
+    code: str
+    isin: str
+    day: str
+    reason: str
+    symbol: str = ""
+
+
+def read_exceptions(path: Path, check: str) -> list[Excepted]:
+    """The reviewed exceptions in `path`; a row without a reason or an ISO day is refused. A
+    missing file is no exceptions."""
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = [
+            Excepted(
+                r["code"].strip(),
+                r["isin"].strip().upper(),
+                r["day"].strip(),
+                r["reason"].strip(),
+                r.get("symbol", "").strip(),
+            )
+            for r in csv.DictReader(handle)
+        ]
+    bad = [r for r in rows if not r.reason or not _is_day(r.day) or not r.isin or not r.code]
+    if bad:
+        raise ValueError(f"{check} exceptions without a code, ISIN, day or reason: {bad[:3]}")
+    return rows
+
+
+def _is_day(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def item_keys(item: Mapping[str, Any]) -> tuple[set[str], str | None]:
+    """An item's ISINs (`isin`, `new_isin`, or the ISINs among a reference action's `keys`) and
+    its day (the first of `DAY_FIELDS` it has as text: a move's `ex_date` is a flag)."""
+    keys = {str(item[k]).upper() for k in ("isin", "new_isin") if item.get(k)}
+    keys |= {str(k).upper() for k in item.get("keys") or ()}
+    day = next((item[f] for f in DAY_FIELDS if isinstance(item.get(f), str) and item[f]), None)
+    return keys, day
+
+
+@dataclass
+class Exceptions:
+    """The reviewed exceptions of one check run, and what they matched."""
+
+    rules: Sequence[Excepted] = ()
+    used: set[Excepted] = field(default_factory=set)
+    excepted: list[dict[str, Any]] = field(default_factory=list)
+
+    def split(self, code: str, items: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+        """The items of finding `code` no exception covers; the covered ones are kept, with
+        their reason, for `findings`."""
+        rules = {(r.isin, r.day): r for r in self.rules if r.code == code}
+        kept = []
+        for item in items:
+            keys, day = item_keys(item)
+            rule = next((rules[k, day] for k in sorted(keys) if (k, day) in rules), None)
+            if rule is None:
+                kept.append(item)
+            else:
+                self.used.add(rule)
+                self.excepted.append({"code": code, **item, "reason": rule.reason})
+        return kept
+
+    def findings(self) -> list[dict[str, Any]]:
+        """`excepted` (every excepted item) and `exception_unused`, both warn."""
+        out = []
+        if self.excepted:
+            out.append(finding("excepted", WARN, self.excepted, count=len(self.excepted)))
+        unused = [asdict(r) for r in self.rules if r not in self.used]
+        if unused:
+            out.append(finding("exception_unused", WARN, unused))
+        return out
+
+    def summary(self) -> dict[str, int]:
+        return dict(sorted(Counter(i["code"] for i in self.excepted).items()))

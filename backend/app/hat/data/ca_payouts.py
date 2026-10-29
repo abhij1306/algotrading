@@ -94,7 +94,15 @@ class Payout:
     amount: Decimal
 
 
-_DIVIDEND = re.compile(r"dividend")
+# "dividend", also run into the word before ("Meetingdividend"), and NSE's short forms and typos
+# ("Div.", "Fin.Div", "Divdend", "Divided", "Diviednd", "Divividend"): a word from "div", never
+# "Sub-Division", "Diversion" or "Divestment"
+_DIVIDEND = re.compile(r"dividend|(?<![a-z])div(?!is|er|es)[a-z]{0,8}(?![a-z])")
+# a face value named after the amount ("Per Share Of Rs 10/- Each", "Per Equity Share Re.1/-
+# Each"): not a second payout
+_FACE_VALUE = re.compile(
+    r"\b(?:of|share)\s*(?:rs|re|inr)\b\.?\s*[\d.]+\s*(?:/-)?\s*(?:each|fully\s*paid(?:\s*up)?)\b"
+)
 _MONEY = re.compile(r"(?:\b(?:rs|re|inr)\b\.?|₹)\s*(?:[-:]\s*)?(\d+(?:\.\d+)?)")
 _PERCENT = re.compile(r"(?<![\d.])\d+(?:\.\d+)?\s*%")
 # where one purpose ends and the next begins: "/" (not the "/-" after an amount), "and", "&", ...
@@ -126,6 +134,8 @@ def _kinded(body: str) -> list[tuple[str, str]]:
 
 # "Interim Dividend 3 Per Share": an amount without the currency, only right before "per share"
 _BARE = re.compile(r"(?<![\d.])(\d+(?:\.\d+)?)\s*(?:/-\s*)?per\s*(?:equity\s*)?sh")
+# or right after the word, closed by NSE's "/-" ("Dividend 12.50/-+Special Dividend 0.50/-")
+_BARE_FIRST = re.compile(r"\s*[-:]?\s*(\d+(?:\.\d+)?)\s*/-")
 
 
 # NSE's typos of "interim" in the words before "Dividend": "Interm", "Int", "Interest Dividend"
@@ -133,7 +143,7 @@ _INTERIM = re.compile(r"interim|\b(?:interm|int)\b")
 
 
 def _kind(words: str) -> str:
-    if "special" in words:
+    if "special" in words or re.search(r"\bspl\b", words):
         return KIND_SPECIAL
     if _INTERIM.search(words) or words.split()[-1:] == ["interest"]:
         return KIND_INTERIM
@@ -164,8 +174,11 @@ def _clause(prefix: str, body: str) -> list[Payout] | str:
         found = [Payout(_kind(prefix), require_exact(amounts[0], "amount"))]
     else:
         bare = _BARE.findall(body)
+        first = _BARE_FIRST.match(body)
         if len(bare) == 1:
             found = [Payout(_kind(prefix), require_exact(bare[0], "amount"))]
+        elif not bare and first:
+            found = [Payout(_kind(prefix), require_exact(first.group(1), "amount"))]
         elif "(" in prefix and ")" not in prefix.split("(")[-1]:
             return []  # "Rs 50/- Per Share (Special Dividend)": a label of the amount before
         else:
@@ -188,10 +201,13 @@ def _prefix(lowered: str, found: Sequence[re.Match[str]], n: int) -> str:
 
 
 def _lowered(text: str) -> str | None:
-    """The text in lower case with single spaces and grouped figures without their commas
-    ("Rs 1,000" is 1000); None when a comma still sits between digits ("Rs 2,50"): a figure
-    that cannot be read is never read as its first digits."""
+    """The text in lower case with single spaces, grouped figures without their commas
+    ("Rs 1,000" is 1000), NSE's doubled decimal point read as one ("Rs 62..50" is 62.50) and a
+    face value named after an amount dropped ("Of Rs 10/- Each"); None when a comma still sits
+    between digits ("Rs 2,50"): a figure that cannot be read is never read as its first
+    digits."""
     lowered = _GROUPED.sub(lambda m: m.group().replace(",", ""), re.sub(r"\s+", " ", text.lower()))
+    lowered = _FACE_VALUE.sub(" ", re.sub(r"(\d)\.{2,}(\d)", r"\1.\2", lowered))  # "Rs 62..50"
     return None if _DIGIT_COMMA.search(lowered) else lowered
 
 

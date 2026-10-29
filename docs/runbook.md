@@ -214,6 +214,7 @@ steps that read it are skipped.
 | --- | --- | --- |
 | `calendar` | `calendar.refresh`: NSE's holiday list into `hat_trading_calendar` | |
 | `bars` | `history_cli --resume`: the bhavcopy days into `bars_daily_raw`, the index archive | |
+| `listing` | `listing.refresh`: the stocks of the instrument master from NSE's equity list (`EQUITY_L.csv`): an ISIN the bars registered is activated and named, renames and series moves are taken, a stock the list dropped is delisted; funds and rights entitlements are left to `reference.weekly` | bars |
 | `ingest` | `ingest.nightly` per session on the stored bars: index levels, market breadth, NIFTY 500 TRI, `ingest.completed` | bars |
 | `quality` | `quality.gate` per session | ingest |
 | `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`) | ingest |
@@ -418,7 +419,10 @@ niftyindices' answers and NSE's ETF unit actions. D5 demands every quarter of ea
 member from 2020-03-31 (its lineage chain judged as one company) and reads its reviewed
 exceptions, each naming one company and one quarter with its reason, from
 `backend/app/hat/data/verify/d5_exceptions.csv`: an excepted finding warns, and an exception no
-finding needs warns too (`exception_unused`). A membership history that starts after
+finding needs warns too (`exception_unused`). D2 and D6 read theirs the same way, each naming
+one item by ISIN and day (an ex-date, a link's date, a move's date), from `d2_exceptions.csv` and
+`d6_exceptions.csv` beside it. D2 and D6 judge stocks only (funds, rights entitlements are
+counted). A membership history that starts after
 2020-03-31 fails D5 (`scope_unknown`). A check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the
 check's coverage, never warns. `--fetch` downloads a missing public reference file once, two

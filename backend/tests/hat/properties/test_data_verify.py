@@ -26,6 +26,7 @@ from app.hat.data.verify import (
     snapshot,
 )
 from app.hat.data.verify.adjustments import RefAction, StoredAction
+from app.hat.data.verify.exceptions import Excepted, Exceptions
 from app.hat.time import IST
 
 D1, D2, D3 = date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)
@@ -449,7 +450,7 @@ def test_d2_stored_actions_before_their_references_start_are_not_run() -> None:
         RefAction("rights", date(2015, 6, 1), frozenset({"ABC"}), Fraction(9, 10)),
     ]
     starts = adjustments.reference_starts(refs, date(2011, 6, 22))
-    assert starts == {"split_bonus": date(2014, 3, 1), "rights": date(2015, 6, 1)}
+    assert starts == {"split_bonus": date(2014, 3, 12), "rights": date(2015, 6, 1)}
     assert adjustments.factor_coverage(starts, D3) is None  # no demerger or dividend reference
     every = dict.fromkeys(adjustments.KINDS, date(2014, 3, 1)) | starts
     span = adjustments.factor_coverage(every, D3)
@@ -499,8 +500,9 @@ def test_d2_a_wrong_or_missing_action_fails_and_an_owner_deletion_warns() -> Non
         RefAction("dividend", D2, frozenset({"XYZ"}), cash=Decimal(3), amounts=(Decimal(3),)),
     ]
     stored = [_stored_action("a", "bonus", "0.9705")]
+    closes = {("b", D2): Decimal(50)}  # XYZ traded before the ex-date: the dividend applies
     summary, findings = adjustments.compare_factors(
-        refs, stored, keys, {}, [("b", D2, "split")], ALL_KINDS
+        refs, stored, keys, closes, [("b", D2, "split")], ALL_KINDS
     )
     assert summary["split_bonus:factor_mismatch"] == 1
     assert summary["split_bonus:deleted_by_owner"] == 1
@@ -889,15 +891,15 @@ def test_d6_a_closed_weekday_is_asked_of_nse_not_of_the_calendars_own_list() -> 
 def test_d6_a_link_off_nses_symbol_changes_fails_dated() -> None:
     link = sessions.Link("o", "n", D2, "isin_change", "OLD", "NEW")
     spans = {"o": (D1, D1), "n": (D2, D3)}
-    _, findings = sessions.check_links([link], spans, [("OTHER", "NEW")])
+    _, findings = sessions.check_links([link], spans, [("OTHER", "NEW")], [])
     unlisted = next(f for f in findings if f["code"] == "symbol_change_not_in_nse_list")
     assert (unlisted["severity"], unlisted["days"]) == (audit.FAIL, [D2.isoformat()])
-    _, ok = sessions.check_links([link], spans, [("OLD", "NEW")])
+    _, ok = sessions.check_links([link], spans, [("OLD", "NEW")], [])
     assert ok == []
 
 
 def test_d6_no_symbol_change_list_fails() -> None:
-    _, findings = sessions.check_links([], {}, None)
+    _, findings = sessions.check_links([], {}, None, [])
     assert [(f["code"], f["severity"]) for f in findings] == [
         ("symbol_changes_missing", audit.FAIL)
     ]
@@ -1306,3 +1308,198 @@ def test_d5_a_pre_listing_quarter_is_matched_near_its_public_at() -> None:
     # matched on its dissemination, a day after the submission
     late = [filings.Announcement(_at(2024, 11, 7, 10, 0), _at(2024, 11, 8, 16, 1))]
     assert filings.near(late, filing.period_end, filing.public_at + timedelta(hours=20)) == late
+
+
+@pytest.mark.parametrize(
+    ("text", "cash"),
+    [
+        ("Interim Dividend - Rs 9 Per Share9purpose Revised", "9"),  # `Share9` is not `Re 9`
+        ("Dividend - Rs:- 5.50 Per Share", "5.50"),
+        ("Dividend 0.70/- Per Share", "0.70"),
+        ("Dividend 12.50/-+Special Dividend 0.50/-", "13.00"),
+        ("Dividend - 1 Rs Per Share", "1"),
+        ("Div-7.5/-", "7.5"),
+        ("Dividend - Re 0.50 Per Equity Share Re.1/- Each", "0.50"),  # the face value is not paid
+        ("Annual General Meetingdividend - Rs 2 Per Share", "2"),
+        ("Intdividend Rs 3", "3"),
+        ("Interim Dividend", None),  # no amount: judged by presence
+    ],
+)
+def test_d2_dividend_texts_nse_writes(text: str, cash: str | None) -> None:
+    assert adjustments.names_dividend(text)
+    assert adjustments.dividend_cash(text) == (None if cash is None else Decimal(cash))
+
+
+def test_d2_rights_at_par_and_prm() -> None:
+    assert adjustments.issue_price("Rights 2:3@ Par Rs 10", "", Decimal(10)) == 10
+    assert adjustments.issue_price("Rights 24:10 At Par", "", Decimal(1)) == 1
+    assert adjustments.issue_price("Rights 1:5 @ Prm Rs 102", "", Decimal(10)) == 112
+    assert adjustments.issue_price("Rights 1:5", "", Decimal(10)) is None
+
+
+def test_d2_a_bonus_instruments_value_is_not_the_dividend() -> None:
+    # COROMANDEL 2012: stored 18 = bonus debentures 15 + final 3; NSE's purpose prices the 3
+    text = "Dividend bonus_instrument 15 + final 3: Annual General Meeting/Dividend Rs.3/-"
+    stored = StoredAction("a", D2, "dividend", Fraction(1), Decimal(18), False, "feed", text)
+    assert stored.payout == 3
+    ref = RefAction("dividend", D2, frozenset({"ABC"}), cash=Decimal(3), amounts=(Decimal(3),))
+    summary, _ = adjustments.compare_factors(
+        [ref], [stored], {"a": frozenset({"ABC"})}, {}, [], ALL_KINDS
+    )
+    assert summary == {"dividend:equal": 1}
+
+
+def test_d2_a_dividend_that_is_only_a_bonus_instrument_is_proven_by_nses_bonus_row() -> None:
+    # BRITANNIA 2019: bonus debentures worth Rs 30, no dividend in NSE's purpose
+    text = "Dividend bonus_instrument 30: Bonus Debentures 1:1"
+    stored = StoredAction("a", D2, "dividend", Fraction(1), Decimal(30), False, "research", text)
+    ref = RefAction("split_bonus", D2, frozenset({"ABC"}), Fraction(1, 2), non_equity=True)
+    keys = {"a": frozenset({"ABC"})}
+    summary, findings = adjustments.compare_factors([ref], [stored], keys, {}, [], ALL_KINDS)
+    assert summary == {"split_bonus:non_equity_not_stored": 1, "dividend:bonus_instrument": 1}
+    assert findings == []
+    _, alone = adjustments.compare_factors([], [stored], keys, {}, [], ALL_KINDS)
+    assert [f["code"] for f in alone] == ["dividend_stored_not_in_reference"]
+
+
+def test_d2_a_non_equity_bonus_without_a_ratio_proves_its_day_only() -> None:
+    # BLUEDART 2014-11-17: "Scheme Of Arrangement - Issue Of Bonus Debentures", no ratio
+    row = {"symbol": "BLUEDART", "isin": "INE233B01017", "action_type": "bonus"}
+    row |= {"subject_raw": "Scheme Of Arrangement - Issue Of Bonus Debentures"}
+    row |= {"instrument_class": "debentures", "exDate": "17-Nov-2014", "ratio_parsed": ""}
+    ref = adjustments._split_bonus(row)
+    assert ref is not None
+    assert ref.factor is None
+    assert ref.non_equity
+    equity = {**row, "instrument_class": "equity"}
+    assert adjustments._split_bonus(equity) is None  # an equity bonus with no ratio is unread
+    split = RefAction("split_bonus", D2, frozenset({"ABC"}), Fraction(1, 2), text="split")
+    assert adjustments.combine_legs([ref, split]).factor == Fraction(1, 2)
+    text = "Dividend bonus_instrument 140: Bonus NCDs"
+    stored = StoredAction("a", D2, "dividend", Fraction(1), Decimal(140), False, "research", text)
+    unpriced = RefAction("split_bonus", D2, frozenset({"ABC"}), None, non_equity=True)
+    summary, findings = adjustments.compare_factors(
+        [unpriced], [stored], {"a": frozenset({"ABC"})}, {}, [], ALL_KINDS
+    )
+    assert summary == {"split_bonus:non_equity_unpriced": 1, "dividend:bonus_instrument": 1}
+    assert findings == []
+
+
+def test_d2_funds_are_not_judged() -> None:
+    keys = {"etf": frozenset({"GOLDBEES", "INF732E01102"}), "s": frozenset({"ABC", "INE1A01011"})}
+    ref = RefAction("split_bonus", D2, frozenset({"GOLDBEES", "INF732E01102"}), Fraction(1, 10))
+    stored = [_stored_action("etf", "split", "0.1"), _stored_action("s", "split", "0.5")]
+    summary, findings = adjustments.compare_factors([ref], stored, keys, {}, [], ALL_KINDS)
+    assert summary == {
+        "split_bonus:fund_not_judged": 2,
+        "split_bonus:stored_not_in_reference": 1,
+    }
+    assert [f["items"][0]["keys"] for f in findings] == [["ABC", "INE1A01011"]]
+
+
+def test_d2_absent_rows_that_prove_nothing_do_not_fail() -> None:
+    keys = {"a": frozenset({"ABC"})}
+    refs = [
+        RefAction("split_bonus", D2, frozenset({"ABC"}), Fraction(1, 2), non_equity=True),
+        RefAction("dividend", D2, frozenset({"ABC"})),  # `Interim Dividend`: no amount
+        RefAction("dividend", D3, frozenset({"ABC"}), cash=Decimal(1), amounts=(Decimal(1),)),
+    ]
+    summary, findings = adjustments.compare_factors(refs, [], keys, {}, [], ALL_KINDS)
+    assert summary == {
+        "split_bonus:non_equity_not_stored": 1,
+        "dividend:not_stored_unpriced": 1,
+        "dividend:no_bar": 1,  # no close before D3: nothing to adjust
+    }
+    assert {f["severity"] for f in findings} == {audit.WARN}
+
+
+def test_d2_a_stale_isin_falls_back_to_the_tickers_holder_on_the_day() -> None:
+    # KSE 2026: NSE's row names the old ISIN; the dividend is stored on the relisted one
+    keys = {"old": frozenset({"KSE", "INE953E01014"}), "new": frozenset({"KSE", "INE953E01022"})}
+    held = {"KSE": [(D1, D2, frozenset({"old"})), (D2, None, frozenset({"new"}))]}
+    ref = RefAction(
+        "dividend", D3, frozenset({"KSE", "INE953E01014"}), cash=Decimal(7), amounts=(Decimal(7),)
+    )
+    stored = [StoredAction("new", D3, "dividend", Fraction(1), Decimal(7), False, "feed")]
+    summary, _ = adjustments.compare_factors([ref], stored, keys, {}, [], ALL_KINDS, held)
+    assert summary == {"dividend:equal": 1}
+
+
+def test_d2_stored_dividends_after_the_pull_and_excepted_items() -> None:
+    keys = {"a": frozenset({"ABC", "INE1A01011"})}
+    late = StoredAction("a", D3, "dividend", Fraction(1), Decimal(2), False, "nse_pr_bc")
+    rule = Excepted("split_bonus_stored_not_in_reference", "INE1A01011", D2.isoformat(), "known")
+    exceptions = Exceptions([rule])
+    summary, findings = adjustments.compare_factors(
+        [],
+        [late, _stored_action("a", "split", "0.5")],
+        keys,
+        {},
+        [],
+        ALL_KINDS,
+        ends={"dividend": D3},
+        exceptions=exceptions,
+    )
+    assert summary == {"split_bonus:stored_not_in_reference": 1}
+    assert findings == []
+    assert exceptions.summary() == {"split_bonus_stored_not_in_reference": 1}
+    assert [f["code"] for f in exceptions.findings()] == ["excepted"]
+
+
+def test_d2_a_drop_the_size_of_a_stored_dividend_is_explained() -> None:
+    # FOURSOFT 2013-10-17: Rs 29 paid on a close of 42.15, the price drops 67%
+    move = {"ex_date": False, "move_pct": -67.26, "raw_move_pct": -67.26}
+    assert adjustments.classify_move(move, False, 42.15, 29.0) == "dividend"
+    assert adjustments.classify_move(move, False, 42.15, 5.0) != "dividend"
+
+
+def test_d2_chains_of_joins_runs_of_links() -> None:
+    chains = adjustments.chains_of(["a", "b", "c", "d"], [("a", "b"), ("b", "c")])
+    assert chains["a"] == chains["c"] == frozenset({"a", "b", "c"})
+    assert chains["d"] == frozenset({"d"})
+
+
+def test_d6_a_link_is_proven_by_nse_rows_across_its_chain() -> None:
+    link = sessions.Link(
+        "o",
+        "n",
+        D2,
+        "isin_change",
+        "OLD",
+        "NEW",
+        "INE1A01011",
+        "INE1A01029",
+        frozenset({"OLD", "NEW", "INE1A01011", "INE1A01029"}),
+    )
+    far = sessions.Evidence(D2 + timedelta(days=sessions.LINK_DAYS + 1), "INE1A01011", "NEW")
+    assert sessions.link_evidence(link, [far]) == (False, False)
+    # NSE files the old ISIN's split under today's ticker: proves the link and the rename
+    assert sessions.link_evidence(link, [sessions.Evidence(D2, "INE1A01011", "NEW")]) == (
+        True,
+        True,
+    )
+    assert sessions.link_evidence(link, [sessions.Evidence(D2, "INE1A01011", "OLD")]) == (
+        True,
+        False,
+    )
+
+
+def test_d6_listing_judges_stocks_and_counts_the_rest() -> None:
+    listings = [
+        sessions.Listing("s", "ABC", False, None, "INE002A01018"),
+        sessions.Listing("f", "GOLDBEES", False, None, "INF732E01102"),
+        sessions.Listing("r", "ABC-RE", False, None, "INE002A20018"),  # a rights entitlement
+    ]
+    last = {"s": D3, "f": D3, "r": D3}
+    summary, findings = sessions.check_listing(listings, last, [D1, D2, D3], ())
+    assert [(f["code"], f["severity"]) for f in findings] == [("inactive_but_trading", audit.FAIL)]
+    assert summary["not_stocks_not_judged"] == {"inactive_but_trading": 2}
+
+
+def test_exceptions_match_one_item_by_isin_and_day() -> None:
+    rule = Excepted("move_ex_date_jump", "INE098201036", "2023-02-15", "penny")
+    exceptions = Exceptions([rule, Excepted("x", "INE1", "2020-01-01", "never used")])
+    move = {"date": "2023-02-15", "ex_date": True, "isin": "INE098201036", "move_pct": 21.0}
+    other = {**move, "date": "2023-02-16"}
+    assert exceptions.split("move_ex_date_jump", [move, other]) == [other]
+    assert [f["code"] for f in exceptions.findings()] == ["excepted", "exception_unused"]

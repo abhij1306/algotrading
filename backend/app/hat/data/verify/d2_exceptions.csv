@@ -1,0 +1,41 @@
+code,isin,symbol,day,reason
+dividend_cash_mismatch,INE121E01018,JSWENERGY,2017-06-30,"NSE's purpose reads 'Dividend - Re 0.0 Per Share', a typo; the owner stored the FY2016-17 final of Re 0.50 from the company's AGM outcome"
+dividend_cash_mismatch,INE727B01018,GENESYS,2019-09-18,"NSE's purpose reads 'Rs.0125', meaning Re 0.125 (2.5% on the Rs 5 face value); the owner stored 0.125 from the AGM outcome filing"
+dividend_cash_mismatch,INE477B01010,DVL,2017-07-28,NSE lists Dhunseri Tea's (DTIL) Rs 8 under Dhunseri Ventures' symbol and ISIN beside DVL's own Rs 2; the owner stored DVL Rs 2 and DTIL Rs 8
+dividend_cash_mismatch,INE477B01010,DTIL,2025-08-01,NSE files DTIL's Re 1 under DVL's ISIN INE477B01010 (symbol DTIL); the ISIN finds DVL's own Rs 5. DTIL's Re 1 is stored on INE341R01014
+dividend_stored_not_in_reference,INE341R01014,DTIL,2015-08-03,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2016-08-03,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2017-07-28,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2018-07-30,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2019-08-05,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2020-09-15,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2021-07-01,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2022-08-24,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2023-09-12,NSE filed Dhunseri Tea's dividend under DVL's symbol and ISIN; the owner moved it to DTIL (company dividend history)
+dividend_stored_not_in_reference,INE341R01014,DTIL,2025-08-01,NSE filed Dhunseri Tea's Re 1 under DVL's ISIN INE477B01010; stored on DTIL's own ISIN
+split_bonus_stored_not_in_reference,INE341R01014,DTIL,2021-08-05,"NSE filed DTIL's bonus 1:2 under sister company DVL (INE477B01010); the owner moved it to DTIL, and DVL's copy was deleted (no gap on DVL's bars)"
+split_bonus_stored_not_in_reference,INE483S01038,CCAVENUE,2026-10-19,"consolidation (face value Re 1 to Rs 10, prices x10), which NSE's split and bonus pulls (sub-divisions and bonuses only) do not hold; owner-stored from the exchange notice"
+split_bonus_stored_not_in_reference,INE188Y01031,VERTOZ,2025-07-11,"consolidation (face value Re 1 to Rs 10, prices x10), which NSE's split and bonus pulls do not hold: last close 9.17 on the old ISIN, the new ISIN opens 96.28"
+split_bonus_stored_not_in_reference,INE268L01046,SPYL,2024-09-10,"consolidation (prices x10), which NSE's split and bonus pulls do not hold: prev close 8.82 on 2024-08-27, the new ISIN opens 86.43 (x9.80)"
+split_bonus_stored_not_in_reference,INE059D01020,LAOPALA,2014-09-24,"NSE's pulls lack this face-value split (Rs 10 to Rs 2): close 1602.00 on 09-23, open 328.00 on 09-24 (x0.20); the new ISIN trades on at that level"
+split_bonus_factor_mismatch,INE517B01013,TTML,2013-08-07,"bonus to non-promoter holders only (minimum public shareholding); NSE's 2:15 is on the public's shares, the stored 0.9705 on the whole equity: prev close 6.40, ex open 6.30 (0.984)"
+split_bonus_factor_mismatch,INE586G01017,GULFPETRO,2013-07-09,"bonus 23:19 to non-promoter holders only (promoters waived); the owner ruled 0.863 on the whole equity: prev close 22.95, ex open 18.85 (0.821)"
+split_bonus_factor_mismatch,INE800H01010,OMAXE,2013-11-11,"bonus to non-promoter holders only (minimum public shareholding); stored 0.949 on the whole equity: prev close 140.45, ex open 128.55 (0.915), nearer the stored factor than NSE's 10:39 (0.796)"
+split_bonus_factor_mismatch,INE181G01025,AJRINFRA,2013-01-23,"bonus to non-promoter holders only (minimum public shareholding); stored 0.9928 on the whole equity: prev close 14.10, ex open 14.05 (0.996)"
+split_bonus_factor_mismatch,INE486J01014,INFINITE,2017-11-01,"bonus to non-promoter holders only (minimum public shareholding); stored 0.9907 on the whole equity: prev close 230.70, ex open 230.70 (1.000)"
+split_bonus_factor_mismatch,INE188B01013,IGARASHI,2018-09-27,"bonus to non-promoter holders only (minimum public shareholding); stored 0.9725 on the whole equity: prev close 703.15, ex open 689.55 (0.981)"
+rights_factor_mismatch,INE715A01015,WHEELS,2014-02-13,owner correction: the issue went to non-promoter holders only (promoters renounced); NSE's 51:20 is the whole-company entitlement
+rights_factor_mismatch,INE081A01012,TATASTEEL,2018-01-31,"two tranches: 4:25 fully paid at Rs 510 and 2:25 partly paid at Rs 615 (full issue price, the TERP convention): TERP 0.9424 on the prev close 775.85, ex open 735.50 (0.948); NSE's purpose prices the fully paid tranche only"
+rights_factor_mismatch,INE483S01020,CCAVENUE,2025-06-26,"NSE's face value is today's (Rs 10, after the 2026-10-19 consolidation its pulls do not hold); at the issue it was Re 1, so 67:267 at Rs 10 (stored) is right; research confirms"
+rights_no_issue_price,INE429C01027,SINTEX,2016-08-08,"NSE's purpose names no price ('Right 26:151'); the stored factor is the TERP at the researched issue price Rs 65 on the prev close 73.70, reproduced to 1e-9"
+rights_no_issue_price,INE890A01016,JMCPROJECT,2016-01-11,"NSE's purpose names no price ('Rights 2:7'); the stored factor is the TERP at the researched issue price Rs 201 on the prev close 248.75, reproduced to 1e-9"
+rights_no_issue_price,INE694C01018,LAKSHVILAS,2014-07-25,"NSE's purpose names no price ('Rights Issue 5:6'); the stored factor is the TERP at the researched issue price Rs 50 on the prev close 111.70, reproduced to 1e-9"
+rights_no_issue_price,INE933B01012,SIGMAADV,2021-07-12,"NSE's purpose names no price ('Rights 2:3'); the stored factor is the TERP at the researched issue price Rs 10 on the prev close 16.35, reproduced to 1e-9"
+rights_no_issue_price,INE529D01014,PATINTLOG,2021-02-17,"NSE's purpose names no price ('Rights 27:47'); the stored factor is the TERP at the researched issue price Rs 10 (partly paid, full price) on the prev close 31.40, reproduced to 1e-9"
+rights_no_issue_price,INE529D01014,PATINTLOG,2021-10-28,"NSE's purpose names no price ('Rights 613:399'); the stored factor is the TERP at the researched issue price Rs 10 (partly paid, full price) on the prev close 27.80, reproduced to 1e-9"
+rights_no_issue_price,INE804H01012,TFL,2022-11-04,"NSE's purpose names no price ('Rights 1:1'); the stored factor is the TERP at the researched issue price Rs 10 (partly paid, full price) on the prev close 12.15, reproduced to 1e-9"
+rights_not_stored,INE955V01021,ARVINDFASN,2020-03-17,"terms revised by addendum (62:91 at 100) after NSE's 16:47 at 150; the gate's gap (0.9834) fits neither, so it stays the owner's review"
+rights_not_stored,INE893J01011,MOLDTKPAC,2020-10-21,"warrants alongside (6 for 50) and partly paid shares: equity-only TERP 0.9933, ex gap 1.001; no price factor to store"
+rights_not_stored,INE482J01021,SHAH,2022-12-23,"premium disputed between sources (Rs 1.0 or 1.75); low confidence, the owner's review"
+rights_not_stored,INE932X01018,SHAREINDIA,2023-02-28,"warrants alongside (17 for 50): equity-only TERP 0.9918, but the ex gap (0.892) is the market's, not the issue's; no factor stored"
+move_ex_date_jump,INE098201036,VCL,2023-02-15,"penny stock (prev raw close 5.95): the 2:1 split is right per NSE; the ex-day +21% is tick noise, and the price fell to 2.55 within the week"

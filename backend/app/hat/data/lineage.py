@@ -17,7 +17,10 @@ worse than a missing one.
   `MAX_GAP_SESSIONS` (NSE suspends a few sessions around the change), the two never trade on
   the same day, and neither side has another candidate.
 - The same security: the same symbol across the change, or an NSE symbol-change record from the
-  old symbol to the new one near it (`SYMBOL_CHANGE_SLACK`).
+  old symbol to the new one near it (`SYMBOL_CHANGE_SLACK`), or, for an old and a new ISIN with
+  no other candidate, the same issuer and security type in the ISIN (`issuer`: NSE's
+  symbol-change list misses renames such as CASTROL to CASTROLIND); the price rules below
+  decide each the same way.
 - NSE carried the old close: the new ISIN's first PREVCLOSE is the old last close, raw or times
   the factor of the actions between the two days, within `PREV_CLOSE_TOL` (1%).
 - Price continuity: the new first open is within `OPEN_TOL` (10%) of the old last close times
@@ -116,7 +119,7 @@ RESTRUCTURING = re.compile(
 # price band is 20%, and the margin keeps band moves rounded to the tick off the list.
 EDGE_DAYS = 10  # the days each side of a change whose every session move is checked
 
-VIA_SYMBOL, VIA_SYMBOL_CHANGE = "same_symbol", "symbol_change"
+VIA_SYMBOL, VIA_SYMBOL_CHANGE, VIA_ISSUER = "same_symbol", "symbol_change", "same_issuer"
 # Why a succession is linked, most specific first.
 FACE_VALUE_CHANGE, SYMBOL_CHANGE, NAME_CHANGE, ISIN_REISSUE = (
     "face_value_change",
@@ -229,7 +232,10 @@ def candidates(
 ) -> list[Candidate]:
     """Every pair (old, new) where the new ISIN starts after the old one's last session, within
     `REVIEW_GAP_SESSIONS`, under the old one's last symbol or the one a symbol-change record
-    gave it near the change. One candidate per pair; the same symbol wins over a record."""
+    gave it near the change, and, between ISINs no such pair holds, the old ISIN and the next
+    ISIN of the same `issuer` after any gap (a gap over `MAX_GAP_SESSIONS` is the owner's to
+    review, never linked by rule). One candidate per pair; the same symbol wins over a
+    record."""
     spans = list(spans)
     by_first: dict[str, list[Span]] = defaultdict(list)
     for span in spans:
@@ -260,7 +266,32 @@ def candidates(
             if gap <= REVIEW_GAP_SESSIONS:
                 via = VIA_SYMBOL if change is None else VIA_SYMBOL_CHANGE
                 out[key] = Candidate(old, new, gap, via, change)
+    olds = {k[0] for k in out}
+    news = {k[1] for k in out}
+    by_issuer: dict[str, list[Span]] = defaultdict(list)
+    for span in spans:
+        if span.instrument_id not in news and issuer(span.isin):
+            by_issuer[issuer(span.isin)].append(span)
+    for old in spans:
+        if old.instrument_id in olds or not issuer(old.isin):
+            continue
+        later = [
+            n
+            for n in by_issuer.get(issuer(old.isin), ())
+            if n.instrument_id != old.instrument_id and n.first_day > old.last_day
+        ]
+        if later:  # the company's next ISIN, after any gap (a relisting after insolvency)
+            new = min(later, key=lambda n: (n.first_day, n.isin))
+            gap = sessions_between(sessions, old.last_day, new.first_day)
+            out[(old.instrument_id, new.instrument_id)] = Candidate(old, new, gap, VIA_ISSUER)
     return sorted(out.values(), key=lambda c: (c.new.first_day, c.old.isin, c.new.isin))
+
+
+def issuer(isin: str) -> str:
+    """A company's equity ISIN stem: country, issuer type and code and the security type
+    (`INE235C01`, from `INE235C01036`); empty for any other ISIN (funds, DVRs, partly paid)."""
+    isin = isin.upper()
+    return isin[:9] if len(isin) == 12 and isin.startswith("INE") and isin[7:9] == "01" else ""
 
 
 def _ratio(value: Decimal, base: Decimal) -> Decimal:

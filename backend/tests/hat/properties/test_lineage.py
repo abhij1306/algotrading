@@ -46,6 +46,7 @@ from app.hat.data.lineage import (
     candidates,
     decide_all,
     exchange_sessions,
+    issuer,
     parse_name_changes,
     parse_symbol_changes,
     sessions_between,
@@ -483,3 +484,21 @@ def test_link_changes_lists_only_pairs_that_gain_or_lose_a_link() -> None:
         (("i", "j"), None, LINKED),
     ]
     assert link_changes(after, after) == []
+
+
+def test_issuer_is_the_equity_isin_stem() -> None:
+    # SUMEETINDS INE235C01010 ended 2024-10-17, INE235C01028 trades from 2025-06-19
+    assert issuer("INE235C01010") == issuer("ine235c01028") == "INE235C01"
+    for other in ("INF732E01102", "IN9155A01020", "INE235C02018", "INE235C0101"):
+        assert issuer(other) == ""
+
+
+def test_a_relisting_of_the_same_issuer_after_a_long_gap_is_for_review() -> None:
+    # SUMEETINDS: INE235C01010 last traded 2024-10-17; INE235C01028 lists 2025-06-19 under
+    # the same ticker, far beyond any rule's gap: the owner's to review, never linked by rule
+    old = _span("s1", "INE235C01010", date(2020, 1, 1), date(2020, 3, 2), "SUMEETINDS")
+    new = _span("s2", "INE235C01028", date(2020, 9, 1), date(2020, 11, 2), "SUMEETX")
+    later = _span("s3", "INE235C01036", date(2020, 12, 1), date(2021, 1, 1), "SUMEETY")
+    [d, nxt] = _decide([old, new, later])
+    assert (d.old_id, d.new_id, d.status, d.reason) == ("s1", "s2", REVIEW, LONG_GAP)
+    assert (nxt.old_id, nxt.new_id) == ("s2", "s3")  # its next ISIN only, not every later one
