@@ -154,6 +154,15 @@ whose audit warns or fails):
   in memory on real data and lists any watchlist, signal, fill, rebalance or equity difference up
   to T (empty: none); `fingerprint --from D --to E` prints a run's resolved and trade-list hashes
   and content digests, to compare a run before and after a change. Never past 2024-12-31.
+- Independent parity of an engine change (accuracy plan B6): `python
+  scripts/research/s1_parity.py --portfolio p2-vcp.yaml --from D --to E` and `python
+  scripts/research/s2_ep_parity.py parity --portfolio p6-ep-a.yaml --from D --to E` rerun S1 VCP
+  and S2 EP from simple implementations of the spec on the same market and compare watchlist,
+  EP candidates, signals, trades, fills and equity with the engine's (in memory; the engine
+  result cached in `reports/parity/cache/`, keyed by the engine source); `s2_ep_parity.py
+  reconcile` lists the engine's EP candidates against the EP study's gap events
+  (`ep_study_events.py`) with the cause of each difference. Every difference is explained before
+  a change merges. Never past 2024-12-31.
 
 ### Data audit (`data_audit.json`, `app/hat/data/audit.py`)
 
