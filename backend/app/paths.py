@@ -27,6 +27,10 @@ HAT_DATA_ROOT = Path(os.environ.get("HAT_DATA_ROOT", "").strip() or DATA_ROOT / 
 # before its folder is published (docs/backtests/result-standard.md; the image copies it).
 BACKTEST_SCHEMA = PROJECT_ROOT / "docs" / "backtests" / "run.schema.json"
 
+# D5's reviewed exceptions: results findings that are explained and known (code, isin, period
+# end, reason), read by `app/hat/data/verify/filings.py`.
+D5_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d5_exceptions.csv"
+
 # The golden sample format, which every golden file is validated against before a check reads it
 # (docs/backtests/golden-sample.md; the image copies it).
 GOLDEN_SCHEMA = PROJECT_ROOT / "docs" / "backtests" / "golden-sample.schema.json"

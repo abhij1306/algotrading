@@ -11,6 +11,7 @@ data_system/hat/
 # HAT: Parquet bars, raw bhavcopy zips, backtest outputs (HAT_DATA_ROOT)
 *.parquet
 *.csv
+!backend/app/hat/data/verify/d5_exceptions.csv
 *.db
 *.sqlite
 *.sqlite3

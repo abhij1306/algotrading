@@ -1,8 +1,9 @@
-"""The financial-results store against real Postgres: rows are never updated or deleted, and
-`results_as_of` returns a revision only from the time it became public."""
+"""The financial-results store against real Postgres: rows are never deleted and their figures
+never updated (only `public_at` may move later), and `results_as_of` returns a revision only from
+the time it became public."""
 
 import uuid
-from datetime import UTC, date, datetime, time
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -83,10 +84,51 @@ def test_results_are_append_only_and_point_in_time(conn: Connection) -> None:
     assert [(r.version, r.revenue) for r in between] == [(1, Decimal("100"))]
     assert [(r.version, r.revenue) for r in after] == [(2, Decimal("110"))]
 
+    early = datetime(2026, 1, 1, tzinfo=UTC)
     for statement in (
         update(HatFinancialResult).values(revenue=Decimal(1)),
+        update(HatFinancialResult).values(public_at=early, public_at_source="xbrl"),
         delete(HatFinancialResult),
     ):
         nested = session.begin_nested()
         with pytest.raises(DBAPIError, match="append-only"), nested:
             session.execute(statement)
+    # only the timing moves: later, or for a first version earlier onto an announcement's
+    # dissemination; a revision only later
+    nested = session.begin_nested()
+    with pytest.raises(DBAPIError, match="append-only"), nested:
+        session.execute(
+            update(HatFinancialResult)
+            .where(HatFinancialResult.id == revision.id)
+            .values(public_at=datetime(2026, 2, 20, tzinfo=UTC), public_at_source="announcement")
+        )
+    later = datetime(2026, 1, 20, 10, 5, tzinfo=UTC)
+    first = update(HatFinancialResult).where(HatFinancialResult.id == original.id)
+    session.execute(first.values(public_at=later))
+    moved = results_as_of(session, iid, datetime(2026, 1, 20, 10, 1, tzinfo=UTC))
+    assert moved == []
+    session.execute(first.values(public_at=datetime(2026, 1, 20, 10, 2, tzinfo=UTC)))
+    # never earlier than the quarter's end, nor by more than 120 days, nor with an estimate flag
+    # that does not match its source, nor a new XBRL estimate flag without a later XBRL time
+    for statement in (
+        first.values(public_at=datetime(2025, 12, 30, tzinfo=UTC)),
+        first.values(public_at=later, public_at_estimated=True),
+        first.values(public_at=datetime(2026, 7, 1, tzinfo=UTC), public_at_source="deadline"),
+        first.values(xbrl_at_estimated=True),
+    ):
+        nested = session.begin_nested()
+        with pytest.raises(DBAPIError, match="append-only"), nested:
+            session.execute(statement)
+    late = datetime(2026, 7, 1, tzinfo=UTC)
+    session.execute(
+        first.values(public_at=late, public_at_source="deadline", public_at_estimated=True)
+    )
+    nested = session.begin_nested()
+    with pytest.raises(DBAPIError, match="append-only"), nested:  # 121 days earlier
+        session.execute(
+            first.values(
+                public_at=late - timedelta(days=121),
+                public_at_source="announcement",
+                public_at_estimated=False,
+            )
+        )

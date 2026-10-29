@@ -4,7 +4,7 @@ The reference is NSE's corporate-announcement feed pulled independently of the r
 (`--ca-data`: `results_announcements_*.csv`, each announcement's time and the exchange's
 dissemination time, IST). A stored filing (`hat_financial_result`) is matched to the
 announcements of its ISIN (else its symbol) made after its period ended and within
-`MATCH_DAYS`, the one nearest its `public_at`. Then:
+`MATCH_DAYS`, else within a day of its `public_at` (`near`), the one nearest its `public_at`. Then:
 
 - `public_before_dissemination` (fail): `public_at` is more than `LEAD_TOLERANCE` before NSE
   disseminated the matched announcement: the figures are usable before the market saw them.
@@ -20,6 +20,8 @@ announcements of its ISIN (else its symbol) made after its period ended and with
   first announcement was disseminated before it (cited): the results were public by then.
 - `late_vs_announcement` (warn): `public_at` more than a day after the matched announcement
   (safe, but the figures reach the engine late).
+- `xbrl_day_estimate` (warn): an unbroadcast integrated filing timed at the end of its
+  document's creation day (an upper bound; nothing else proves when it was disseminated).
 - `unmatched` (fail): no announcement of the instrument in the window: its timing is unproven.
 
 No reference files fails the check; a filing public after the reference's last announcement is
@@ -27,15 +29,27 @@ outside its coverage (the check's `coverage` ends there), and every failed findi
 the filings' `public_at`.
 
 Results announced in years the store holds no filing of (the pre-2020 gap) fail for those years,
-and so does each period an ISIN must have stored and has not (`results_quarter_missing`,
-`missing_quarters`, a calendar rule: `demanded_periods`): every quarter end (half-year ends in a
-year whose stored periods are all six months long) from its first stored period, or its listing
-quarter when earlier and inside the store's coverage, through the last one past its filing
-deadline that ended before its last traded day. Announcements only date such a finding (the
-first announcement of results after the period, by its deadline plus `GRACE`, else the
-deadline), never excuse it. Only announcements of results count
+and so does each period a company must have stored and has not (`results_quarter_missing`,
+`missing_quarters`, a calendar rule: `demanded_periods`). The companies are the results store's
+scope (NIFTY 500 point-in-time members from `FIRST_PERIOD_END`, stored rows or not) and every ISIN
+with stored rows, each judged as one company over its linked ISIN changes (`lineage_chains`): a
+quarter filed under any ISIN of the chain counts. A company owes every quarter end from the
+store's first quarter or the quarter it listed in, when later, through the last one whose filing
+deadline is on or before both the run's `as_of` (the earliest of `--to`, the bars' last session and
+today) and its last traded day. Nothing stored sets the start. Announcements only date such a
+finding (the first announcement of results after the period, by its deadline plus `GRACE`, else
+the deadline), never excuse it. Only announcements of results count
 (`announcement_kind`): clarifications, replies and delay notices are left out, and a board
 meeting's outcome that does not name results is matched but never proves they were public.
+An XBRL-timed filing at or after the exchange's broadcast of that XBRL in NSE's results listing
+(the raw cache it was parsed from) is in order. An integrated filing the listing gives no
+broadcast time for, timed at the end of its document's creation day (`xbrl_date`), is reported
+as `xbrl_day_estimate` (warn): an upper bound with nothing else to prove it; one timed before
+that day's end is judged by the announcements. A failure on the reviewed exceptions list
+(`D5_EXCEPTIONS`: code, ISIN, one period end and the reason; a missing quarter matched over the
+chain, any other finding by its exact ISIN) is reported as `excepted` (warn), and an exception
+that no failure needs as `exception_unused` (warn). A membership history starting after the
+store's first quarter fails (`scope_unknown`): the members are not all known.
 The summary counts the filings per year and source, the 23:59 `public_at` times by how they were
 made (`public_at_source`), the reference's announcements in the years the store has none of (the
 pre-2020 gap), and the fundamentals figures that are not point in time (screener.in pages).
@@ -48,13 +62,25 @@ import re
 from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from app.paths import D5_EXCEPTIONS
+
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
+from ..results.__main__ import FIRST_PERIOD_END, NSE_RAW
+from ..results.nse import (
+    INTEGRATED_API,
+    LISTING_INTEGRATED,
+    LISTING_REG33,
+    RESULTS_API,
+    filings_of,
+)
+from ..results.raw import RawCache
+from ..results.timing import end_of
 from . import covered, dated, spanning
 from .context import Context
 
@@ -104,6 +130,7 @@ class Filing:
     source: str
     public_at: datetime
     public_at_source: str
+    source_url: str = ""
 
 
 def parse_time(raw: str) -> datetime | None:
@@ -168,11 +195,44 @@ def candidates(items: Sequence[Announcement], period_end: date) -> list[Announce
     return list(items[bisect_left(keys, first) : bisect_right(keys, last)])
 
 
-def judge(filing: Filing, found: Sequence[Announcement]) -> tuple[str | None, dict[str, Any]]:
-    """A filing's finding code (None: in order) and what it was judged on."""
+def near(items: Sequence[Announcement], period_end: date, at: datetime) -> list[Announcement]:
+    """The announcements (sorted) after `period_end` public (disseminated, else announced) within
+    `LATE` of `at`: a quarter that ended before the listing counts from a later quarter's results
+    (`timing.comparative_quarter`), outside `candidates`' window."""
+    return [
+        a
+        for a in items
+        if a.announced.date() > period_end and abs((a.disseminated or a.announced) - at) <= LATE
+    ]
+
+
+def judge(
+    filing: Filing,
+    found: Sequence[Announcement],
+    broadcast: datetime | None = None,
+    created: datetime | None = None,
+) -> tuple[str | None, dict[str, Any]]:
+    """A filing's finding code (None: in order) and what it was judged on. A `public_at` from
+    the XBRL (`xbrl`) at or after the exchange's broadcast of that XBRL in NSE's results listing
+    (`broadcast`, the source file) is in order: the exchange published the figures then, whatever
+    the announcements show."""
+    if (
+        filing.public_at_source == "xbrl"
+        and broadcast is not None
+        and filing.public_at >= broadcast - LEAD_TOLERANCE
+    ):
+        return None, {"xbrl_broadcast": broadcast.isoformat()}
+    if (
+        filing.public_at_source == "xbrl_date"
+        and created is not None
+        and filing.public_at >= end_of(created.astimezone(IST).date())
+    ):
+        return "xbrl_day_estimate", {"xbrl_created": created.isoformat()}
     if not found:
         return "unmatched", {}
-    nearest = min(found, key=lambda a: abs(a.announced - filing.public_at))
+    # the announcement whose public time (dissemination, else announcement) is nearest: a
+    # filing timed by one announcement is judged by that one, not a neighbour made earlier
+    nearest = min(found, key=lambda a: abs((a.disseminated or a.announced) - filing.public_at))
     # only an announcement that names results proves they were public (a board meeting's other
     # outcome does not)
     named = next((a for a in found if a.results), None)
@@ -192,7 +252,10 @@ def judge(filing: Filing, found: Sequence[Announcement]) -> tuple[str | None, di
         if first is None or filing.public_at < first - LEAD_TOLERANCE:
             return "before_any_announcement", detail
         return "between_announcements", detail
-    if filing.public_at < seen - LEAD_TOLERANCE:
+    # early against the nearest announcement, but after one that named the results: public then
+    if filing.public_at < seen - LEAD_TOLERANCE and (
+        first is None or filing.public_at < first - LEAD_TOLERANCE
+    ):
         lead = seen - filing.public_at
         return "public_before_dissemination", {**detail, "lead_s": int(lead.total_seconds())}
     if filing.public_at - nearest.announced > LATE:
@@ -223,63 +286,66 @@ def next_quarter(quarter: date) -> date:
 
 
 @dataclass(frozen=True)
-class Stored:
-    """One stored period of an ISIN: its end and its length in months (None: unknown)."""
-
-    end: date
-    months: int | None = 3
-
-
-@dataclass(frozen=True)
 class Listing:
-    """An ISIN's trading span: its listing (or first traded) day and last traded day."""
+    """A company's trading span: its listing (or first traded) day and last traded day."""
 
     first: date | None
     last: date | None
 
 
-def _half_years(periods: Iterable[Stored]) -> dict[int, set[int]]:
-    """The calendar years an ISIN reported half-yearly, by the period lengths it stored: a year
-    whose stored periods are all six months long -> the two half-year end months they fall on."""
-    by_year: dict[int, list[Stored]] = defaultdict(list)
-    for period in periods:
-        by_year[period.end.year].append(period)
-    return {
-        year: {m for p in items for m in (p.end.month, (p.end.month + 5) % 12 + 1)}
-        for year, items in by_year.items()
-        if all(p.months == 6 for p in items)  # noqa: PLR2004 - a half year
-    }
+def lineage_chains(links: Iterable[tuple[str, str]], isins: Iterable[str]) -> list[tuple[str, ...]]:
+    """Each company's ISINs (sorted): `isins` joined through the linked ISIN changes `links`
+    (old, new; `hat_isin_lineage`), so a quarter filed under either ISIN counts for both."""
+    parent: dict[str, str] = {}
+
+    def root(isin: str) -> str:
+        while parent.setdefault(isin, isin) != isin:
+            parent[isin] = parent[parent[isin]]
+            isin = parent[isin]
+        return isin
+
+    for old, new in links:
+        parent[root(old)] = root(new)
+    groups: dict[str, set[str]] = defaultdict(set)
+    for isin in isins:
+        groups[root(isin)].add(isin)
+    for isin in list(parent):  # the rest of each chain the given ISINs reach
+        if root(isin) in groups:
+            groups[root(isin)].add(isin)
+    return sorted(tuple(sorted(g)) for g in groups.values())
 
 
-def demanded_periods(
-    periods: Sequence[Stored], listing: Listing, coverage_start: date, as_of: date
-) -> list[date]:
-    """The period ends an ISIN must have stored: every quarter end from the first period that
-    should exist (its first stored period, or the quarter it listed in when earlier and not
-    before `coverage_start`) through the last one whose filing deadline has passed by `as_of`
-    and that ended before its last traded day. In a calendar year whose stored periods are all
-    six months long only the half-year ends are due; a year with nothing stored keeps the
-    frequency of the year before. Announcements play no part: a missing one proves nothing."""
-    if not periods:
-        return []
-    first = quarter_of(min(p.end for p in periods))
-    if listing.first is not None and coverage_start <= quarter_of(listing.first) < first:
+def chain_listing(chain: Iterable[str], listings: Mapping[str, Listing]) -> Listing:
+    """A chain's span: its first ISIN's listing to its last ISIN's last traded day."""
+    spans = [listings[i] for i in chain if i in listings]
+    firsts = [s.first for s in spans if s.first is not None]
+    lasts = [s.last for s in spans if s.last is not None]
+    return Listing(min(firsts, default=None), max(lasts, default=None))
+
+
+def demanded_periods(listing: Listing, coverage_start: date, as_of: date) -> list[date]:
+    """The quarter ends a company must have stored: from the store's first quarter
+    (`coverage_start`, `FIRST_PERIOD_END`) or the quarter it listed in when later, through the
+    last one whose filing deadline is on or before both `as_of` and its last traded day (a
+    company delisted, merged or suspended before a deadline need not file for that quarter).
+    Nothing stored and no announcement plays a part: a missing one proves nothing. Every
+    company is held to quarters: the store keeps no period length (`period_start` is always a
+    quarter), and NIFTY 500 companies file quarterly (SEBI LODR 33)."""
+    first = quarter_of(coverage_start)
+    if listing.first is not None and quarter_of(listing.first) > first:
         first = quarter_of(listing.first)
-    half = _half_years(periods)
-    years = {p.end.year for p in periods}
+    last = as_of if listing.last is None else min(as_of, listing.last)
     out = []
-    at, half_months = first, None
-    while deadline(at) <= as_of and (listing.last is None or at < listing.last):
-        if at.year in years:
-            half_months = half.get(at.year)
-        if half_months is None or at.month in half_months:
-            out.append(at)
+    at = first
+    while deadline(at) <= last:
+        out.append(at)
         at = next_quarter(at)
     return out
 
 
 def missing_quarters(  # noqa: PLR0913
-    stored: Mapping[str, Sequence[Stored]],
+    chains: Iterable[Sequence[str]],
+    stored: Mapping[str, Iterable[date]],
     listings: Mapping[str, Listing],
     by_isin: Mapping[str, Sequence[Announcement]],
     coverage_start: date,
@@ -287,20 +353,22 @@ def missing_quarters(  # noqa: PLR0913
     start: date,
     end: date,
 ) -> list[dict[str, Any]]:
-    """Each demanded period (`demanded_periods`) an ISIN has not stored, dated (`day`) by its
-    first announcement of results in `start..end` after the period's end and by its deadline
-    plus `GRACE`, else by its deadline; kept when that day is in `start..end`. Announcements
-    only date a finding, never excuse one."""
+    """Each demanded period (`demanded_periods`, over the chain's span) no ISIN of a company's
+    chain has stored, dated (`day`) by the chain's first announcement of results after the period's
+    end and by its deadline plus `GRACE` (one before `start` too), else by its deadline; kept when
+    that day is in `start..end`. The item names the chain's latest ISIN (`isin`) and all of its
+    ISINs (`isins`). Announcements only date a finding, never excuse one."""
     out = []
-    for isin, periods in stored.items():
-        have = {p.end for p in periods}
+    for chain in chains:
+        have = {p for isin in chain for p in stored.get(isin, ())}
         said = sorted(
-            a.announced.date()
-            for a in by_isin.get(isin, ())
-            if a.results and start <= a.announced.date() <= end
+            a.announced.date() for isin in chain for a in by_isin.get(isin, ()) if a.results
         )
-        listing = listings.get(isin, Listing(None, None))
-        for period in demanded_periods(periods, listing, coverage_start, as_of):
+        span = chain_listing(chain, listings)
+        latest = max(
+            chain, key=lambda i: (listings.get(i, Listing(None, None)).first or date.min, i)
+        )
+        for period in demanded_periods(span, coverage_start, as_of):
             if period in have:
                 continue
             due = deadline(period)
@@ -308,10 +376,10 @@ def missing_quarters(  # noqa: PLR0913
             if start <= day <= end:
                 out.append(
                     {
-                        "isin": isin,
+                        "isin": latest,
+                        "isins": list(chain),
                         "quarter": period.isoformat(),
                         "day": day.isoformat(),
-                        "why": "missing quarter",
                     }
                 )
     return sorted(out, key=lambda i: (i["isin"], i["quarter"]))
@@ -321,15 +389,34 @@ def lead_bucket(seconds: int) -> str:
     return "1-5 min" if seconds <= 300 else "5-60 min" if seconds <= 3600 else "over 1 h"
 
 
+def by_chain(
+    by_isin: Mapping[str, Sequence[Announcement]], chains: Iterable[Sequence[str]]
+) -> dict[str, list[Announcement]]:
+    """The announcements by ISIN, each ISIN of a chain holding the whole chain's (sorted): a
+    quarter filed under a company's new ISIN is announced under its old one, or the reverse."""
+    out = {isin: list(items) for isin, items in by_isin.items()}
+    for chain in chains:
+        if len(chain) < 2:  # noqa: PLR2004 - a chain of one ISIN has nothing to merge
+            continue
+        merged = sorted((a for i in chain for a in by_isin.get(i, ())), key=lambda a: a.announced)
+        for isin in chain:
+            out[isin] = merged
+    return out
+
+
 def judge_all(
     filings: Iterable[Filing],
     by_isin: Mapping[str, Sequence[Announcement]],
     by_symbol: Mapping[str, Sequence[Announcement]],
     reference_end: datetime,
+    broadcasts: Mapping[str, datetime] | None = None,
+    created: Mapping[str, datetime] | None = None,
 ) -> tuple[Counter[str], dict[str, list[dict[str, Any]]], dict[str, Counter[str]]]:
     """Every filing public by `reference_end` (the reference's last announcement) judged: the
     counts per code, the items per code, and the leads before dissemination by year and size.
-    Later filings are counted as `after_reference`."""
+    Later filings are counted as `after_reference`. `broadcasts`: the XBRL listing's broadcast
+    time by document URL; `created`: an unbroadcast integrated document's creation time
+    (`judge`)."""
     counts: Counter[str] = Counter()
     items: dict[str, list[dict[str, Any]]] = defaultdict(list)
     leads: dict[str, Counter[str]] = defaultdict(Counter)
@@ -337,10 +424,14 @@ def judge_all(
         if filing.public_at > reference_end:
             counts["after_reference"] += 1
             continue
-        found = candidates(by_isin.get(filing.isin, ()), filing.period_end) or candidates(
-            by_symbol.get(filing.symbol, ()), filing.period_end
+        found = (
+            candidates(by_isin.get(filing.isin, ()), filing.period_end)
+            or candidates(by_symbol.get(filing.symbol, ()), filing.period_end)
+            or near(by_isin.get(filing.isin, ()), filing.period_end, filing.public_at)
+            or near(by_symbol.get(filing.symbol, ()), filing.period_end, filing.public_at)
         )
-        code, detail = judge(filing, found)
+        url = filing.source_url
+        code, detail = judge(filing, found, (broadcasts or {}).get(url), (created or {}).get(url))
         counts["judged"] += 1
         if code is None:
             counts["in_order"] += 1
@@ -351,6 +442,7 @@ def judge_all(
         items[code].append(
             {
                 "symbol": filing.symbol,
+                "isin": filing.isin,
                 "period_end": filing.period_end.isoformat(),
                 "source": filing.source,
                 "public_at": filing.public_at.astimezone(IST).isoformat(),
@@ -363,13 +455,77 @@ def judge_all(
     return counts, items, leads
 
 
+@dataclass(frozen=True)
+class Excepted:
+    """A reviewed exception (`D5_EXCEPTIONS`): a finding `code` for a company and one period end,
+    explained and known, with why. A missing quarter is matched over the company's ISIN chain;
+    any other finding by its exact ISIN. There is no wildcard: a new finding is always reported."""
+
+    code: str
+    isin: str
+    period_end: str
+    reason: str
+
+
+def read_exceptions(path: Path) -> list[Excepted]:
+    """The reviewed exceptions file (CSV: code, isin, symbol for the reader, period_end, reason);
+    every row must give a reason and a period end (YYYY-MM-DD). A missing file is no
+    exceptions."""
+    if not path.is_file():
+        return []
+    with path.open(encoding="utf-8", newline="") as handle:
+        rows = [
+            Excepted(r["code"].strip(), r["isin"].strip(), r["period_end"].strip(), r["reason"])
+            for r in csv.DictReader(handle)
+        ]
+    bad = [r for r in rows if not r.reason.strip() or not _is_day(r.period_end)]
+    if bad:
+        raise ValueError(f"D5 exceptions without a reason or a period end: {bad[:3]}")
+    return rows
+
+
+def _is_day(text: str) -> bool:
+    try:
+        date.fromisoformat(text)
+    except ValueError:
+        return False
+    return True
+
+
+def except_items(
+    code: str, items: Sequence[Mapping[str, Any]], exceptions: Sequence[Excepted]
+) -> tuple[list[Mapping[str, Any]], list[dict[str, Any]], set[Excepted]]:
+    """`items` of finding `code` split into those still failing and those a reviewed exception
+    covers (each with its `reason`), and the exceptions used. An item names its company by
+    `isin` (a missing quarter also by `isins`, its chain) and its period by `quarter` or
+    `period_end`."""
+    rules = {(rule.isin, rule.period_end): rule for rule in exceptions if rule.code == code}
+    failing: list[Mapping[str, Any]] = []
+    excepted: list[dict[str, Any]] = []
+    used: set[Excepted] = set()
+    for item in items:
+        period = item.get("quarter") or item.get("period_end")
+        isins = (item.get("isins") if code == "results_quarter_missing" else None) or [
+            item.get("isin")
+        ]
+        match = next((rules[i, period] for i in isins if (i, period) in rules), None)
+        if match is None:
+            failing.append(item)
+        else:
+            used.add(match)
+            excepted.append({"code": code, **item, "reason": match.reason})
+    return failing, excepted, used
+
+
 SEVERITY = {
+    "results_quarter_missing": FAIL,
     "public_before_dissemination": FAIL,
     "estimate_before_first_announcement": FAIL,
     "estimate_unproven": FAIL,
     "before_any_announcement": FAIL,
     "between_announcements": WARN,
     "late_vs_announcement": WARN,
+    "xbrl_day_estimate": WARN,
     "unmatched": FAIL,
 }
 
@@ -378,7 +534,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     start = datetime.combine(ctx.start, datetime.min.time(), IST)
     end = datetime.combine(ctx.end + timedelta(days=1), datetime.min.time(), IST)
     rows = ctx.rows(
-        "SELECT symbol, isin, period_end, source, public_at, public_at_source "
+        "SELECT symbol, isin, period_end, source, public_at, public_at_source, source_url "
         "FROM hat_financial_result WHERE public_at >= :start AND public_at < :end",
         start=start.astimezone(UTC),
         end=end.astimezone(UTC),
@@ -418,40 +574,60 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings.append(finding("reference_missing", FAIL, [_REF_GLOB]))
         return check_result("D5", summary, findings)
     summary["reference_end"] = reference_end.isoformat()
-    counts, items, leads = judge_all(filings, by_isin, by_symbol, reference_end)
+    # every stored period by ISIN, whenever it became public (a filing public after the window
+    # still stores its quarter)
+    stored: dict[str, set[date]] = defaultdict(set)
+    for isin, period_end in ctx.rows(
+        "SELECT DISTINCT isin, period_end FROM hat_financial_result WHERE isin IS NOT NULL"
+    ):
+        stored[isin].add(period_end)
+    listings = _listings(ctx)
+    as_of = min(ctx.end, _data_end(ctx), date.today())
+    scope, scope_gap = _scope(ctx, as_of)
+    if scope_gap:  # the membership history starts too late: members are not all known
+        findings.append(finding("scope_unknown", FAIL, [scope_gap]))
+    chains = lineage_chains(_links(ctx), set(stored) | scope)
+    by_isin = by_chain(by_isin, chains)
+    broadcasts, created = _xbrl_times(ctx)
+    counts, items, leads = judge_all(
+        filings, by_isin, by_symbol, reference_end, broadcasts, created
+    )
     summary["judged"] = dict(counts)
     summary["leads_before_dissemination"] = {k: dict(v) for k, v in sorted(leads.items())}
-    for code, severity in SEVERITY.items():
-        if counts[code]:
-            found = {**finding(code, severity, items[code]), "count": counts[code]}
-            if severity == FAIL:
-                found = dated(found, [i["public_at"][:10] for i in items[code]])
-            findings.append(found)
-    # every stored period, whenever it became public (a filing public after the window still
-    # stores its quarter), with its length
-    stored_periods: dict[str, list[Stored]] = defaultdict(list)
-    for isin, period_end, months in ctx.rows(
-        "SELECT DISTINCT isin, period_end, (extract(year from age(period_end + 1, period_start)) "
-        "* 12 + extract(month from age(period_end + 1, period_start)))::int "
-        "FROM hat_financial_result WHERE isin IS NOT NULL"
-    ):
-        stored_periods[isin].append(Stored(period_end, months))
     holes = missing_quarters(
-        stored_periods,
-        _listings(ctx),
-        by_isin,
-        min((p.end for ps in stored_periods.values() for p in ps), default=ctx.end),
-        ctx.end,
-        ctx.start,
-        ctx.end,
+        chains, stored, listings, by_isin, FIRST_PERIOD_END, as_of, ctx.start, ctx.end
     )
-    summary["quarters_missing"] = len(holes)
+    items["results_quarter_missing"] = holes
+    summary["companies_judged"] = len(chains)
+    summary["quarters_demanded_as_of"] = as_of.isoformat()
+    exceptions = read_exceptions(D5_EXCEPTIONS)
+    excepted: list[dict[str, Any]] = []
+    used: set[Excepted] = set()
+    missing: list[Mapping[str, Any]] = []
+    for code, severity in SEVERITY.items():
+        kept, out, hit = except_items(code, items.get(code, []), exceptions)
+        excepted += out
+        used |= hit
+        if code == "results_quarter_missing":
+            missing = kept
+        if not kept:
+            continue
+        found = {**finding(code, severity, kept), "count": len(kept)}
+        if code == "results_quarter_missing":
+            found = dated(found, [i["day"] for i in kept])
+        elif severity == FAIL:
+            found = dated(found, [i["public_at"][:10] for i in kept])
+        findings.append(found)
+    summary["quarters_missing"] = len(missing)  # the excepted ones are under `excepted`
     summary["quarters_missing_by_quarter"] = dict(
-        sorted(Counter(i["quarter"] for i in holes).items())
+        sorted(Counter(i["quarter"] for i in missing).items())
     )
-    if holes:
-        found = {**finding("results_quarter_missing", FAIL, holes[:25]), "count": len(holes)}
-        findings.append(dated(found, [i["day"] for i in holes]))
+    summary["excepted"] = dict(Counter(i["code"] for i in excepted))
+    if excepted:
+        findings.append(finding("excepted", WARN, excepted, count=len(excepted)))
+    unused = [asdict(e) for e in exceptions if e not in used]
+    if unused:  # a listed exception nothing needs: the list is out of date
+        findings.append(finding("exception_unused", WARN, unused))
     gap = {
         str(y): n
         for y, n in sorted(ref_years.items())
@@ -493,3 +669,61 @@ def _listings(ctx: Context) -> dict[str, Listing]:  # pragma: no cover - real da
         first, last = traded.get(instrument, (None, None))
         out[isin] = Listing(listed or first, last)
     return out
+
+
+def _data_end(ctx: Context) -> date:  # pragma: no cover - real data
+    """The last session the daily bars hold."""
+    with ctx.store.connect() as con:
+        return con.execute("SELECT max(date) FROM bars_daily_raw").fetchone()[0]
+
+
+def _links(ctx: Context) -> list[tuple[str, str]]:  # pragma: no cover - real data
+    """The linked ISIN changes (old ISIN, new ISIN)."""
+    return [
+        (old, new)
+        for old, new in ctx.rows(
+            "SELECT o.isin, n.isin FROM hat_isin_lineage l "
+            "JOIN hat_instrument o ON o.id = l.old_instrument_id "
+            "JOIN hat_instrument n ON n.id = l.new_instrument_id WHERE l.status = 'linked'"
+        )
+    ]
+
+
+def _scope(ctx: Context, as_of: date) -> tuple[set[str], str]:  # pragma: no cover - real data
+    """The ISINs the results store covers (`results.universe`, NIFTY 500 point-in-time members
+    from the store's first quarter), stored rows or not; with why they cannot be known (the
+    membership history starting after that quarter), else ""."""
+    from ..results.universe import members  # noqa: PLC0415 - the check's own import cost
+
+    try:
+        found = members(ctx.session, ctx.store, FIRST_PERIOD_END, as_of)
+    except ValueError as gap:  # `universe.coverage_gap`
+        return set(), str(gap)
+    return {m.isin for m in found}, ""
+
+
+def _xbrl_times(
+    ctx: Context,
+) -> tuple[dict[str, datetime], dict[str, datetime]]:  # pragma: no cover - real data
+    """Each XBRL document's broadcast time in NSE's results listings (the raw cache the store
+    was parsed from), the latest when listed more than once; and each integrated document's
+    creation time where no listing gives it a broadcast time."""
+    cache = RawCache(ctx.root / NSE_RAW)
+    answers = []
+    for url, entry in cache.entries().items():
+        if entry.status != 200:  # noqa: PLR2004
+            continue
+        if url.startswith(INTEGRATED_API):
+            answers.append((LISTING_INTEGRATED, cache.body(entry)))
+        elif url.startswith(RESULTS_API):
+            answers.append((LISTING_REG33, cache.body(entry)))
+    out: dict[str, datetime] = {}
+    created: dict[str, datetime] = {}
+    for filing in filings_of(answers):
+        if filing.xbrl_url and filing.broadcast_at is not None:
+            out[filing.xbrl_url] = max(
+                out.get(filing.xbrl_url, filing.broadcast_at), filing.broadcast_at
+            )
+        elif filing.xbrl_url and filing.created_at is not None:
+            created[filing.xbrl_url] = filing.created_at
+    return out, {url: at for url, at in created.items() if url not in out}

@@ -24,6 +24,7 @@ from ...models import (
     HatIndexMembership,
     HatInstrument,
     HatInstrumentSymbolHistory,
+    HatIsinLineage,
 )
 from ..store import DATASET_BARS, DataStore, latest_rows
 from .scope import UNIVERSE_NIFTY500, coverage_gap, nifty500_first
@@ -52,6 +53,7 @@ class Member:
     symbols: tuple[str, ...]  # the current symbol first, then earlier ones since `since`
     nifty500: bool
     first_pass: date
+    older: tuple[str, ...] = ()  # the instruments of its earlier ISINs (`successors`)
 
 
 def passing(frame: pl.DataFrame, since: date) -> pl.DataFrame:
@@ -118,7 +120,8 @@ def members(
         first = {row["instrument_id"]: row["first_pass"] for row in found.iter_rows(named=True)}
     if not first:
         return []
-    ids = list(first)
+    head = successors(session)
+    ids = list({*first, *head, *head.values()})
     instruments = {
         str(i.id): i
         for i in session.scalars(select(HatInstrument).where(HatInstrument.id.in_(ids)))
@@ -139,22 +142,59 @@ def members(
         )
     ):
         history.setdefault(str(row.instrument_id), []).append((row.valid_from, row.symbol))
+    chains: dict[str, list[str]] = {}
+    for instrument_id in first:
+        chains.setdefault(head.get(instrument_id, instrument_id), []).append(instrument_id)
     out = []
-    for instrument_id, when in first.items():
-        instrument = instruments.get(instrument_id)
+    for latest, olds in chains.items():
+        instrument = instruments.get(latest)
         if instrument is None:
             continue
-        earlier = [s for _d, s in sorted(history.get(instrument_id, []), reverse=True)]
+        symbols = [instrument.symbol]
+        older = sorted(i for i, h in head.items() if h == latest)
+        for one in dict.fromkeys([latest, *olds, *older]):
+            symbols += [s for _d, s in sorted(history.get(one, []), reverse=True)]
+            if one in instruments:
+                symbols.append(instruments[one].symbol)
         out.append(
             Member(
-                instrument_id,
+                latest,
                 instrument.isin,
-                _unique([instrument.symbol, *earlier]),
-                instrument_id in nifty,
-                when,
+                _unique(symbols),
+                any(i in nifty for i in olds),
+                min(first[i] for i in olds),
+                tuple(older),
             )
         )
     return sorted(out, key=lambda m: (not m.nifty500, m.first_pass, m.symbols[0]))
+
+
+def successors(session: Session) -> dict[str, str]:
+    """Each instrument that changed ISIN (`hat_isin_lineage`, linked) -> its latest successor: a
+    company is covered once, as its current instrument, which holds every filing of every ISIN
+    it had (NSE's listing keeps naming a filing by the old ISIN long after a change)."""
+    newer = {
+        str(old): str(new)
+        for old, new in session.execute(
+            select(HatIsinLineage.old_instrument_id, HatIsinLineage.new_instrument_id).where(
+                HatIsinLineage.status == "linked"
+            )
+        )
+    }
+    return latest_of(newer, newer)
+
+
+def latest_of(newer: dict[str, str], ids: Iterable[str]) -> dict[str, str]:
+    """Each of `ids` with a successor in `newer` (old -> new) -> the end of its chain."""
+    out = {}
+    for start in ids:
+        at, seen = start, {start}
+        while at in newer and newer[at] not in seen:
+            at = newer[at]
+            seen.add(at)
+        if at != start:
+            out[start] = at
+    return out
 
 
 def _unique(items: Iterable[str]) -> tuple[str, ...]:

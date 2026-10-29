@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -20,15 +21,18 @@ from app.hat.data.results.growth import ResultRow
 from app.hat.data.results.ingest import (
     Held,
     _same,
+    _secondary_public_at,
     document_period,
     figures_key,
     filed_consolidated,
+    late_announcement,
+    may_move,
     secondary_by_rule,
     year_before_listing,
 )
 from app.hat.data.results.raw import RawCache
 from app.hat.data.results.secondary import Quarter, page_url, parse_page
-from app.hat.data.results.universe import BAR_SCHEMA, passing
+from app.hat.data.results.universe import BAR_SCHEMA, latest_of, passing
 from app.hat.models import HatFinancialResult
 from app.hat.time import IST
 
@@ -379,8 +383,129 @@ def test_results__name_stamp_time_is_never_used() -> None:
     unlisted = timing.xbrl_at(_filing(STAMPED, None))
     assert unlisted is not None
     assert unlisted.at.time() != datetime(2026, 7, 17, 7, 50, 4).time()
-    created = timing.xbrl_at(_filing(STAMPED, None, _ist(2026, 7, 17, 19, 50, 4)))
-    assert created == timing.FiledAt(_ist(2026, 7, 17, 19, 50, 4), False)
+    # an integrated filing with no broadcast time: its creation is no dissemination, so the
+    # end of that day (an upper bound), and its announcement first when one is matched
+    unbroadcast = _filing(STAMPED, None, _ist(2026, 7, 17, 19, 50, 4))
+    assert timing.unbroadcast(unbroadcast)
+    created = timing.xbrl_at(unbroadcast)
+    assert created == timing.FiledAt(_ist(2026, 7, 17, 23, 59, 59), True)
+    announced = _ist(2026, 7, 18, 10, 2)
+    assert timing.public_at(1, announced, created, floor=True) == timing.PublicAt(
+        announced, "announcement", False
+    )
+    assert timing.public_at(2, None, created, floor=True) == timing.PublicAt(
+        created.at, "xbrl_date", True
+    )
+    # an integrated filing broadcast after its document's creation counts from the broadcast
+    both = timing.xbrl_at(_filing(STAMPED, _ist(2026, 7, 17, 19, 52), _ist(2026, 7, 17, 19, 50, 4)))
+    assert both == timing.FiledAt(_ist(2026, 7, 17, 19, 52), False)
+
+
+def test_results__an_announcement_counts_from_its_dissemination() -> None:
+    """D5: through 2022 NSE disseminated a submission minutes (some days, a day) after `an_dt`."""
+    body = (
+        b'[{"symbol": "X", "an_dt": "30-Oct-2021 23:06:07", "exchdisstime": "30-Oct-2021 '
+        b'23:09:13", "desc": "Financial Result Updates", "attchmntText": ""},'
+        b'{"symbol": "Y", "an_dt": "01-Nov-2021 10:00:00", "exchdisstime": "-", "desc": "x"}]'
+    )
+    late, missing = nse.parse_announcements(body)
+    assert late.public == _ist(2021, 10, 30, 23, 9, 13)
+    assert missing.disseminated is None
+    assert missing.public == _ist(2021, 11, 1, 10, 15)  # padded: no dissemination time
+    # a quarter's taken announcement is recognised by its dissemination time
+    item = nse.Announcement(
+        "X", _ist(2025, 8, 1, 16, 0), "Financial Result Updates", "", _ist(2025, 8, 1, 16, 4)
+    )
+    assert timing.quarter_announcement([item], date(2025, 6, 30), {item.public}) is None
+
+
+def test_results__a_quarter_before_the_listing_counts_from_its_comparative() -> None:
+    listed = date(2024, 10, 22)
+    assert timing.last_quarter_end(date(2024, 10, 21)) == date(2024, 9, 30)
+    assert timing.last_quarter_end(date(2024, 12, 31)) == date(2024, 12, 31)
+    # listed by its end, or the first quarter it files as a listed company: its own results
+    assert timing.comparative_quarter(date(2024, 12, 31), listed) == date(2024, 12, 31)
+    assert timing.comparative_quarter(date(2024, 9, 30), listed) == date(2024, 9, 30)
+    assert timing.comparative_quarter(date(2024, 9, 30), None) == date(2024, 9, 30)
+    # earlier: the results a year on carry it as their year-ago quarter ...
+    assert timing.comparative_quarter(date(2024, 6, 30), listed) == date(2025, 6, 30)
+    # ... never before the first results after the listing
+    assert timing.comparative_quarter(date(2023, 6, 30), listed) == date(2024, 9, 30)
+
+
+def test_results__a_quarter_not_announced_by_its_deadline_counts_from_the_next_results() -> None:
+    # listed after the September quarter's deadline: its first results (January) carry it
+    listed = date(2023, 11, 30)
+    january = nse.Announcement(
+        "X", _ist(2024, 1, 25, 16, 30), "Financial Result Updates", "", _ist(2024, 1, 25, 16, 36)
+    )
+    assert _secondary_public_at([january], date(2023, 9, 30), set(), listed) == (
+        timing.PublicAt(january.public, "announcement", False)
+    )
+    # nothing announced yet: the deadline, never before the listing day's end
+    assert _secondary_public_at([], date(2023, 9, 30), set(), listed) == (
+        timing.PublicAt(timing.end_of(listed), "deadline", True)
+    )
+    assert _secondary_public_at([], date(2024, 3, 31), set(), listed) == (
+        timing.PublicAt(timing.deadline(date(2024, 3, 31)), "deadline", True)
+    )
+
+
+def test_results__every_isin_of_a_chain_maps_to_its_latest_instrument() -> None:
+    # old -> middle -> latest: the middle instrument joins the company too, whichever is selected
+    newer = {"old": "middle", "middle": "latest"}
+    assert latest_of(newer, newer) == {"old": "latest", "middle": "latest"}
+    assert latest_of({"a": "b", "b": "a"}, ["a"]) == {"a": "b"}  # a cycle ends
+
+
+def test_results__a_late_xbrl_takes_its_quarters_announcement_only_as_a_first_filing() -> None:
+    found = nse.Announcement("X", _ist(2022, 5, 30, 19, 49), "Financial Result Updates", "")
+
+    def filing(broadcast: datetime, *, revision: bool = False) -> nse.Filing:
+        return nse.Filing(
+            "reg33",
+            "X",
+            "INE1",
+            "1",
+            date(2022, 3, 31),
+            "consolidated",
+            broadcast,
+            None,
+            "u.xml",
+            revision,
+            "-",
+        )
+
+    xbrl = filing(_ist(2022, 6, 4, 10, 13))
+    assert late_announcement(xbrl, found) == found
+    assert late_announcement(filing(_ist(2022, 6, 4, 10, 13), revision=True), found) is None
+    assert late_announcement(filing(_ist(2022, 7, 4, 10, 13)), found) is None  # over 7 days
+    assert late_announcement(xbrl, None) is None
+    undated = replace(xbrl, broadcast_at=None, xbrl_url="https://x/corporate/xbrl/-")
+    assert late_announcement(undated, found) is None  # nothing dates the filing
+    # the reg33 listing has no revision flag: a row filed over a day after another of the same
+    # quarter and basis is one
+    marked = nse.later_filings(
+        [xbrl, filing(_ist(2022, 6, 4, 18, 0)), filing(_ist(2022, 8, 1, 10, 0))]
+    )
+    assert [f.revision for f in marked] == [False, False, True]
+    # one insurer's filing on the shared listing never makes another's a revision
+    other = replace(filing(_ist(2022, 8, 1, 10, 0)), symbol="Y")
+    assert [f.revision for f in nse.later_filings([xbrl, other])] == [False, False]
+
+
+def test_results__an_earlier_time_moves_only_onto_an_announcement_within_bounds() -> None:
+    old = _ist(2022, 6, 4, 10, 13)
+    on = timing.PublicAt(_ist(2022, 5, 30, 19, 49), "announcement", False)
+    assert may_move(old, on, date(2022, 3, 31))
+    assert may_move(
+        old, timing.PublicAt(old + timedelta(minutes=5), "xbrl", False), date(2022, 3, 31)
+    )
+    assert not may_move(old, timing.PublicAt(on.at, "xbrl", False), date(2022, 3, 31))
+    assert not may_move(old, on, date(2022, 6, 30))  # before the quarter ended
+    long_ago = timing.PublicAt(old - timedelta(days=121), "announcement", False)
+    assert not may_move(old, long_ago, date(2021, 12, 31))
+    assert not may_move(old, on, date(2022, 3, 31), version=2)  # a revision: later only
 
 
 def test_results__public_at() -> None:
@@ -448,7 +573,11 @@ def test_results__deadline_and_quarter_announcement() -> None:
     a = nse.Announcement("X", _ist(2025, 8, 1, 16, 0), "Financial Result Updates", "")
     b = nse.Announcement("X", _ist(2025, 8, 9, 16, 0), "Financial Result Updates", "")
     assert timing.quarter_announcement([a, b], date(2025, 6, 30), set()) == a
-    assert timing.quarter_announcement([a, b], date(2025, 6, 30), {a.at}) == b
+    assert timing.quarter_announcement([a, b], date(2025, 6, 30), {a.public}) == b
+    # a results update wins over an earlier board outcome that names no quarter
+    board = nse.Announcement("X", _ist(2025, 7, 30, 16, 0), "Outcome of Board Meeting", "results")
+    assert timing.quarter_announcement([board, a], date(2025, 6, 30), set()) == a
+    assert timing.quarter_announcement([board], date(2025, 6, 30), set()) == board
     assert timing.quarter_announcement([a], date(2025, 9, 30), set()) is None
 
 

@@ -249,11 +249,32 @@ BEGIN
 END $$ LANGUAGE plpgsql
 """
 
-# A financial result is never changed or removed: a revision is a new row (`data/results/`).
+# A financial result is never removed and its figures never change: a revision is a new row
+# (`data/results/`). Only its timing may move (`ingest.MemberIngest.retime`): later, or for a
+# first version earlier only onto an announcement's dissemination time (a time stored late),
+# after the quarter ended and by at most 120 days; an estimated time is exactly a deadline,
+# XBRL-date or observed one, and the XBRL time's estimate flag changes only with a later XBRL time.
 _FINANCIAL_RESULT_APPEND_ONLY_FN = """
 CREATE OR REPLACE FUNCTION hat_financial_result_is_append_only() RETURNS trigger AS $$
+DECLARE
+  timing text[] := ARRAY['public_at', 'public_at_source', 'public_at_estimated', 'xbrl_at',
+                         'xbrl_at_estimated'];
 BEGIN
-  RAISE EXCEPTION 'hat_financial_result is append-only';
+  IF TG_OP = 'UPDATE'
+     AND to_jsonb(NEW) - timing = to_jsonb(OLD) - timing
+     AND NEW.public_at_estimated
+         = (NEW.public_at_source IN ('deadline', 'xbrl_date', 'observed'))
+     AND (NEW.public_at >= OLD.public_at
+          OR (NEW.version = 1
+              AND NEW.public_at_source = 'announcement'
+              AND NEW.public_at >= (NEW.period_end + 1)::timestamp AT TIME ZONE 'Asia/Kolkata'
+              AND OLD.public_at - NEW.public_at <= interval '120 days'))
+     AND (NEW.xbrl_at IS NOT DISTINCT FROM OLD.xbrl_at OR NEW.xbrl_at > OLD.xbrl_at)
+     AND (NEW.xbrl_at IS DISTINCT FROM OLD.xbrl_at
+          OR NEW.xbrl_at_estimated IS NOT DISTINCT FROM OLD.xbrl_at_estimated) THEN
+    RETURN NEW;
+  END IF;
+  RAISE EXCEPTION 'hat_financial_result is append-only (only its timing may be corrected)';
 END $$ LANGUAGE plpgsql
 """
 

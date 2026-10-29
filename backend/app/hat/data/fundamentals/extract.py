@@ -32,7 +32,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 from ...time import IST
 from ..results.fetch import in_scope
-from ..results.ingest import announcements_index, insurance_filings, member_filings
+from ..results.ingest import (
+    announcements_index,
+    chain_owners,
+    insurance_filings,
+    member_filings,
+)
 from ..results.nse import Announcement, Filing
 from ..results.scope import BASIS_CONSOLIDATED_FIRST, CONSOLIDATED, by_rule
 from ..results.secondary import page_url
@@ -41,6 +46,7 @@ from ..results.timing import (
     anchor_date,
     match_announcement,
     public_at,
+    unbroadcast,
     xbrl_at,
 )
 from ..results.xbrl import XbrlError
@@ -168,7 +174,7 @@ def _filed_order(c: _Candidate) -> tuple[Any, ...]:
 def _announced_at(c: _Candidate, announcements: Sequence[Announcement]) -> datetime | None:
     anchor = anchor_date(c.filing)
     match = match_announcement(announcements, anchor, c.document.period_end) if anchor else None
-    return match.at if match else None
+    return match.public if match else None
 
 
 def nse_versions(
@@ -190,7 +196,7 @@ def nse_versions(
         version = 1 if held is None else held[0] + 1
         filed = xbrl_at(c.filing)
         announced = _announced_at(c, announcements) if version == 1 else None
-        when = public_at(version, announced, filed)
+        when = public_at(version, announced, filed, floor=unbroadcast(c.filing))
         if when is None:
             outcomes["nse_no_time"] += 1
             continue
@@ -458,14 +464,14 @@ def extract(
 
     for model in (HatFundamentalFiling, HatFundamentalFact):
         model.__table__.create(live_writer_engine, checkfirst=True)
-    context = (
-        announcements_index(nse_cache),
-        insurance_filings(nse_cache),
-        {m.isin: m.instrument_id for m in members},
-    )
     report = ExtractReport()
     now = utc_now()
     with db_session_scope(writes_data=True) as session:
+        context = (
+            announcements_index(nse_cache),
+            insurance_filings(nse_cache),
+            chain_owners(session, members),
+        )
         cursor = raw_cursor(session, HatFundamentalFiling)
         _clear(cursor, members, replace_all=replace_all)
         for n, member in enumerate(members, 1):

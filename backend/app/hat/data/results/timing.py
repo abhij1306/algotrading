@@ -3,17 +3,26 @@ Pure. Why each rule (A0 probe report, sections 5 and 6):
 
 - The results PDF goes out as a corporate announcement ('Financial Result Updates', or a
   board-meeting outcome naming the results in the Integrated Filing era) 31 minutes to 22.5 hours
-  before the XBRL, so `public_at` is the earlier of that announcement and `xbrl_at`.
+  before the XBRL, so `public_at` is the earlier of that announcement and `xbrl_at`. An
+  announcement counts from the exchange's dissemination (`Announcement.public`), never from the
+  company's submission time: NSE disseminated 1-5 minutes later through 2022, and up to days later
+  on some days (D5).
 - The listing's broadcast time is a later re-broadcast for many Reg 33 filings before 2022. The
   XBRL file name carries the filing date, but its time is a 12-hour clock without AM/PM: only the
   date is ever used. `xbrl_at` is the listing's broadcast time when it falls on that date, else
   the end of that date (`estimated`: an upper bound, never early). Integrated filings carry the
-  document's creation time.
+  document's creation time and the broadcast time: the later of the two. An integrated filing
+  with no broadcast time was not shown disseminated: it is public from its results announcement
+  (`unbroadcast`), else from the end of its creation day (estimated), never from its creation.
 - A revision (version 2 on) is public from its own filing, never from the original's
   announcement.
 - One company's announcement times read 12 hours early (05:08 for an evening board meeting). An
   announcement before 09:15 whose XBRL was filed, at a known time on the same day, 12 hours or
   more later is read as the PM time.
+- A quarter that ended before the company listed (a secondary-source quarter of a new listing,
+  or of one that moved to NSE) was not public on NSE then: it counts from the results that carry
+  it as their year-ago comparative, and never before the first results after the listing
+  (`comparative_quarter`).
 """
 
 from __future__ import annotations
@@ -63,8 +72,11 @@ class FiledAt:
 
 def xbrl_at(filing: Filing) -> FiledAt | None:
     """When the filing's XBRL was filed (rules above); None when nothing dates it."""
+    if unbroadcast(filing):
+        assert filing.created_at is not None
+        return FiledAt(end_of(filing.created_at.date()), True)
     if filing.created_at is not None:
-        return FiledAt(filing.created_at, False)
+        return FiledAt(max(filing.created_at, filing.broadcast_at or filing.created_at), False)
     stamped = stamp_date(filing.xbrl_url)
     broadcast = filing.broadcast_at
     if stamped is not None:
@@ -74,6 +86,11 @@ def xbrl_at(filing: Filing) -> FiledAt | None:
     if broadcast is not None:
         return FiledAt(broadcast, True)  # may be a later re-broadcast: late, never early
     return None
+
+
+def unbroadcast(filing: Filing) -> bool:
+    """An integrated filing whose listing gives no broadcast time (only the document's creation)."""
+    return filing.created_at is not None and filing.broadcast_at is None
 
 
 def anchor_date(filing: Filing) -> date | None:
@@ -183,9 +200,12 @@ class PublicAt:
     estimated: bool
 
 
-def public_at(version: int, announced: datetime | None, filed: FiledAt | None) -> PublicAt | None:
+def public_at(
+    version: int, announced: datetime | None, filed: FiledAt | None, *, floor: bool = False
+) -> PublicAt | None:
     """When version `version` of a filing became public (rules above); None when nothing dates
-    it (the filing is then excluded)."""
+    it (the filing is then excluded). `floor`: an `unbroadcast` filing, public no earlier than
+    its announcement."""
     filed_source = None
     if filed is not None:
         source = "xbrl_date" if filed.estimated else "xbrl"
@@ -193,7 +213,7 @@ def public_at(version: int, announced: datetime | None, filed: FiledAt | None) -
     if version > 1 or announced is None:
         return filed_source
     announced = pm_fix(announced, filed)
-    if filed_source is not None and filed_source.at < announced:
+    if filed_source is not None and filed_source.at < announced and not floor:
         return filed_source
     return PublicAt(announced, "announcement", False)
 
@@ -210,16 +230,42 @@ def quarter_announcement(
 ) -> Announcement | None:
     """The results announcement of a quarter no filing dates (a secondary-source row): among the
     results announcements after the quarter end and by its deadline plus 30 days that no other
-    quarter's filing already took (`used`), the first that names the quarter, else the first that
-    names no quarter."""
+    quarter's filing already took (`used`, by `Announcement.public`), the first that names the
+    quarter, else the first 'Financial Result Updates' item that names no quarter, else the first
+    board outcome naming the results that names none."""
     hi = deadline(period_end) + timedelta(days=30)
-    fallback = None
+    unnamed: list[Announcement] = []
     for item in items:
-        if not (period_end < item.at.date() and item.at <= hi and item.at not in used):
+        if not (period_end < item.at.date() and item.at <= hi and item.public not in used):
             continue
         quarters = named_quarter_ends(item.text)
         if period_end in quarters:
             return item
-        if not quarters and fallback is None:
-            fallback = item
-    return fallback
+        if not quarters:
+            unnamed.append(item)
+    for rule in ("result_updates", "board_outcome"):
+        for item in unnamed:
+            if is_results_announcement(item) == rule:
+                return item
+    return None
+
+
+def last_quarter_end(day: date) -> date:
+    """The latest quarter end on or before `day`."""
+    first = date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)  # the first day of day's quarter
+    following = date(first.year + (first.month == 10), (first.month + 2) % 12 + 1, 1)
+    return day if day == following - timedelta(days=1) else first - timedelta(days=1)
+
+
+def comparative_quarter(period_end: date, listed_on: date | None) -> date:
+    """The quarter whose results first made `period_end`'s figures public on NSE: `period_end`
+    itself for a company listed by its end, or for the last quarter that ended before the
+    listing (the first results the company files as a listed one); for an earlier quarter, the
+    later of that first quarter and the quarter a year on (whose results show it as the year-ago
+    comparative)."""
+    if listed_on is None or period_end >= listed_on:
+        return period_end
+    first = last_quarter_end(listed_on - timedelta(days=1))
+    if period_end >= first:
+        return period_end
+    return max(date(period_end.year + 1, period_end.month, period_end.day), first)

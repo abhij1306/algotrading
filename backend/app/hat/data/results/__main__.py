@@ -37,7 +37,7 @@ if TYPE_CHECKING:
     from .universe import Member
 
 FIRST_PERIOD_END = date(2020, 3, 31)  # owner, 2026-10-28: XBRL from the March 2020 quarter
-UNIVERSE_SINCE = date(2021, 1, 1)
+UNIVERSE_SINCE = FIRST_PERIOD_END  # members from the first quarter the store holds
 NSE_RAW = Path("raw/nse-results")
 SECONDARY_RAW = Path("raw/secondary-results")
 REPORT_DIR = Path("results")  # under the data root: the parse step's filing log
