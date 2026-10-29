@@ -84,7 +84,8 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.step == "fetch-secondary":
         from .secondary import fetch_secondary
 
-        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered, args.basis))
+        nse = RawCache(root / NSE_RAW)
+        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered, args.basis, nse))
     else:
         from .ingest import parse
 

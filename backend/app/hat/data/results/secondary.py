@@ -27,13 +27,17 @@ from .scope import BASIS_CONSOLIDATED_FIRST, read_standalone
 from .universe import Member
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from .nse import Answer
 
 logger = logging.getLogger(__name__)
 
 BASE = "https://www.screener.in"
 INTERVAL_SECONDS = 3.0
-PAGE_MAX_AGE = timedelta(hours=20)
+# a page is asked again a week after its fetch, or sooner once NSE lists a filing of the company
+# broadcast after it (`page_reusable`): the page changes only with a new quarter
+PAGE_MAX_AGE = timedelta(days=7)
 CRORE = Decimal(10) ** 7
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko)",
@@ -179,6 +183,37 @@ def parse_page(body: bytes) -> list[Quarter]:
     return out
 
 
+def page_reusable(fetched_at: datetime, now: datetime, latest_filing: datetime | None) -> bool:
+    """Whether a cached page stands: fetched within `PAGE_MAX_AGE` of `now` and not before the
+    company's latest NSE filing (None: none known)."""
+    return fetched_at >= now - PAGE_MAX_AGE and (
+        latest_filing is None or fetched_at >= latest_filing
+    )
+
+
+def latest_filings(nse: RawCache, members: Iterable[Member]) -> dict[str, datetime]:
+    """Each member's latest NSE results filing time (broadcast, else document creation), from
+    the cached NSE listings, keyed by its current symbol; members with none are left out."""
+    from .fetch import listing_urls
+    from .nse import filings_of
+
+    entries = nse.entries()
+    out: dict[str, datetime] = {}
+    for member in members:
+        answers = [
+            (listing, nse.body(entry))
+            for symbol in member.symbols
+            for listing, url in listing_urls(symbol)
+            if (entry := entries.get(url)) is not None and entry.status == 200
+        ]
+        times = [
+            t for f in filings_of(answers) if (t := f.broadcast_at or f.created_at) is not None
+        ]
+        if times:
+            out[member.symbols[0]] = max(times)
+    return out
+
+
 @dataclass
 class SecondaryReport:
     members: int = 0
@@ -188,29 +223,38 @@ class SecondaryReport:
 
 
 def fetch_secondary(
-    cache: RawCache, members: list[Member], basis: str = BASIS_CONSOLIDATED_FIRST
+    cache: RawCache,
+    members: list[Member],
+    basis: str = BASIS_CONSOLIDATED_FIRST,
+    nse: RawCache | None = None,
 ) -> SecondaryReport:  # pragma: no cover - the network
     """The consolidated page of every covered instrument's current symbol, and its standalone
-    page when the basis rule asks for it (`scope.read_standalone`), one request every 3 s; a page
-    cached in the last `PAGE_MAX_AGE` is not asked again."""
+    page when the basis rule asks for it (`scope.read_standalone`), one request every 3 s; a
+    cached page is asked again only when `page_reusable` says so against the company's latest
+    filing in the NSE cache `nse` (run `fetch` first)."""
     from .nse import Client
 
     client = Client(cache, interval=INTERVAL_SECONDS, headers=HEADERS)
     now = datetime.now(UTC)
+    latest = latest_filings(nse, members) if nse is not None else {}
     report = SecondaryReport()
 
-    def read(url: str) -> Answer:
+    def read(url: str, filed: datetime | None) -> Answer:
         before = client.requests
-        answer = client.get(url, referer=None, reuse=lambda e: e.fetched_at >= now - PAGE_MAX_AGE)
+        answer = client.get(
+            url, referer=None, reuse=lambda e: page_reusable(e.fetched_at, now, filed)
+        )
         report.pages += 1
         report.fetched += client.requests > before
         return answer
 
     for n, member in enumerate(members, 1):
-        consolidated = read(page_url(member.symbols[0], "consolidated"))
+        symbol = member.symbols[0]
+        filed = latest.get(symbol)
+        consolidated = read(page_url(symbol, "consolidated"), filed)
         found = len(parse_page(consolidated.body)) if consolidated.status == 200 else None
         if read_standalone(basis, found):
-            read(page_url(member.symbols[0], "standalone"))
+            read(page_url(symbol, "standalone"), filed)
         report.members = n
         if n % 50 == 0:
             logger.info("secondary %d/%d, %d requests", n, len(members), client.requests)
