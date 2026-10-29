@@ -17,8 +17,8 @@ from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
     adjustments,
     bars5m,
-    keyed_exceptions,
     filings,
+    keyed_exceptions,
     membership,
     rawbars,
     references,
