@@ -35,3 +35,8 @@ def rights_entitlement(isin: str) -> bool:
 def etf_unit(isin: str) -> bool:
     """An ETF or mutual fund unit (`INF`)."""
     return isin.startswith("INF")
+
+
+def trust_unit(isin: str) -> bool:
+    """A REIT or InvIT unit (types `25` and `23`)."""
+    return len(isin) == 12 and isin[7:9] in ("23", "25")

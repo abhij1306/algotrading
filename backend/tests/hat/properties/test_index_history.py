@@ -18,6 +18,7 @@ from app.hat.data.index_history import (
     NIFTY_500,
     NIFTY_500_TRI,
     ArchiveIndexSource,
+    changed_rows,
     compare_tri,
     fetch_tri_raw,
     latest_tri_raw,
@@ -28,7 +29,7 @@ from app.hat.data.index_history import (
     tri_request,
 )
 from app.hat.data.pacing import Pacer
-from app.hat.data.store import DataStore, StoreError, keep_once
+from app.hat.data.store import DataStore, IndexRow, StoreError, keep_once
 
 DAY = date(2013, 10, 9)
 CSV = (
@@ -191,3 +192,29 @@ def test_keep_once_never_replaces_a_file_that_appeared_meanwhile(
     assert path.read_bytes() == b"first"
     assert keep_once(path, b"first") is False
     assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+def test_reload_rewrites_only_a_stored_index_the_file_gives_otherwise() -> None:
+    # NIFTY 50 2025-09-18: the MCP snapshot's high was 25448.95, NSE's file says 25448.55
+    stored = {
+        "NIFTY 50": IndexRow(
+            "NIFTY 50",
+            Decimal("25441.05"),
+            Decimal("25448.95"),
+            Decimal("25329.75"),
+            Decimal("25423.6"),
+        ),
+        "NIFTY 500": IndexRow("NIFTY 500", Decimal(1), Decimal(2), Decimal(1), Decimal("1.50")),
+    }
+    file_rows = [
+        IndexRow(
+            "NIFTY 50",
+            Decimal("25441.05"),
+            Decimal("25448.55"),
+            Decimal("25329.75"),
+            Decimal("25423.6"),
+        ),
+        IndexRow("NIFTY 500", Decimal(1), Decimal(2), Decimal(1), Decimal("1.5")),
+        IndexRow("INDIA VIX", Decimal(10), Decimal(11), Decimal(9), Decimal(10)),
+    ]
+    assert changed_rows(stored, file_rows) == [file_rows[0]]

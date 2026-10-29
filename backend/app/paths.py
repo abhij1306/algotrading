@@ -34,6 +34,12 @@ D5_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "
 # `app/hat/data/verify/exceptions.py`.
 D2_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d2_exceptions.csv"
 D6_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d6_exceptions.csv"
+# D3, D4 and D7's reviewed exceptions (code, key, day, reason), read through
+# `app/hat/data/verify/keyed_exceptions.py`.
+VERIFY_EXCEPTIONS = {
+    check: PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / f"{check}_exceptions.csv"
+    for check in ("d3", "d4", "d7")
+}
 
 # The golden sample format, which every golden file is validated against before a check reads it
 # (docs/backtests/golden-sample.md; the image copies it).

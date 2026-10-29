@@ -223,12 +223,28 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   day must still fit the raw daily bar. Known gap: for 213 of the 497 symbols (the first
   downloaded) the days from 2026-08-03 have no 15:15-15:25 bars. Those days are written when they
   fit; the stored Fyers days cover them to 2026-10-21. A rule that needs the closing bars (the
-  close's volume, a last-bar exit) must treat a day without a 15:25 bar as incomplete.
+  close's volume, a last-bar exit) must treat a day without a 15:25 bar as incomplete. Known gap:
+  in 2026 the export's 09:15 bar opens at the pre-open auction price, often outside the bar's own
+  high and low; such a bar is refused (`bars_5m_rejects`, rule `ohlc`), never repaired, so the
+  day has no 09:15 bar and a run decides it on the daily estimate.
+- **A 5-minute session is replayed on its edges** (orchestrator, 2026-10-30). A run replays a
+  session's stored bars (`intraday.on_basis`) when its 09:15 and 15:25 bars are there, every bar
+  is on the IST 5-minute grid once and the 09:15 open is within 5% of the daily open; other
+  sessions are decided on the daily estimate. An empty interior bucket is a window without a
+  trade, as live's bar builder sees it (`data.bars` makes no bar for one): of the empty buckets
+  the broker export also covers, it has a traded bar for 0.4%, all on six dates where the stored
+  vendor folded the trades into the next bar (volume kept, seen up to 25 minutes late). Why:
+  wanting every bucket refused the quiet days of thin stocks (a quarter of the under Rs 10 crore
+  days) by how the afternoon traded, data the morning does not have. The 15:25 bar is still read
+  at the close; the days refused for it alone are vendor truncations, and a run decides them on
+  the daily estimate rather than dropping them.
 - **Backtests from 2016-01-01** (owner, 2026-10-25). The NIFTY 500 history starts 2016-01-01:
   the 2011-2015 notices are incomplete (they do not fit the archived lists of 2014 and 2015).
   Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run
   starting earlier is refused `backtest_starts_before_membership@2016-01-01`. Bars before 2016
-  still warm the indicators up.
+  still warm the indicators up. That is all a run reads before its first session: the lookback
+  reads bars and features, which rank all ordinary equity, never the index, so membership before
+  2016 serves no backtest and the data verify (D3) warns on those sessions, never fails.
 - **Industry history (orchestrator, 2026-10-26).** One taxonomy: the `Industry` column of NSE's
   current NIFTY 500 list. Each instrument chain takes its industry from the NIFTY 500 list
   snapshots that list one of its ISINs in that taxonomy (the lists from 2022; the 2010-2020

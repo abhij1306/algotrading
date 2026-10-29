@@ -8,9 +8,11 @@ build loads them (`load_index_history`), and the nightly ingest reads the archiv
 for one day (`parse_index_archive_csv`). The TRI comes from niftyindices' total-return series,
 close only, and niftyindices' price history fills a day neither file source has (both
 `NiftyIndicesSource`). `backfill` loads the bar days an index lacks, from each source in turn;
-a day no source has stays missing, never carried. The nightly ingest loads the TRI of the night's
-session the same way (`nightly_tri`), and `verify-tri` checks the stored TRI against niftyindices'
-answers kept on disk under `raw_tri/`.
+a day no source has stays missing, never carried. `reload` rewrites a stored day's levels that
+NSE's file of the day gives otherwise (the file is what NSE publishes; the nightly ingest took
+the MCP snapshot before it). The nightly ingest loads the TRI of the night's session the same way
+(`nightly_tri`), and `verify-tri` checks the stored TRI against niftyindices' answers kept on disk
+under `raw_tri/`.
 """
 
 from __future__ import annotations
@@ -557,6 +559,34 @@ def backfill(
     return report
 
 
+def changed_rows(stored: Mapping[str, IndexRow], found: Iterable[IndexRow]) -> list[IndexRow]:
+    """The rows of `found` (NSE's file of a day) whose index is stored (`stored`, by index name)
+    with other levels; an index the day does not store is `backfill`'s, not this."""
+    return [r for r in found if r.index_name in stored and stored[r.index_name] != r]
+
+
+def reload_days(
+    store: DataStore,
+    source: IndexSource,
+    days: Iterable[date],
+    *,
+    apply: bool,
+    names: Sequence[str] = INDEX_NAMES,
+) -> list[tuple[date, IndexRow, IndexRow]]:
+    """Each of `days`' stored index rows that `source` (NSE's daily file) gives other levels
+    for, as (day, the file's row, the stored row); with `apply` the file's rows replace them
+    (`upsert_index`, the other indices of the day kept)."""
+    out = []
+    for day in sorted(set(days)):
+        stored = {r.index_name: r for r in store.read_index(day)}
+        found = [p.row for name in names for p in source(name, day, day)]
+        rows = changed_rows(stored, found)
+        out += [(day, r, stored[r.index_name]) for r in rows]
+        if apply and rows:
+            store.upsert_index(day, rows)
+    return out
+
+
 # [A] How far back the nightly TRI step looks for bar days without a TRI close: niftyindices
 # may publish a session's TRI after that night's ingest, so the next nights ask for it again.
 TRI_LOOKBACK = timedelta(days=14)
@@ -741,11 +771,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
     night = commands.add_parser("nightly-tri", help="the nightly ingest's TRI step for one day")
     night.add_argument("--day", type=date.fromisoformat, required=True)
     night.add_argument("--apply", action="store_true")
+    reload = commands.add_parser("reload", help="rewrite stored levels NSE's day file differs on")
+    reload.add_argument("--day", dest="days", type=date.fromisoformat, action="append")
+    reload.add_argument("--apply", action="store_true")
     check = commands.add_parser("verify-tri", help="the stored TRI against niftyindices' files")
     check.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
     check.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
     check.add_argument("--fetch", action="store_true", help="first keep each year's answer")
-    for sub in (fill, night, check):
+    for sub in (fill, night, reload, check):
         sub.add_argument(
             "--interval",
             type=float,
@@ -774,6 +807,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the ne
         _print_tri_check(result, fetched, args.start, args.end)
         return 0 if result.clean and set(fetched.values()) <= {"saved", "kept"} else 1
     archive = ArchiveIndexSource(store, http_fetcher(), pacer, names=INDEX_NAMES)
+    if args.command == "reload":
+        changed = reload_days(store, archive, args.days or [], apply=args.apply)
+        sys.stdout.write(f"index reload ({'applied' if args.apply else 'dry run'})\n")
+        for day, new, old in changed:
+            sys.stdout.write(f"  {day} {new.index_name}: stored {old} -> file {new}\n")
+        missing = sorted(set(archive.not_found) | set(archive.errors))
+        if missing:
+            sys.stdout.write(f"  no file: {', '.join(str(d) for d in missing)}\n")
+        return 1 if missing else 0
     history = NiftyIndicesSource(post, pacer, HISTORY_URL, HISTORY_INDICES, parse_history_json)
     end = args.end or date.today()
     sources = (archive, tri_source(post, pacer), history)

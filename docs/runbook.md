@@ -425,8 +425,13 @@ one item by its own ISIN and day (an ex-date, a link's date, a move's date) and 
 value it was reviewed at (`pin`, `field=value`: a changed item fails again), from
 `d2_exceptions.csv` and `d6_exceptions.csv` beside it; a row whose reason starts `OPEN:` excepts
 nothing and lists its item as an `open_defect` (reviewed, no cause found). D2 and D6 judge stocks only (funds, rights entitlements are
-counted). A membership history that starts after
-2020-03-31 fails D5 (`scope_unknown`). A check without its reference fails
+counted). D3, D4 and D7 read theirs from `d3_exceptions.csv`, `d4_exceptions.csv` and
+`d7_exceptions.csv` beside it (code; key: the symbol for D3, the instrument id for D4, the index
+for D7; day; reason; no pin). A membership history that starts after 2020-03-31 fails D5
+(`scope_unknown`). D3 judges every session from 2016-01-01 (`sessions_before_history` warns
+before it); D7 compares an index day neither NSE's archive nor niftyindices' copy has a day file
+for with niftyindices' price history (`verify_reference/index/history_<index>_<year>.json`). A
+check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the
 check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
 seconds apart, into `verify_reference/<group>/`, each file written once (NSE archives, the
@@ -566,6 +571,7 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `demerger_notice exits [SYMBOL...]` | The session each stored demerger's forced exit falls on, or why it holds |
 | `point_in_time report` / `pending SYMBOL` | Lagged and undated actions, version ledger (projection check must be 0); factor-pending sessions |
 | `index_history backfill [--from D] [--to D] [--apply]` | Fill the bar days `index_daily` lacks: the nightly indices from NSE's day files, then niftyindices' copy, then its price history; NIFTY 500 TRI from niftyindices (a year per request). A day no source has stays missing and is listed (exit 1; India VIX has 5 such days), never the last close carried. The nightly ingest fetches the TRI itself (below); a day still missing in its `tri_missing` is filled here |
+| `index_history reload --day D [--day D ...] [--apply]` | Rewrite a stored day's index levels that NSE's day file for it differs on (the file fetched into `raw/` when not kept); the day's other indices are kept. Prints each changed row, stored beside the file's. Dry run by default; back up `index_daily` before `--apply` |
 | `index_history nightly-tri --day D [--apply]` | The ingest's TRI step for one session: NIFTY 500 TRI for the bar days from 14 days before `D` to `D` that lack it. Each night's `ingest.completed` carries `tri_stored`, `tri_missing` (bar days niftyindices has not published yet: left missing, asked again the next nights) and `tri_failed`; a TRI failure never fails the ingest. Dry run by default |
 | `index_history verify-tri --from D --to D [--fetch]` | The stored NIFTY 500 TRI closes against niftyindices' own answers kept under `raw_tri/` (exact decimal equality): lists mismatches, stored days not in the raw files, raw days not stored, years with no file; exit 1 on any. `--fetch` first asks for each calendar year of the range (one request per year, paced) and keeps the answer as `NIFTY_500_TRI_<first>_<last>.json`; an answer with the same closes as a kept file is `kept`, one with other closes is reported `changed` and never replaces it. Writes nothing else |
 | `renames` | Seed symbol history from renames |

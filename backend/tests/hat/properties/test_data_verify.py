@@ -17,6 +17,7 @@ from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
     adjustments,
     bars5m,
+    keyed_exceptions,
     filings,
     membership,
     rawbars,
@@ -287,12 +288,19 @@ def test_a_new_report_changes_the_audit_key() -> None:
     assert key != audit.cache_key("s", D1, D3, used_5m=False, golden_digest=None)
 
 
-def test_d3_keeps_todays_list_under_today_only_for_a_run_to_the_last_session() -> None:
+def test_d3_keeps_todays_list_under_its_utc_fetch_instant_only_for_a_run_to_the_last_session() -> (
+    None
+):
     # second review item 5: a past window never stores today's list under its own end date
-    today, last = date(2026, 10, 29), date(2026, 10, 28)
-    assert membership.live_list_name(today, last, last) == "20261029000000_nsearchives-live.csv"
-    assert membership.live_list_name(today, date(2024, 12, 31), last) is None
-    assert membership.live_list_name(today, last, None) is None
+    fetched, last = datetime(2026, 10, 30, 3, 16, 53, tzinfo=IST), date(2026, 10, 29)
+    name = "20261029214653_nsearchives-live.csv"
+    assert membership.live_list_name(fetched, last, last) == name
+    assert membership.live_list_name(fetched, date(2024, 12, 31), last) is None
+    assert membership.live_list_name(fetched, last, None) is None
+    # read back as UTC, it shows the session closed before it was fetched
+    stamp = membership.capture_at(name)
+    assert stamp is not None
+    assert membership.list_session([last, date(2026, 10, 30)], stamp) == last
 
 
 def test_probe_answers_merge_across_the_runs_files() -> None:
@@ -646,7 +654,17 @@ def test_d3_an_archived_list_difference_is_explained_or_named() -> None:
     assert {e["isin"] for e in explained} == {"DUM545A01024", "INE3"}
     # blocking item 3: a listed member HAT has no instrument for is survivorship, not explained
     assert {w["isin"] for w in wrong} == {"INE2", "INE9"}
-    assert membership.capture_day("20181004105632_niftyindices.csv") == date(2018, 10, 4)
+    assert membership.capture_at("20181004105632_niftyindices.csv") == datetime(
+        2018, 10, 4, 10, 56, 32, tzinfo=UTC
+    )
+    assert membership.capture_at("cdx-x.json") is None
+
+
+def test_d3_a_listed_trust_unit_without_an_instrument_is_explained() -> None:
+    # BAGMANE (a REIT, type 25) has no HAT instrument: no universe may hold one
+    explained, wrong = membership.compare_list({"INE2OVN25015": "BAGMANE"}, {}, set(), set())
+    assert [e["why"] for e in explained] == ["REIT or InvIT unit, no instrument (stocks only)"]
+    assert wrong == []
 
 
 # --- D4 -----------------------------------------------------------------------------------------
@@ -685,6 +703,48 @@ def test_d4_reads_the_labelling_from_the_days_own_rows() -> None:
         datetime(2024, 3, 1, 9, 15).time(),
         datetime(2024, 3, 1, 15, 25).time(),
     ]
+
+
+def test_d4_a_pre_open_print_at_0915_does_not_make_an_end_labelled_day_start_labelled() -> None:
+    # APARINDS 2021-12-22: a flat traded 09:15 row (the bar ending 09:15) on an end-labelled day
+    rows = [_src("09:15", 825, 64), _src("09:20", 814.55, 32046), _src("15:30", 811)]
+    assert bars5m.end_labelled(rows)
+    # a start-labelled day has no traded 15:30 row (a placeholder carries no volume)
+    assert not bars5m.end_labelled([_src("09:15", 10), _src("15:30", 11, 0)])
+
+
+def test_d4_the_last_bars_close_is_the_closing_auctions_on_one_side_only() -> None:
+    # ANANTRAJ 2025-08-11: stored 15:25 close 540.0, the source's 538.75, the daily close 538.75
+    t1525 = datetime(2024, 3, 1, 15, 25).time()
+    src = bars5m.SourceBar(
+        datetime(2024, 3, 1, 15, 25, tzinfo=IST), 539.0, 541.95, 538.5, 538.75, 9
+    )
+    stored = (539.0, 541.95, 538.5, 540.0, 9)
+    assert bars5m.close_convention(t1525, stored, src, 1.0, 538.75)
+    assert not bars5m.close_convention(t1525, stored, src, 1.0, 539.5)  # neither is the close
+    assert not bars5m.close_convention(
+        datetime(2024, 3, 1, 15, 20).time(), stored, src, 1.0, 538.75
+    )
+    high = (539.0, 542.5, 538.5, 540.0, 9)  # the high differs too: not the auction's doing
+    assert not bars5m.close_convention(t1525, high, src, 1.0, 538.75)
+    # the scale is the median ratio of the closes: on a real day the other bars agree
+    earlier = [
+        bars5m.SourceBar(datetime(2024, 3, 1, 15, m, tzinfo=IST), 539.0, 539.5, 538.0, 539.0, 9)
+        for m in (15, 20)
+    ]
+    bars = {b.label.time(): (539.0, 539.5, 538.0, 539.0, 9) for b in earlier}
+    result = bars5m.compare_bars(D1, {**bars, t1525: stored}, [*earlier, src], 538.75)
+    assert (result.price, result.close_convention) == (0, 1)
+
+
+def test_d4_a_stored_day_reaches_the_daily_extremes_only_exactly_and_bar_by_bar_whole() -> None:
+    t915, t920 = datetime(2024, 3, 1, 9, 15).time(), datetime(2024, 3, 1, 9, 20).time()
+    stored = {t915: (100.0, 102.0, 99.0, 101.0, 5), t920: (101.0, 103.0, 100.0, 102.0, 5)}
+    assert bars5m.reaches_daily(stored, 103.0, 99.0)
+    assert not bars5m.reaches_daily(stored, 103.5, 99.0)  # short of the high
+    # ACE 2026-07-23's Kotak 09:15 bar: an open above its own high
+    broken = {**stored, t915: (104.0, 102.0, 99.0, 101.0, 5)}
+    assert not bars5m.reaches_daily(broken, 103.0, 99.0)
 
 
 def test_d4_stored_bars_match_the_source_bar_by_bar() -> None:
@@ -945,6 +1005,52 @@ def test_d7_index_levels_match_exactly_and_blank_file_values_are_skipped() -> No
     assert [w["field"] for w in wrong] == ["close"]
 
 
+def test_d7_an_index_nse_did_not_compute_is_not_one_to_store() -> None:
+    # India VIX on 2021-02-12: the file carries the day before's close, no open, high or low
+    text = (
+        "Index Name,Index Date,Open Index Value,High Index Value,Low Index Value,"
+        "Closing Index Value\nIndia VIX,12-02-2021,-,-,-,23.05\n"
+        "Nifty 50,12-02-2021,15100,15200,15000,15163.3\n"
+    )
+    source = series.read_index_file(text, ["INDIA VIX", "NIFTY 50"])
+    assert series.not_computed(source["INDIA VIX"])
+    assert not series.not_computed(source["NIFTY 50"])
+    stored = {"NIFTY 50": [Decimal(15100), Decimal(15200), Decimal(15000), Decimal("15163.3")]}
+    wrong, missing = series.compare_index_day(date(2021, 2, 12), stored, source)
+    assert (wrong, missing) == ([], [])
+
+
+def test_exceptions_except_only_the_named_items_and_report_unused_rows(tmp_path: Path) -> None:
+    path = tmp_path / "x.csv"
+    path.write_text(
+        "code,key,day,reason\n"
+        "index_session_not_stored,india vix,2014-12-15,no source has it\n"
+        "index_session_not_stored,INDIA VIX,2015-01-01,stale row\n",
+        encoding="utf-8",
+    )
+    rows = keyed_exceptions.read_exceptions(path)
+    found = keyed_exceptions.Exceptions.of(rows, lambda _code, i: (i["index"], i["day"]))
+    items = [
+        {"index": "INDIA VIX", "day": "2014-12-15"},
+        {"index": "INDIA VIX", "day": "2015-03-12"},
+    ]
+    assert found.split("index_session_not_stored", items) == [items[1]]
+    assert found.split("index_level_mismatch", items) == items
+    out = {f["code"]: f for f in found.findings()}
+    assert out["excepted"]["items"][0]["reason"] == "no source has it"
+    assert [u["day"] for u in out["exception_unused"]["items"]] == ["2015-01-01"]
+    path.write_text("code,key,day,reason\nx,Y,2015-01-01,\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="reason"):
+        keyed_exceptions.read_exceptions(path)
+
+
+def test_the_reviewed_exception_files_read() -> None:
+    from app.paths import VERIFY_EXCEPTIONS
+
+    for path in VERIFY_EXCEPTIONS.values():
+        keyed_exceptions.read_exceptions(path)
+
+
 def test_d7_etf_factors_come_from_nses_unit_actions() -> None:
     # item 10: the factor is NSE's, not the store's own
     text = (
@@ -1018,13 +1124,33 @@ def test_d5_announcements_with_only_symbols_still_give_the_reference_end() -> No
     assert filings.last_announcement({}, {}) is None
 
 
-def test_d3_a_capture_is_judged_on_the_session_it_shows() -> None:
-    # CodeAnt: a closed day's list shows the session before, judged on that session (D1 Fri,
-    # D2 Mon): a Saturday capture is Friday's, never Monday's
+def test_d3_a_capture_is_judged_on_the_last_session_closed_when_it_was_taken() -> None:
+    # CodeAnt: a closed day's list shows the session before (D1 Fri, D2 Mon): a Saturday
+    # capture is Friday's, never Monday's
     sessions = [D1, D2, D3]
-    assert membership.list_session(sessions, D1 + timedelta(days=1)) == D1
-    assert membership.list_session(sessions, D2) == D2
-    assert membership.list_session(sessions, D1 - timedelta(days=1)) is None
+
+    def at(day: date, hour: int, minute: int = 0) -> datetime:
+        return datetime(day.year, day.month, day.day, hour, minute, tzinfo=IST)
+
+    assert membership.list_session(sessions, at(D1 + timedelta(days=1), 12)) == D1
+    assert membership.list_session(sessions, at(D2, 15, 30)) == D2
+    # the Wayback stamp 20260929204533 (UTC) is 02:15 IST on the effective session of a
+    # change, and NSE's file still held the members before it: it shows the session before
+    assert membership.list_session(sessions, at(D3, 2, 15)) == D2
+    assert membership.list_session(sessions, at(D3, 11)) == D2
+    assert membership.list_session(sessions, at(D1, 9)) is None
+
+
+def test_d3_sessions_before_the_history_warn_and_after_it_fail() -> None:
+    days = [date(2015, 12, 31), date(2016, 1, 1), date(2016, 1, 4), date(2016, 1, 5)]
+    found = {f["code"]: f for f in membership.scope_findings(days, days[1], days[2])}
+    assert found["sessions_before_history"]["severity"] == "warn"
+    assert found["sessions_without_membership"]["days"] == ["2016-01-05"]
+    assert "history_starts_late" not in found
+    late = {f["code"]: f for f in membership.scope_findings(days, days[2], days[3])}
+    # a history starting after 2016-01-01 leaves a backtest session without members
+    assert late["history_starts_late"]["days"] == ["2016-01-01"]
+    assert late["sessions_before_history"]["sessions"] == 1
 
 
 def test_d2_a_reused_ticker_never_pulls_in_another_chain() -> None:
@@ -1301,13 +1427,13 @@ def test_a_newer_stale_failure_counts_even_outside_its_coverage() -> None:
     )
 
 
-def test_d3_the_live_list_is_fetched_for_a_run_to_the_last_session_by_today() -> None:
+def test_d3_the_live_list_is_fetched_for_a_run_to_the_last_closed_session() -> None:
     # third review item 6: the calendar lists the year's coming sessions
     sessions = [D1, D2, D3, date(2024, 12, 31)]
-    assert membership.last_session_by(sessions, D3) == D3
-    assert membership.last_session_by(sessions, date(2024, 3, 3)) == D1
-    last = membership.last_session_by(sessions, D3)
-    assert membership.live_list_name(D3, D3, last) is not None
+    night = datetime(2024, 3, 6, 3, tzinfo=IST)
+    last = membership.list_session(sessions, night)
+    assert last == D3
+    assert membership.live_list_name(night, D3, last) is not None
 
 
 def test_d5_a_pre_listing_quarter_is_matched_near_its_public_at() -> None:

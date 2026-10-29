@@ -3,7 +3,7 @@
 NSE publishes only today's list, so the history is rebuilt by undoing each change notice from
 today's list back, newest first, with the repo's strict `index_membership.undo_changes`.
 
-Usage (from the repo root, backend venv active; `pip install pdfplumber` once for `text`):
+Usage (from the repo root, backend venv active):
 
     python scripts/data/nifty500_membership.py --work DIR fetch       # notices + today's list
     python scripts/data/nifty500_membership.py --work DIR text        # PDF -> text
@@ -379,7 +379,7 @@ def cmd_fetch(work: Path) -> None:
 
 
 def cmd_text(work: Path) -> None:
-    import pdfplumber  # noqa: PLC0415 - optional operator dependency
+    import pdfplumber  # noqa: PLC0415 - only this step reads PDFs
 
     out = work / "raw" / "text"
     out.mkdir(parents=True, exist_ok=True)

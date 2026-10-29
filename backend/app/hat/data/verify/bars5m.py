@@ -2,12 +2,14 @@
 back to the Kotak raw files they came from (`--kotak`), and the stored days checked again.
 
 The raw files are read here on their own, with their own time labelling: a day whose traded bars
-include one labelled 15:30 and none 09:15 is labelled by bar end (each bar starts five minutes
-before its label), any other by bar start (`end_labelled`); the importer's switch date is not
-used. Each refused (instrument, day) is aggregated from those candles (the session's 5-minute
-bars from 09:15 to 15:30 IST), and held against the raw daily bar with the import's envelope
-(`bars_basis.check_day`, tolerance `history_envelope_tol`, never loosened here). The first class
-that fits, in this order:
+include one labelled 15:30 is labelled by bar end (each bar starts five minutes before its label),
+any other by bar start (`end_labelled`); the importer's switch date is not used. In the export of
+2026-10-28 every day to 2022-01-21 has a traded 15:30 row and no later day has one; 4,956 of
+those early days also have a traded row labelled 09:15, the pre-open print (the bar ending
+09:15), which the importer drops as outside the session. Each refused (instrument, day) is
+aggregated from those candles (the session's 5-minute bars from 09:15 to 15:30 IST), and held
+against the raw daily bar with the import's envelope (`bars_basis.check_day`, tolerance
+`history_envelope_tol`, never loosened here). The first class that fits, in this order:
 
 - `no_daily_now`: no raw daily bar for the day now (ours: the bar or the ISIN map);
 - `stored_now`: the day is stored now (a later run let it in: the ledger row is stale);
@@ -41,12 +43,24 @@ stored labels are a bar off); the day's scale (the stored history is the source 
 factors it carries, one number a day) is found from the bars themselves, and then every stored
 bar must be a source bar at that scale (prices within `PRICE_TICK` of a tick, volume within one
 share or `VOLUME_SLACK`), and every traded source bar in the session must be stored. A stored day
-with no raw file, a bar that differs, or a bar on one side only fails (dated). The envelope check
+with no raw file, a bar that differs, or a bar on one side only fails (dated), except:
+- the session's last bar (15:25) differing only in its close, one side the daily close
+  (`last_bar_close`, warn): NSE's close is the closing auction's price, which one copy of the
+  vendor's history stamps on the last bar and the other does not (`close_convention`);
+- a day inside a Fyers window whose stored bars reach the daily high and low exactly and break
+  no bar's own range (`second_vendor_differs`, warn: Kotak is no reference there). Measured on
+  the sample of 2026-10-29, the stored Fyers days reach both on 272 of 275 days and Kotak's bars
+  on 123; Kotak's bars miss the extremes by a median 0.12% on a third of its own days in every
+  year (`reaches_daily` by writer and year in the summary), and on 20 bars break their own
+  range. A Fyers window day without a Kotak file is a symbol Kotak does not carry
+  (`second_vendor_missing`, warn); a Kotak day without one still fails;
+- a failed day the reviewed list names (`VERIFY_EXCEPTIONS["d4"]`: code, instrument id, day,
+  reason), warned as `excepted` (`keyed_exceptions.py`). The envelope check
 above holds each scaled day to the raw daily bar, so the scale itself is checked there. The store's
 bars came from Fyers' minute history inside its download windows (`minute_history/progress.json`)
 and from the Kotak import outside them; the summary splits the compare by that writer
 (`by_writer`): inside a Fyers window Kotak is a second vendor, not the bars' own source, and a
-difference there still fails (the stored bars are not proven).
+difference there fails unless the stored day reaches the daily extremes (above).
 """
 
 from __future__ import annotations
@@ -61,12 +75,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from app.paths import VERIFY_EXCEPTIONS
+
 from ...money import require_exact
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
 from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
 from . import dated, seeded_sample
 from .context import Context
+from .keyed_exceptions import Exceptions, read_exceptions
 
 BASIS_STEP = 0.03  # a factor's mark: both extremes off by 3% or more, the same way and ratio
 AUCTION_NEAR = 0.01  # a missed extreme within 1% of the daily open: the auction's
@@ -130,9 +147,9 @@ class SourceBar:
 
 def end_labelled(bars: Iterable[SourceBar]) -> bool:
     """Whether a day's rows label each bar by its end: a traded bar labelled 15:30 (the last
-    bar's end) and none at 09:15 (the first bar's start)."""
-    traded = {b.label.time() for b in bars if b.volume > 0}
-    return time(15, 30) in traded and time(9, 15) not in traded
+    bar's end). A traded 09:15 row does not say otherwise: on an end-labelled day it is the
+    pre-open print."""
+    return any(b.volume > 0 and b.label.time() == time(15, 30) for b in bars)
 
 
 def candles_of(rows: Iterable[SourceBar]) -> list[Candle]:
@@ -160,6 +177,37 @@ class BarCompare:
     stored_only: int
     source_only: int
     rule: bool  # no other alignment matches more bars than `end_labelled`'s
+    close_convention: int = (
+        0  # price differences that are the last bar's close (`close_convention`)
+    )
+
+
+LAST_BAR = time(15, 25)
+
+
+def close_convention(
+    start: time, stored: Sequence[float], source: SourceBar, scale: float, daily_close: float | None
+) -> bool:
+    """Whether a pair differs only as the closing auction makes it: the session's last bar, every
+    price but the close matching, and one side's close the daily close (NSE's close is the
+    auction's price, which one copy of the history stamps on the last bar)."""
+    if start != LAST_BAR or daily_close is None:
+        return False
+    rest = SourceBar(source.label, source.open, source.high, source.low, stored[3] / scale, 0)
+    if not _matches(stored, rest, scale):
+        return False
+    tick = max(PRICE_TICK * scale, PRICE_SLACK * abs(daily_close))
+    return abs(stored[3] - daily_close) <= tick or abs(source.close * scale - daily_close) <= tick
+
+
+def reaches_daily(stored: Mapping[time, Sequence[float]], high: float, low: float) -> bool:
+    """Whether a day's stored session bars reach the daily high and low exactly (a tick) and
+    break no bar's own range (low <= open, close <= high)."""
+    inside = [v for t, v in stored.items() if SESSION[0] <= t < SESSION[1]]
+    if not inside or any(not v[2] <= min(v[0], v[3]) <= max(v[0], v[3]) <= v[1] for v in inside):
+        return False
+    top, bottom = max(v[1] for v in inside), min(v[2] for v in inside)
+    return abs(top - high) <= PRICE_TICK and abs(bottom - low) <= PRICE_TICK
 
 
 def _matches(stored: Sequence[float], source: SourceBar, scale: float) -> bool:
@@ -188,15 +236,18 @@ def _scale(pairs: Sequence[tuple[Sequence[float], SourceBar]]) -> float:
 
 
 def compare_bars(
-    day: date, stored: Mapping[time, Sequence[float]], source: Sequence[SourceBar]
+    day: date,
+    stored: Mapping[time, Sequence[float]],
+    source: Sequence[SourceBar],
+    daily_close: float | None = None,
 ) -> BarCompare:
     """A day's stored bars (start time -> open, high, low, close, volume) against the source's
     rows of that day. The bars pair by the labelling rule (`end_labelled`: 0 or 5 minutes from
     start to label), never by the alignment that fits best, so bars stored a bar off still differ;
     `rule` is False when the other alignment would match more bars (the stored labels are off).
     The scale is the median of stored close over source close; then each stored bar's prices and
-    volume against the scaled source bar, and the bars on one side only (a source bar counts
-    when it is traded and starts in the session)."""
+    volume against the scaled source bar (a `close_convention` pair counted apart), and the bars
+    on one side only (a source bar counts when it is traded and starts in the session)."""
     by_label = {b.label.time(): b for b in source if b.label.date() == day}
     shift = 5 if end_labelled(by_label.values()) else 0
     scores = []
@@ -206,22 +257,29 @@ def compare_bars(
         scores.append(sum(_matches(v, b, found_scale) for v, b in found))
     pairs = _pairs(stored, by_label, day, shift)
     scale = _scale(pairs)
-    price = sum(not _matches(v, b, scale) for v, b in pairs)
+    move = timedelta(minutes=shift)
+    timed = [
+        (t, v, b)
+        for t, v in stored.items()
+        if (b := by_label.get((datetime.combine(day, t) + move).time())) is not None
+    ]
+    differ = [(t, v, b) for t, v, b in timed if not _matches(v, b, scale)]
+    convention = sum(close_convention(t, v, b, scale, daily_close) for t, v, b in differ)
     volume = sum(
         abs(v[4] - b.volume / scale) > max(1.0, VOLUME_SLACK * abs(v[4])) for v, b in pairs
     )
-    move = timedelta(minutes=shift)
-    starts = {(datetime.combine(day, t) - move).time() for t, b in by_label.items() if b.volume > 0}
-    source_only = sum(1 for t in starts if SESSION[0] <= t < SESSION[1] and t not in stored)
+    traded = {(datetime.combine(day, t) - move).time() for t, b in by_label.items() if b.volume > 0}
+    source_only = sum(1 for t in traded if SESSION[0] <= t < SESSION[1] and t not in stored)
     return BarCompare(
         shift,
         scale,
         len(stored),
-        price,
+        len(differ) - convention,
         volume,
         len(stored) - len(pairs),
         source_only,
         scores[0] >= scores[1],
+        convention,
     )
 
 
@@ -539,6 +597,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     return check_result("D4", summary, findings)
 
 
+_DAILY_DAY_SQL = """
+SELECT CAST(instrument_id AS VARCHAR), high, low, close FROM bars_daily_raw_latest
+WHERE date = ? AND CAST(instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
+"""
+
 _DAY_BARS_SQL = """
 SELECT CAST(instrument_id AS VARCHAR), bar_start, open, high, low, close, volume
 FROM read_parquet(?) WHERE CAST(instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
@@ -583,8 +646,11 @@ def _compare_sample(
     for instrument, day in sample:
         by_day[day].append(instrument)
     bars: dict[tuple[str, date], dict[time, tuple[float, ...]]] = defaultdict(dict)
+    daily: dict[tuple[str, date], tuple[float, float, float]] = {}
     with closing(ctx.store.connect()) as con:
         for day, instruments in sorted(by_day.items()):
+            for i, h, lo, c in con.execute(_DAILY_DAY_SQL, [day, instruments]).fetchall():
+                daily[(i, day)] = (float(h), float(lo), float(c))
             path = ctx.root / DATASET / f"date={day.isoformat()}" / FILE_NAME
             for i, start, o, h, lo, c, v in con.execute(
                 _DAY_BARS_SQL, [str(path), instruments]
@@ -604,6 +670,7 @@ def _compare_sample(
     counts: Counter[str] = Counter()
     by_year: dict[str, Counter[str]] = defaultdict(Counter)
     items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    reach: dict[str, Counter[str]] = defaultdict(Counter)
     for instrument, days in sorted(by_instrument.items()):
         rows: list[SourceBar] = []
         for symbol in names.get(instrument, ()):
@@ -617,16 +684,31 @@ def _compare_sample(
                 (w := windows.get(n)) is not None and w[0] <= day <= w[1]
                 for n in names.get(instrument, ())
             )
-            writer = by_writer["fyers_window" if fyers else "kotak_import"]
+            name = "fyers_window" if fyers else "kotak_import"
+            writer = by_writer[name]
             source = [r for r in rows if r.label.date() == day]
             item = {"instrument_id": instrument, "day": day.isoformat()}
             writer["days"] += 1
+            bar = daily.get((instrument, day))
+            reached = bar is not None and reaches_daily(bars[(instrument, day)], bar[0], bar[1])
+            reach[f"{name} {day.year}"]["days"] += 1
+            reach[f"{name} {day.year}"]["reach"] += reached
             if not source:
-                writer["stored_day_without_source"] += 1
-                counts["stored_day_without_source"] += 1
-                items["stored_day_without_source"].append(item)
+                code = "second_vendor_missing" if fyers else "stored_day_without_source"
+                writer[code] += 1
+                counts[code] += 1
+                items[code].append(item)
                 continue
-            result = compare_bars(day, bars[(instrument, day)], source)
+            result = compare_bars(
+                day, bars[(instrument, day)], source, None if bar is None else bar[2]
+            )
+            if result.close_convention:
+                counts["last_bar_close"] += result.close_convention
+                writer["last_bar_close"] += result.close_convention
+                items["last_bar_close"].append({**item, "bars": result.close_convention})
+            # inside a Fyers window Kotak is a second vendor: a stored day NSE's daily bar
+            # proves (`reaches_daily`) is not failed by Kotak's differing bars
+            explained = fyers and reached
             counts["days"] += 1
             counts["bars"] += result.bars
             year[f"shift_{result.shift}"] += 1
@@ -646,15 +728,26 @@ def _compare_sample(
                     counts[code] += n
                     year[code] += n
                     writer[code] += n
-                    items[code].append({**item, "bars": n, "scale": round(result.scale, 6)})
+                    found = {**item, "bars": n, "scale": round(result.scale, 6)}
+                    if explained and code != "bar_alignment_not_rule":
+                        counts["second_vendor_differs"] += n
+                        items["second_vendor_differs"].append({**found, "code": code})
+                    else:
+                        items[code].append(found)
+    exceptions = Exceptions.of(
+        read_exceptions(VERIFY_EXCEPTIONS["d4"]), lambda _code, i: (i["instrument_id"], i["day"])
+    )
+    failed = {
+        code: exceptions.split(code, [i for i in items[code] if "code" not in i]) for code in items
+    }
     findings = [
         dated(
             {
-                **finding(code, FAIL, items[code]),
-                "count": counts[code],
-                "days_with": len(items[code]),
+                **finding(code, FAIL, failed[code]),
+                "count": sum(i.get("bars", 1) for i in failed[code]),
+                "days_with": len(failed[code]),
             },
-            [i["day"] for i in items[code]],
+            [i["day"] for i in failed[code]],
         )
         for code in (
             "stored_day_without_source",
@@ -664,14 +757,29 @@ def _compare_sample(
             "stored_bar_not_in_source",
             "source_bar_not_stored",
         )
-        if items[code]
+        if failed.get(code)
     ]
+    for code in ("last_bar_close", "second_vendor_differs", "second_vendor_missing"):
+        if items[code]:
+            findings.append(
+                {
+                    **finding(code, WARN, items[code]),
+                    "count": counts[code],
+                    "days_with": len({(i["instrument_id"], i["day"]) for i in items[code]}),
+                }
+            )
+    findings += exceptions.findings()
     summary = {
         "sample": len(sample),
         "of_stored_days": len(pool),
         **{k: counts[k] for k in ("days", "bars", "scaled_days")},
         "by_year": {y: dict(c) for y, c in sorted(by_year.items())},
         "by_writer": {w: dict(c) for w, c in sorted(by_writer.items())},
+        # stored days whose bars reach the daily high and low exactly, by writer and year
+        "reaches_daily": {
+            k: {**c, "pct": round(100 * c["reach"] / c["days"], 1)}
+            for k, c in sorted(reach.items())
+        },
     }
     return summary, findings
 
