@@ -62,6 +62,21 @@ def test_compare_counts_added_and_names_rewritten_and_removed_files() -> None:
     assert record.commit_message("2026-10-29", {}) == "record 2026-10-29: no change"
 
 
+def test_commit_message_names_a_few_files_per_store_and_counts_the_rest() -> None:
+    # a full features rebuild rewrites thousands of partitions: the message stays bounded
+    paths = tuple(f"features_daily/date=2020-01-{n:04d}/part.parquet" for n in range(4000))
+    changes = {"features_daily": record.Changes(0, paths, ()), "etf": record.Changes(1, (), ("x",))}
+    message = record.commit_message("2026-10-29", changes, listed=2)
+    assert message == (
+        "record 2026-10-29: etf +1 ~0 -1, features_daily +0 ~4000 -0\n\n"
+        "removed x\n"
+        f"rewritten {paths[0]}\nrewritten {paths[1]}\n"
+        "rewritten 3998 more in features_daily (manifest diff)"
+    )
+    full = record.commit_message("2026-10-29", changes)
+    assert len(full.encode()) < 16_384  # far under the 128 KB argument limit it once broke
+
+
 def test_exclusion_by_component_or_by_prefix_from_the_root() -> None:
     patterns = ["__pycache__", "*.pyc", "/scratch", "backtests/runs"]
     assert snapshot.excluded("a/__pycache__/m.py", patterns)
