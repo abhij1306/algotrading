@@ -161,9 +161,9 @@ def test_a_narrow_run_never_hides_a_wider_reports_checks() -> None:
         datetime(2026, 10, 30, tzinfo=UTC),
         {"digest": "data-old"},
     )
-    pick = verify.pick_reports([(fresh, None), (full, None)], "D2", lambda d: "data-1")
+    pick = verify.pick_reports([(fresh, None), (full, None)], "D2", lambda d: "data-1", D1, D3)
     assert pick == (full, None)
-    assert verify.pick_reports([(fresh, None)], "D2", lambda d: "data-1") == "stale"
+    assert verify.pick_reports([(fresh, None)], "D2", lambda d: "data-1", D1, D3) == "stale"
 
 
 def test_a_run_is_judged_from_the_first_session_it_reads() -> None:
@@ -959,3 +959,85 @@ def test_d7_reads_the_tri_answers_on_its_own_and_fails_their_gaps() -> None:
     assert out["tri_not_in_niftyindices"] == [D2.isoformat()]
     assert out["tri_unanswered"] == [D3.isoformat()]
     assert "tri_mismatch" not in out
+
+
+def test_d7_a_stored_day_in_an_unfetched_earlier_year_is_unanswered_not_missing() -> None:
+    # CodeAnt: only a later year's answer is kept; an earlier stored day is outside every
+    # answer's span, so it is unanswered (no reference), never "not in niftyindices"
+    later = series.TriAnswer(D2, D3, {D2: Decimal(10), D3: Decimal(11)}, 0)
+    early = date(2023, 6, 1)
+    out = series.compare_tri(
+        {early: Decimal(5), D2: Decimal(10), D3: Decimal(11)}, [later], [early, D2, D3], early, D3
+    )
+    assert "tri_not_in_niftyindices" not in out
+    assert out["tri_unanswered"] == [early.isoformat()]
+
+
+def test_d5_announcements_with_only_symbols_still_give_the_reference_end() -> None:
+    # CodeAnt: rows with a symbol and no ISIN must not abort D5
+    at = datetime(2024, 3, 2, 18, tzinfo=IST)
+    said = filings.Announcement(at, None)
+    assert filings.last_announcement({}, {"ABC": [said]}) == at
+    assert filings.last_announcement({}, {}) is None
+
+
+def test_d3_a_capture_is_judged_on_the_session_it_shows() -> None:
+    # CodeAnt: a closed day's list shows the session before, judged on that session (D1 Fri,
+    # D2 Mon): a Saturday capture is Friday's, never Monday's
+    sessions = [D1, D2, D3]
+    assert membership.list_session(sessions, D1 + timedelta(days=1)) == D1
+    assert membership.list_session(sessions, D2) == D2
+    assert membership.list_session(sessions, D1 - timedelta(days=1)) is None
+
+
+def test_d2_a_reused_ticker_never_pulls_in_another_chain() -> None:
+    # CodeAnt: ABC is now another company's ticker; the reference names the old ISIN
+    by_key = {"ABC": {"old", "new_company"}, "INE111A01011": {"old"}}
+    assert adjustments.ref_instruments({"ABC", "INE111A01011"}, by_key) == ["old"]
+    assert adjustments.ref_instruments({"ABC", "INE999Z01019"}, by_key) == ["new_company", "old"]
+    ref = RefAction("split_bonus", D2, frozenset({"ABC", "INE111A01011"}), Fraction(1, 2))
+    keys = {"old": frozenset({"ABC", "INE111A01011"}), "new_company": frozenset({"ABC"})}
+    stored = [_stored_action("new_company", "split", "0.5")]  # only the unrelated chain's action
+    summary, _ = adjustments.compare_factors([ref], stored, keys, {}, [], ALL_KINDS)
+    assert summary.get("split_bonus:equal") is None
+    assert summary["split_bonus:not_stored"] == 1
+
+
+def test_an_older_pass_never_overrides_a_newer_failure_in_the_window() -> None:
+    # second Opus review item 2: the newer, wider report failed D2 inside the window and went
+    # stale from a change outside it; the older, narrower pass on the data now must not verify
+    bad = verify.dated(audit.finding("x", audit.FAIL, []), [D2])
+    newer = verify.report_doc(
+        {"D2": _check("fail", bad)},
+        verify.FIRST_DAY,
+        D3,
+        datetime(2026, 11, 1, tzinfo=UTC),
+        {"digest": "wide-old"},
+    )
+    older = verify.report_doc(
+        {"D2": _check("pass")}, D1, D3, datetime(2026, 10, 1, tzinfo=UTC), SNAP
+    )
+    reports = [(newer, None), (older, None)]
+    assert verify.pick_reports(reports, "D2", lambda d: "data-1", D1, D3) == "stale"
+    status = verify.window_status(reports, D1, D3, lambda d: "data-1", used_5m=False)
+    assert status["verdicts"]["D2"] == "stale"
+    assert not status["verified"]
+    # a failure outside the window does not stop the older pass from judging it
+    assert verify.pick_reports(reports, "D2", lambda d: "data-1", D3, D3) == (older, None)
+
+
+def test_d5_an_early_reporters_missing_quarter_is_found() -> None:
+    # second Opus review item 1: results 28 days after the quarter, about 110 days after the
+    # prior stored period; the September quarter is missing from the store
+    assert filings.quarter_before(date(2023, 10, 28)) == date(2023, 9, 30)
+    assert filings.quarter_before(date(2024, 1, 1)) == date(2023, 12, 31)
+    stored = {"INE1": [date(2023, 3, 31), date(2023, 6, 30), date(2023, 12, 31)]}
+    say = [
+        filings.Announcement(datetime(2023, 7, 20, tzinfo=IST), None),
+        filings.Announcement(datetime(2023, 10, 28, tzinfo=IST), None),  # Sep quarter
+        filings.Announcement(datetime(2023, 10, 29, tzinfo=IST), None),  # same quarter, once
+        filings.Announcement(datetime(2024, 1, 25, tzinfo=IST), None),
+    ]
+    end = datetime(2024, 12, 31, tzinfo=IST)
+    holes = filings.missing_quarters(stored, {"INE1": say}, end)
+    assert holes == [("INE1", datetime(2023, 10, 28, tzinfo=IST))]

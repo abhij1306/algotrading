@@ -511,6 +511,20 @@ def factor_coverage(starts: Mapping[str, date], end: date) -> tuple[date, date] 
     return max(starts.values()), end
 
 
+_ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
+
+
+def ref_instruments(keys: Iterable[str], by_key: Mapping[str, set[str]]) -> list[str]:
+    """The instruments a reference action names: those its ISIN finds (each instrument's keys
+    hold its chain's ISINs), and only when no ISIN finds one, those its symbol finds, so a
+    ticker another company reused never pulls in an unrelated chain."""
+    keys = list(keys)
+    by_isin = set().union(*(by_key.get(k, set()) for k in keys if _ISIN.match(k)))
+    if by_isin:
+        return sorted(by_isin)
+    return sorted(set().union(*(by_key.get(k, set()) for k in keys if not _ISIN.match(k))))
+
+
 def compare_factors(
     refs: Sequence[RefAction],
     stored: Sequence[StoredAction],
@@ -545,7 +559,7 @@ def compare_factors(
         )
 
     for ref in refs:
-        ids = sorted(set().union(*(by_key.get(k, set()) for k in ref.keys)))
+        ids = ref_instruments(ref.keys, by_key)
         if not ids:
             note("no_instrument", ref)
             continue

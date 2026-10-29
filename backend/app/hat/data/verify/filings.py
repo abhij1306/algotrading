@@ -149,6 +149,12 @@ def read_announcements(
     return by_isin, by_symbol, years
 
 
+def last_announcement(*tables: Mapping[str, Sequence[Announcement]]) -> datetime | None:
+    """The latest announcement in any of the tables (by ISIN, by symbol: a row may carry only a
+    symbol); None when they hold none."""
+    return max((a.announced for t in tables for items in t.values() for a in items), default=None)
+
+
 def candidates(items: Sequence[Announcement], period_end: date) -> list[Announcement]:
     """The announcements (sorted) made after `period_end` and within `MATCH_DAYS` of it."""
     first = datetime.combine(period_end + timedelta(days=1), datetime.min.time(), IST)
@@ -194,25 +200,32 @@ def missing_quarters(
     by_isin: Mapping[str, Sequence[Announcement]],
     reference_end: datetime,
 ) -> list[tuple[str, datetime]]:
-    """Announcements of results (ISIN, time) inside an ISIN's stored history (from its first
-    stored period's end to `MATCH_DAYS` after its last, by `reference_end`) that no stored
-    filing of the ISIN accounts for (none whose period ended before the announcement and
-    within `MATCH_DAYS` of it): a quarter announced but missing from the store."""
-    out = []
+    """Quarters announced but missing from the store: each announcement of results inside an
+    ISIN's stored history (after its first stored period's end, up to `MATCH_DAYS` after its
+    last, by `reference_end`) names the latest quarter end before it (`quarter_before`), and
+    that period must be stored for the ISIN. One (ISIN, first announcement) per missing
+    quarter."""
+    out: dict[tuple[str, date], datetime] = {}
     for isin, periods in stored.items():
-        ends = sorted(set(periods))
+        ends = set(periods)
         if not ends:
             continue
-        last = datetime.combine(ends[-1] + timedelta(days=MATCH_DAYS), datetime.max.time(), IST)
+        first = min(ends)
+        last = datetime.combine(max(ends) + timedelta(days=MATCH_DAYS), datetime.max.time(), IST)
         for item in by_isin.get(isin, ()):
             day = item.announced.date()
-            if not item.results or day <= ends[0] or item.announced > min(last, reference_end):
+            if not item.results or day <= first or item.announced > min(last, reference_end):
                 continue
-            # the stored period nearest before the announcement
-            i = bisect_left(ends, day) - 1
-            if i < 0 or (day - ends[i]).days > MATCH_DAYS:
-                out.append((isin, item.announced))
-    return out
+            quarter = quarter_before(day)
+            if quarter not in ends and (isin, quarter) not in out:
+                out[isin, quarter] = item.announced
+    return sorted((isin, at) for (isin, _), at in out.items())
+
+
+def quarter_before(day: date) -> date:
+    """The latest calendar quarter end before `day`."""
+    start = date(day.year, 3 * ((day.month - 1) // 3) + 1, 1)  # the quarter `day` is in
+    return start - timedelta(days=1)
 
 
 def lead_bucket(seconds: int) -> str:
@@ -310,7 +323,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings.append(finding("reference_missing", FAIL, [_REF_GLOB]))
         return check_result("D5", summary, findings)
     by_isin, by_symbol, ref_years = read_announcements(sorted(ctx.ca_data.glob(_REF_GLOB)))
-    reference_end = max(a.announced for items in by_isin.values() for a in items)
+    reference_end = last_announcement(by_isin, by_symbol)
+    if reference_end is None:
+        ctx.note("D5: the results_announcements files hold no announcement of results")
+        findings.append(finding("reference_missing", FAIL, [_REF_GLOB]))
+        return check_result("D5", summary, findings)
     summary["reference_end"] = reference_end.isoformat()
     counts, items, leads = judge_all(filings, by_isin, by_symbol, reference_end)
     summary["judged"] = dict(counts)

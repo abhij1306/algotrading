@@ -129,6 +129,14 @@ def notice_changes(
     return out
 
 
+def list_session(sessions: Sequence[date], day: date) -> date | None:
+    """The session a list captured on `day` shows: that day when it is a session, else the last
+    session before it (a closed day's list holds the previous session's members); None before
+    the first session. The window is judged on this session, never on the next one."""
+    at = bisect_right(sessions, day)
+    return sessions[at - 1] if at else None
+
+
 def first_session(sessions: Sequence[date], day: date) -> date | None:
     at = bisect_left(sessions, day)
     return sessions[at] if at < len(sessions) else None
@@ -486,15 +494,9 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     differences: list[dict[str, Any]] = []
     for path in lists:
         day = capture_day(path.name)
-        at = None if day is None else first_session(sessions_all, day)
-        if (
-            day is None
-            or at is None
-            or not (max(cover_start, ctx.start) <= at <= min(cover_end, ctx.end))
-        ):
+        at = None if day is None else list_session(sessions_all, day)
+        if at is None or not (max(cover_start, ctx.start) <= at <= min(cover_end, ctx.end)):
             continue
-        if at != day:  # captured on a closed day: the members of the session before
-            at = sessions_all[bisect_left(sessions_all, day) - 1]
         listed = read_list(path.read_text(encoding="utf-8-sig", errors="replace"))
         stored = {m.isin: m.symbol for m in members_on(members, at)}
         lo = bisect_left(sessions_all, at) - 1

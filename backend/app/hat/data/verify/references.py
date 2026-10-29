@@ -15,7 +15,7 @@ from pathlib import Path
 from ..bhavcopy import BhavcopyError, FetchResult, archive_url
 from ..pacing import Pacer
 from ..store import keep_once
-from .context import Context
+from .context import REFERENCE_DIR, Context
 
 MIN_INTERVAL_S = 2.0  # politely: one request every two seconds, to any public host
 _PACER = Pacer(min_interval=MIN_INTERVAL_S)
@@ -93,7 +93,7 @@ def reference_file(
 
 def kept_bytes(ctx: Context) -> int:
     """The bytes kept under `verify_reference/` (the report says what the downloads cost)."""
-    base = ctx.root / "raw" / "reference"
+    base = ctx.root / REFERENCE_DIR
     return sum(p.stat().st_size for p in base.rglob("*") if p.is_file()) if base.is_dir() else 0
 
 

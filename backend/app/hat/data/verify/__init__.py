@@ -254,11 +254,15 @@ def pick_reports(
     found: Sequence[tuple[Mapping[str, Any], Path | None]],
     check_id: str,
     current: Callable[[Mapping[str, Any]], str | None],
+    start: date,
+    end: date,
 ) -> tuple[Mapping[str, Any], Path | None] | None | str:
-    """The report that judges `check_id` for a window: the newest of `found` (newest first) that
-    ran the check and whose snapshot is the data now (`current`, the snapshot digest of the
-    report's window); `"stale"` when every report that ran it judged data since changed, None
-    when none ran it. A narrow run never hides the check of an older, wider report."""
+    """The report that judges `check_id` on `start..end`: the newest of `found` (newest first)
+    that ran the check and whose snapshot is the data now (`current`, the snapshot digest of the
+    report's window); `"stale"` when every report that ran it judged data since changed, or when
+    a newer report on since-changed data failed the check inside the window (an older pass
+    never overrides a newer failure); None when none ran it. A narrow run never hides the check
+    of an older, wider report."""
     ran = [
         (doc, path)
         for doc, path in found
@@ -267,6 +271,8 @@ def pick_reports(
     for doc, path in ran:
         if (doc.get("snapshot") or {}).get("digest") == current(doc):
             return doc, path
+        if check_status(doc["checks"][check_id], start, end) == "failed":
+            return "stale"  # its failure stands until a newer report judges the data now
     return "stale" if ran else None
 
 
@@ -295,7 +301,7 @@ def window_status(
     verdicts: dict[str, str] = {}
     used: dict[str, tuple[Mapping[str, Any], Path | None]] = {}
     for check_id in blocking:
-        pick = pick_reports(found, check_id, current)
+        pick = pick_reports(found, check_id, current, start, end)
         if pick is None or pick == "stale":
             verdicts[check_id] = pick or "not_run"
             continue
