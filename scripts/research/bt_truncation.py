@@ -50,7 +50,7 @@ from app.hat.backtest.data import MarketData, load_market, symbol_on  # noqa: E4
 from app.hat.backtest.loop import run_backtest  # noqa: E402
 from app.hat.backtest.overrides import read_policy_file  # noqa: E402
 from app.hat.backtest.portfolio import parse_portfolio  # noqa: E402
-from app.hat.backtest.report import BacktestResult  # noqa: E402
+from app.hat.backtest.report import END_OF_PERIOD, BacktestResult  # noqa: E402
 from app.hat.backtest.runs import _configs, _spec, _target, resolved_of  # noqa: E402
 from app.hat.backtest.spec import REGIME_MULT_POLICY, RunSpec  # noqa: E402
 from app.hat.backtest.standard import trade_list_hash  # noqa: E402
@@ -200,22 +200,29 @@ def compare(short: BacktestResult, long: BacktestResult, at: date) -> dict[str, 
     before_s = [_fill_key(f) for f in short.fills if f.day < at]
     before_l = [_fill_key(f) for f in long.fills if f.day < at]
     record("fills_before_t", _multiset_diff(before_s, before_l), len(before_s))
-    # on T the shorter run also closes what it holds at the period end: only sales, one per
-    # position it closed there
+    # on T the shorter run also closes what it holds at the period end: only sales, at most one
+    # per position it closed there, of that position's instrument
     on_s = [_fill_key(f) for f in short.fills if f.day == at]
     on_l = [_fill_key(f) for f in long.fills if f.day == at]
     extra_s, missing = _multiset_diff(on_s, on_l)
-    period_end = sum(
-        1 for t in short.trades if t.exit_date == at and t.exit_reason == "end_of_period"
+    closed = Counter(
+        t.instrument_id
+        for t in short.trades
+        if t.exit_date == at and t.exit_reason == END_OF_PERIOD
     )
-    stray = [k for k in extra_s if k.split(",")[3] != "sell"]
+    stray = []
+    for key in extra_s:
+        instrument_id, side = key.split(",")[1], key.split(",")[3]
+        if side == "sell" and closed[instrument_id] > 0:
+            closed[instrument_id] -= 1
+        else:
+            stray.append(key)
     checks["fills_on_t"] = {
         "compared": len(on_l),
         "pass": not missing and not stray,
         "only_long": missing[:MAX_LISTED],
-        "short_extra_sells": len(extra_s) - len(stray),
-        "short_period_end_closes": period_end,
-        "short_extra_not_sells": stray[:MAX_LISTED],
+        "short_period_end_sells": len(extra_s) - len(stray),
+        "short_extra_not_period_end": stray[:MAX_LISTED],
         "differences": len(missing) + len(stray),
     }
     reb_s = [_rebalance_key(r) for r in short.rebalances if str(r.get("date")) <= at.isoformat()]
