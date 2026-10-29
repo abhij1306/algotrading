@@ -80,7 +80,7 @@ from typing import TYPE_CHECKING, Any
 from app.paths import D2_EXCEPTIONS
 
 from ...money import exact
-from ..audit import FAIL, JUMP_PCT, WARN, action_shaped, check_result, finding, jumps
+from ..audit import FAIL, JUMP_PCT, PASS, WARN, action_shaped, check_result, finding, jumps
 from ..isin import ordinary_equity
 from ..lineage import issuer
 from . import covered, dated, seeded_sample
@@ -104,6 +104,12 @@ CIRCUIT_BANDS = (5.0, 10.0, 20.0)  # NSE's price bands, percent
 CIRCUIT_SLACK = 0.25  # percentage points: a band's move after the tick rounding
 MARKET_PCT = 3.0  # percent: a day the median stock moved this far is a market-wide move
 MARKET_STOCKS = 100  # stocks: fewer traded that day, no market move is read
+# A market day explains a stock's move only up to a size: within `MARKET_SPREAD` points of the
+# market's move or at most `MARKET_TIMES` times it. A larger move stays unexplained.
+MARKET_SPREAD = 10.0
+MARKET_TIMES = 3.0
+# The explained move classes, every one listed (severity pass) so each can be read back.
+EXPLAINED_LISTED = ("circuit", "results", "market")
 PENNY = 5.0  # rupees: below it a tick of 0.05 (0.01 since 2023) is 1% or more
 PREV_DAYS = 20  # calendar days: a reference's close before the ex-date is looked for this far back
 DEMERGER_GAP = Fraction(5, 100)  # a demerger not stored whose close gap is beyond this fails
@@ -905,7 +911,8 @@ def classify_move(
     that is within `audit.JUMP_PCT` once the day's stored dividend `cash` is added back), `penny`
     (from a raw close under `PENNY`, where a tick is a large move), `action_shaped`, `circuit`
     (a price band's move: the stock hit its band), `results`, `market` (the day's `market`
-    move, the median stock's, at least `MARKET_PCT` the same way) or `unexplained`."""
+    move, the median stock's, at least `MARKET_PCT` the same way, and the move within
+    `explained_by_market`) or `unexplained`."""
     if move["ex_date"]:
         return "ex_date_circuit" if at_band(move["move_pct"]) else "ex_date_jump"
     if cash > 0 and prev_raw_close > 0:
@@ -920,9 +927,18 @@ def classify_move(
         return "circuit"
     if explained:
         return "results"
-    if market is not None and abs(market) >= MARKET_PCT and (market > 0) == (move["move_pct"] > 0):
+    if market is not None and explained_by_market(move["move_pct"], market):
         return "market"
     return "unexplained"
+
+
+def explained_by_market(move_pct: float, market: float) -> bool:
+    """Whether the day's market move (`market`, percent) explains a stock's `move_pct`: the market
+    moved at least `MARKET_PCT` the same way, and the move is within `MARKET_SPREAD` points of
+    it or at most `MARKET_TIMES` times it."""
+    if abs(market) < MARKET_PCT or (market > 0) != (move_pct > 0):
+        return False
+    return abs(move_pct - market) <= MARKET_SPREAD or abs(move_pct) <= MARKET_TIMES * abs(market)
 
 
 _YEAR_SQL = """
@@ -1008,6 +1024,12 @@ def _moves(
             if level == FAIL:
                 found = dated(found, [m["date"] for m in kept])
             findings.append(found)
+    for code in EXPLAINED_LISTED:  # every explained move, listed in full for reading back
+        if items[code]:
+            listed = sorted(items[code], key=lambda m: (m["date"], m["symbol"]))
+            findings.append(
+                {**finding(f"move_{code}", PASS, ()), "count": len(listed), "items": listed}
+            )
     return {
         "stocks_only": "ordinary equity ISINs: funds, rights entitlements and debt not scanned",
         "moves_over_pct": dict(counts),

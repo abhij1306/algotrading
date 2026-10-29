@@ -422,7 +422,8 @@ exceptions, each naming one company and one quarter with its reason, from
 finding needs warns too (`exception_unused`). D2 and D6 read theirs the same way, each naming
 one item by its own ISIN and day (an ex-date, a link's date, a move's date) and pinning the
 value it was reviewed at (`pin`, `field=value`: a changed item fails again), from
-`d2_exceptions.csv` and `d6_exceptions.csv` beside it. D2 and D6 judge stocks only (funds, rights entitlements are
+`d2_exceptions.csv` and `d6_exceptions.csv` beside it; a row whose reason starts `OPEN:` excepts
+nothing and lists its item as an `open_defect` (reviewed, no cause found). D2 and D6 judge stocks only (funds, rights entitlements are
 counted). A membership history that starts after
 2020-03-31 fails D5 (`scope_unknown`). A check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the

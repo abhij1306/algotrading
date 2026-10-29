@@ -192,6 +192,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 
 ## Data
 
+- **Tradable series: EQ and BE.** BE (trade-for-trade, delivery only) suits CNC swing trades, so
+  it is tradable beside EQ (`broker_symbols.FYERS_SERIES`, the seeds' `series_in`); BZ (companies
+  in breach of listing rules) never is.
 - **Free official sources.** Nightly prices from the NSE MCP with the bhavcopy at 22:00 as
   fallback; history from bhavcopy archives since 2011; Fyers for live ticks and minute history.
   Research MCPs are chat-side only and never feed a scan or order.
@@ -544,14 +547,17 @@ listings (a few year-end quarters are filed only there, excepted in D5 meanwhile
 NSE sha in `results_events` (filings stored under an older ISIN of the same company before the
 chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
 D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
-adjusted series are stored but unverified; an ETF overlay needs them verified first.
+adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
+follow-ups: check each demerger factor against the company's published cost-of-acquisition ratio
+(today it is checked only against the same raw bars it was taken from); pin the NSE-side value in
+an exception beside the stored one; undo a face-value change for rights as of the NSE pull's
+date, not the last bar; and read a stock's series as of each day for `series_in`, not today's.
 
 ## Defaults awaiting owner confirmation
 
 Chosen where the owner has not ruled; the code implements them.
 
-- Universe: NIFTY 500 plus liquidity criteria. The BE series (trade-for-trade, delivery only)
-  is tradable beside EQ (`broker_symbols.FYERS_SERIES`, the seeds' `series_in`); BZ never is.
+- Universe: NIFTY 500 plus liquidity criteria.
 - Confidence: the 30 trades, the band edges (0.60/0.75/0.90) and the raw (undiscounted) mean.
 - Regime: first day bootstraps confirmed; percentile over the trailing 252 values; precedence
   Bear > Correction > Bull volatile > Bull quiet.

@@ -8,7 +8,9 @@ must give all but the symbol. There is no wildcard: an exception names one item 
 value, so a later change to the item (another factor, another amount) fails again, and a rule
 that two items match excepts neither. An excepted item moves to the `excepted` finding (warn)
 with its reason; an exception no failure uses is listed as `exception_unused` (warn), so the
-list cannot go stale unseen.
+list cannot go stale unseen. A row whose reason starts with `OPEN:` excepts nothing: it marks an
+item reviewed without a cause found, and moves it to the `open_defect` finding (warn, every one
+listed, with what was searched), so a known defect stays in view.
 """
 
 from __future__ import annotations
@@ -28,6 +30,7 @@ _ISIN = re.compile(r"^IN[A-Z0-9]{10}$")
 
 DAY_FIELDS = ("ex_date", "effective", "date", "last_bar")
 PIN_TOLERANCE = 1e-6  # relative: a pinned number read back from the report's text
+OPEN = "OPEN:"  # a reason with this prefix is an open defect, not an explanation
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,11 @@ class Excepted:
     pin: str  # `field=value`: the item's value when it was reviewed
     reason: str
     symbol: str = ""
+
+    @property
+    def open(self) -> bool:
+        """Whether this row is an open defect (no cause found), not an exception."""
+        return self.reason.startswith(OPEN)
 
     def pins(self, item: Mapping[str, Any]) -> bool:
         """Whether `item` still has the reviewed value (numbers within `PIN_TOLERANCE`)."""
@@ -104,10 +112,11 @@ class Exceptions:
     rules: Sequence[Excepted] = ()
     used: set[Excepted] = field(default_factory=set)
     excepted: list[dict[str, Any]] = field(default_factory=list)
+    open: list[dict[str, Any]] = field(default_factory=list)
 
     def split(self, code: str, items: Iterable[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
-        """The items of finding `code` no exception covers; the covered ones are kept, with
-        their reason, for `findings`."""
+        """The items of finding `code` no exception covers; the covered ones (excepted, or open
+        defects) are kept, with their reason, for `findings`."""
         rules = {(r.isin, r.day): r for r in self.rules if r.code == code}
         items = list(items)
         matched: dict[int, Excepted] = {}
@@ -123,12 +132,18 @@ class Exceptions:
                 kept.append(item)
             else:
                 self.used.add(rule)
-                self.excepted.append({"code": code, **item, "reason": rule.reason})
+                (self.open if rule.open else self.excepted).append(
+                    {"code": code, **item, "reason": rule.reason}
+                )
         return kept
 
     def findings(self) -> list[dict[str, Any]]:
-        """`excepted` (every excepted item) and `exception_unused`, both warn."""
+        """`open_defect` (every one listed), `excepted` (every excepted item) and
+        `exception_unused`, all warn."""
         out = []
+        if self.open:
+            out.append({**finding("open_defect", WARN, ()), "count": len(self.open)})
+            out[-1]["items"] = list(self.open)
         if self.excepted:
             out.append(finding("excepted", WARN, self.excepted, count=len(self.excepted)))
         unused = [asdict(r) for r in self.rules if r not in self.used]

@@ -526,11 +526,16 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
     assert adjustments.classify_move(crash, False, 100.0) == "unexplained"
     band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98}  # a 20% band's upper circuit
     assert adjustments.classify_move(band, False, 100.0) == "circuit"
-    # 2020-03-23: the median stock fell 9%; a 30% fall that day is the market's, a rise is not
-    assert adjustments.classify_move(crash, False, 100.0, market=-9.0) == "market"
+    # a day the median stock fell 11%: a 30% fall that day is the market's, a rise is not
+    assert adjustments.classify_move(crash, False, 100.0, market=-11.0) == "market"
     assert adjustments.classify_move(crash, False, 100.0, market=-2.0) == "unexplained"
     rise = crash | {"move_pct": 30.0, "raw_move_pct": 30.0}
     assert adjustments.classify_move(rise, False, 100.0, market=-9.0) == "unexplained"
+    # a market of -4% explains a fall of up to 14 (within 10 points) but not one of 30
+    assert adjustments.explained_by_market(-14.0, -4.0)
+    assert not adjustments.explained_by_market(-30.0, -4.0)
+    assert adjustments.explained_by_market(-30.0, -10.0)  # three times the market
+    assert adjustments.classify_move(crash, False, 100.0, market=-4.0) == "unexplained"
     many = [float(n) for n in range(adjustments.MARKET_STOCKS)]
     assert adjustments.market_move(many) == (adjustments.MARKET_STOCKS - 1) / 2
     assert adjustments.market_move(many[:10]) is None
@@ -1617,6 +1622,16 @@ def test_exceptions_match_one_item_by_isin_day_and_pinned_value() -> None:
     # a reference action matches by its one ISIN; a rule two items match excepts neither
     ref = {"ex_date": "2023-02-15", "keys": ["ABC", "INE098201036"], "move_pct": 21.0}
     assert Exceptions([rule]).split("move_ex_date_jump", [ref, move]) == [ref, move]
+
+
+def test_an_open_row_lists_its_item_as_an_open_defect_not_excepted() -> None:
+    rule = Excepted("move_unexplained", "INE1", "2019-06-20", "move_pct=34.94", "OPEN: no news")
+    move = {"date": "2019-06-20", "isin": "INE1", "move_pct": 34.94}
+    exceptions = Exceptions([rule])
+    assert exceptions.split("move_unexplained", [move]) == []
+    (found,) = exceptions.findings()
+    assert (found["code"], found["severity"], found["count"]) == ("open_defect", "warn", 1)
+    assert found["items"][0]["reason"] == "OPEN: no news"
 
 
 def test_exceptions_refuse_a_row_without_a_pin(tmp_path: Path) -> None:
