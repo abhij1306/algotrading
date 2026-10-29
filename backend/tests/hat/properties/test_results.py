@@ -817,3 +817,14 @@ def test_results__listed_consolidated_blocks_secondary_standalone() -> None:
     ]
     kept = secondary_by_rule(quarters, scope.BASIS_CONSOLIDATED_FIRST, filed_consolidated(listed))
     assert [t[0].period_end for t in kept] == [P]
+
+
+def test_a_secondary_page_stands_a_week_unless_nse_lists_a_later_filing() -> None:
+    from app.hat.data.results.secondary import page_reusable
+
+    now = datetime(2026, 10, 29, 12, tzinfo=UTC)
+    fetched = now - timedelta(days=3)
+    assert page_reusable(fetched, now, None)
+    assert page_reusable(fetched, now, fetched - timedelta(hours=1))  # filed before the fetch
+    assert not page_reusable(fetched, now, fetched + timedelta(hours=1))  # a newer filing
+    assert not page_reusable(now - timedelta(days=8), now, None)  # a week old

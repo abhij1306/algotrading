@@ -327,8 +327,9 @@ stored. Both NSE listings are read: Reg 33 holds the
 quarters to December 2024, the Integrated Filing listing those from March 2025. Every step is
 incremental and can be stopped and rerun: a document is fetched once, a server error or no answer
 again on the next run (raw answers live gzipped by sha256 under `raw/nse-results/` and
-`raw/secondary-results/`, with a `manifest.jsonl`), listings and secondary pages again after 20
-hours, an announcement day until fetched after it ended, and `parse` adds only filings not stored
+`raw/secondary-results/`, with a `manifest.jsonl`), listings again after 20 hours, a secondary
+page a week after its fetch or once NSE's cached listing has a newer filing of the company (run
+`fetch` first), an announcement day until fetched after it ended, and `parse` adds only filings not stored
 yet. A new quarter is the four commands again once its results are out. `parse` writes every
 filing's outcome to `<HAT_DATA_ROOT>/results/filings.csv`. Rows are append-only (a trigger refuses
 UPDATE and DELETE), so try a change on a scratch database first. Run `parse` only after `fetch` has
