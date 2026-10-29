@@ -18,11 +18,11 @@ The rules, each fixed before any result is seen:
   differ by more than 2% of equity (`needs_rebalance`) or the asset switches. Open positions
   plus a NIFTYBEES sleeve never exceed equity (`exposure_ok`, checked every close).
 - Prices (`sleeve_price`, `SleevePrices`): never the day's open, a thin pre-open auction print on
-  these ETFs. The open's trades fill at the close of the session's first 5-minute ETF bar (09:15),
-  a funding sale at the close of the bar holding the fill; without that bar (before 5-minute bars,
-  from 2021-11, or a day missing them) at the previous close, NIFTYBEES' times NIFTY 50's open
-  over its previous close, each such fill counted `sleeve_price_estimated`. A tax sale and the
-  final liquidation fill at the day's close.
+  these ETFs. The open's trades fill at the close of the session's 09:15 5-minute ETF bar, a
+  funding sale at the close of the bar that ended as the entry filled; without that bar (before
+  5-minute bars, from 2021-11, or a day missing it) at the previous close, NIFTYBEES' times
+  NIFTY 50's open over its previous close, each such fill counted `sleeve_price_estimated`. A tax
+  sale and the final liquidation fill at the day's close.
 - Funding (`units_to_fund`): an entry the free cash cannot pay sells the sleeve for the
   shortfall when it fills; the sale credits `same_day_sale_credit_pct` of its proceeds
   that day (80% before 2024-10-07, 100% from then, `CreditSchedule`) and the rest at the next
@@ -43,12 +43,13 @@ from __future__ import annotations
 from bisect import bisect_left
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from ..costs import BacktestFills, CostSchedule
 from ..money import exact
+from ..time import IST
 from . import tax as taxes
 
 __all__ = [
@@ -94,6 +95,7 @@ _ZERO = Decimal(0)
 _ONE = Decimal(1)
 _BAR = timedelta(minutes=5)
 _TICK = Decimal("0.0001")
+_OPEN = time(9, 15)  # the first 5-minute bar of continuous trading (IST)
 
 
 class OverlayError(ValueError):
@@ -422,14 +424,16 @@ def sleeve_price(
     close: Decimal,
 ) -> tuple[Decimal, bool]:
     """A sleeve fill's price on a session and whether it is estimated: the close of the
-    session's first 5-minute bar of `bars` (the open's trades, `at` None) or of the bar holding
-    `at` (a funding sale); without it, estimated, `prev_close` times `index_move` (NIFTY 50's
-    open over its previous close, NIFTYBEES only; else 1), or the session's `close` without a
-    previous close. Never the day's open (the module docstring)."""
+    session's 09:15 5-minute bar of `bars` (the open's trades, `at` None) or of the bar that
+    ended in the five minutes up to `at` (a funding sale: an entry fills at its trigger bar's
+    final instant, just after that bar's end), so never a price after `at`; without that bar,
+    estimated, `prev_close` times `index_move` (NIFTY 50's open over its previous close,
+    NIFTYBEES only; else 1), or the session's `close` without a previous close. Never the day's
+    open (the module docstring)."""
     if at is None:
-        found = bars[0][1] if bars else None
+        found = next((bar for start, bar in bars if start.astimezone(IST).time() == _OPEN), None)
     else:
-        found = next((bar for start, bar in bars if start <= at < start + _BAR), None)
+        found = next((bar for start, bar in bars if start + _BAR <= at < start + 2 * _BAR), None)
     if found is not None:
         return found.close, False
     if prev_close is None:

@@ -446,8 +446,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   rebalancing past a 2%-of-equity gap. Entries are sized on total equity, the sleeve included, so
   a run sizes alike with and without it. A sleeve fill never takes the ETF's daily open, a thin
   pre-open auction print (2022-05-11: NIFTYBEES opened 13% below a close it then traded at): the
-  open's trades fill at the close of the first 5-minute ETF bar (09:15), and an entry the cash
-  cannot pay sells the sleeve as it fills, at the close of that 5-minute bar. Without the bar
+  open's trades fill at the close of the 09:15 5-minute ETF bar, and an entry the cash cannot
+  pay sells the sleeve as it fills, at the close of the 5-minute bar that just ended (its trigger
+  bar's), never a later price. Without the bar
   (5-minute bars start 2021-11) the price is the previous close, NIFTYBEES' scaled by NIFTY 50's
   open over its previous close, each such fill counted `sleeve_price_estimated`; the ETF store's
   `open_gaps` lists the opens it avoids. A funding sale credits 80% of
