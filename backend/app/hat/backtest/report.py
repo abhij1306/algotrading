@@ -25,6 +25,7 @@ __all__ = [
     "DELISTED",
     "DEMERGER",
     "END_OF_PERIOD",
+    "REBALANCE_COLUMNS",
     "BacktestResult",
     "FillRow",
     "SessionRow",
@@ -41,6 +42,24 @@ END_OF_PERIOD = "end_of_period"
 DELISTED = "delisted"
 DEMERGER = CLOSE_REASON  # the close before a demerger's ex-date (CA8)
 _ZERO = Decimal(0)
+
+
+# rebalances.csv, a rotation leg's orders and holds (`rotation.RotationBook`)
+REBALANCE_COLUMNS = (
+    "date",
+    "decision_date",
+    "strategy",
+    "instrument_id",
+    "symbol",
+    "action",
+    "reason",
+    "rank",
+    "score",
+    "qty",
+    "price",
+    "value",
+    "target_value",
+)
 
 
 @dataclass(frozen=True)
@@ -137,6 +156,11 @@ class TradeRow:
     final_stop: Decimal | None = None  # the stop when it closed
     rules_fired: tuple[str, ...] = ()  # the exit rule ids that acted on it (`index:rule`)
     legs: tuple[LegRow, ...] = ()  # its sales in order (none: the trade closed without one)
+    # a rotation trade's rank and score on the night it entered and the night it left (none
+    # when it left for another reason than the ranking: a delisting, the period end)
+    entry_rank: int | None = None
+    exit_rank: int | None = None
+    exit_score: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -179,6 +203,9 @@ class BacktestResult:
     # `overlay.OVERLAY_CSV_HEADER`); empty without an overlay
     overlay: Mapping[str, Any] = field(default_factory=dict)
     overlay_rows: tuple[Sequence[str], ...] = ()
+    # a rotation leg's rebalance rows (`REBALANCE_COLUMNS`): rebalances.csv; empty
+    # without one
+    rebalances: tuple[Mapping[str, Any], ...] = ()
 
 
 def _count_by(values: Iterable[str]) -> dict[str, int]:

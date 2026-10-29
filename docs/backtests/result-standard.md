@@ -16,6 +16,7 @@ runs/<run_id>/
   stocks.csv      # one row per symbol: how S1 did on that stock
   ep_candidates.csv  # pre-open playbook runs only: each gap-scan candidate-day
   overlay.csv     # ETF overlay runs only: one row per session of the sleeve
+  rebalances.csv  # rotation runs only: each rebalance's orders and holds
 ```
 
 Why four files: headline metrics say *whether* a variant is better. Trades, equity and refusals say *why*, and that is what tweak suggestions are built from.
@@ -394,6 +395,22 @@ hashes. An overlay run adds `run.json` `overlay` (its config, data proxy ranges,
 switches, events, and the B1/B2/TRI benchmarks), `overlay.csv` (`overlay.OVERLAY_CSV_HEADER`) and
 the refusal code `insufficient_same_day_credit` (a cash refusal while the sleeve held units);
 `equity.csv` `position_value` includes the sleeve, and the run audit's P&L check adds `net_flow`.
+
+**Rotation runs** (a strategy with a `rotation` block, `decisions.md`). `rebalances.csv`
+(`report.REBALANCE_COLUMNS`) holds one row per name a rebalance touched: `date` (the execution
+open), `decision_date` (the close it ranked on), `strategy`, `instrument_id`, `symbol`, `action`
+(`buy`, `top_up`, `trim`, `sell`, `hold`), `reason` (a sell's exit reason; `cash` for a buy
+the cash cut; a blocked order's block, `no_bar`, `lower_circuit`, `upper_circuit`,
+`demerger_pending`, `factor_pending`, with `qty` 0), `rank` and `score` on the decision close,
+`qty`, `price`, `value` and `target_value`; a sell outside a rebalance (demerger, delisting, a
+sell carried to the next open it can fill) has an empty `decision_date`. A rotation trade's
+playbook is `rotation`, `initial_stop` is 0 and `r_multiple` is its net P&L over the first buy's
+price times the shares bought (no stop to risk against); trades.csv ends with `rank_entry`, `score_entry`,
+`rank_exit` and `score_exit` (empty for other playbooks' trades and for an exit the ranking did
+not decide). Exit reasons: `rotation_out` (ranked below the buffer), `rotation_not_eligible`
+(failed the universe stage or unscored), `rotation_market_filter`, `rotation_trim` (a trim's
+partial exit). Known gaps `rotation_fills_at_daily_open` and
+`rotation_sized_on_decision_close`.
 
 **by_year.** `trades` and `expectancy_r` (the trades exiting that year, beside a mark-to-market
 return, with no label) are replaced by fields named by their basis: `trades_entered` and

@@ -26,6 +26,7 @@ LOOP = tuple(
         "signal_features",
         "intraday",
         "ep_log",
+        "rotation",
     )
 )
 RUNNERS = {"runs.py", "evidence.py", "overrides.py", "__main__.py"}

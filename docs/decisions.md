@@ -180,6 +180,22 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   stop; a close under such an SMA is also under the stop, which the hard stop has already taken,
   so the activation changes outcomes only where the stop moved above the SMA. Every EP signal
   logs its pre-gap ADR(20) (the repo's formula).
+- **Momentum rotation as a strategy type (owner 2026-10-29; research `momentum/REPORT.md`).** A
+  strategy config with a `rotation` block (`strategy.config.Rotation`) has no playbook or exit
+  stack: on each calendar rebalance close (`month_end`, `fortnight`, `weekly`) it ranks the
+  universe stage's passers (point-in-time members with a bar that close, at least `min_bars` bars
+  in the last `long_sessions`) by a z-scored score on dividend-adjusted closes (`riskadj`: the
+  mean of the cross-sectional z-scores of the 6- and 12-month returns over annualised volatility;
+  or `r12_1`, `r6`, `hi52`), keeps holdings ranked within `buffer_rank`, fills to `top_n` best
+  first and trades at the next open: equal target weights of the sleeve's capital, order diffs
+  under `min_change_pct` of the target skipped (`reweight: false` never tops up or trims);
+  `market_filter: true` sells everything and holds cash while the regime gate is off.
+  Exits are by rank only (plus demerger, delisting and suspension as for every trade); no stop,
+  slot, per-trade risk or open-risk cap applies. Rules: `engine/rotation.py` (pure); the book:
+  `backtest/rotation.py`. Backtest only: a rotation version is refused as a promotion run
+  (`backtest_promotion_rotation`), so it cannot be published or run live. The seed
+  `momentum-rotation` is the research pick (riskadj, top 20, monthly, buffer 40, ADV20 >= Rs 10
+  cr, close >= 50, 240 bars). Configs without the block keep their canonical JSON and hash.
 
 ## Data
 

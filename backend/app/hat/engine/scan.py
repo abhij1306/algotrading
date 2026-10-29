@@ -53,6 +53,7 @@ __all__ = [
     "pivot_date",
     "scan_bot",
     "setup_taken",
+    "universe_passers",
 ]
 
 
@@ -395,6 +396,14 @@ def _contexts(
         )
         out[instrument_id] = (ctx, evaluate_stage("universe", config.universe, ctx))
     return out
+
+
+def universe_passers(config: StrategyConfig, inputs: ScanInputs) -> list[str]:
+    """The members (text ids, sorted) with a bar on `inputs.as_of` that pass `config`'s universe
+    stage that night, evaluated as the scan evaluates it: what a rotation ranks."""
+    members = sorted({str(m) for m in inputs.members})
+    contexts = _contexts(config, inputs, _member_bars(inputs, members))
+    return [i for i, (_, outcome) in contexts.items() if outcome.passed]
 
 
 def scan_bot(config: StrategyConfig, inputs: ScanInputs) -> ScanResult:
