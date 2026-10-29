@@ -52,6 +52,7 @@ SUMS_NAME = "SHA256SUMS"
 # jars, secrets logs) and browser profiles.
 SECRET_PATTERNS = (
     ".env*",
+    "*.env",
     "*.key",
     "*.pem",
     "*.p12",
@@ -63,8 +64,8 @@ SECRET_PATTERNS = (
     "*secret*",
     "*credential*",
     "*cookie*",
-    "chrome",
-    "chromium",
+    "*chrome*",
+    "*chromium*",
 )
 # A tag, part or database name, and OWNER/NAME of a repo: never an option or a path.
 NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
@@ -154,7 +155,9 @@ def asset_problems(
             problems.append(f"{name} is missing from the release")
         elif got["size"] != want["size"]:
             problems.append(f"{name} has size {got['size']}, recorded {want['size']}")
-        elif got.get("sha256") and got["sha256"] != want["sha256"]:
+        elif not got.get("sha256"):
+            problems.append(f"{name} has no sha256 digest on GitHub to check")
+        elif got["sha256"] != want["sha256"]:
             problems.append(f"{name} digest differs from the record")
     return problems
 

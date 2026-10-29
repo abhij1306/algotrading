@@ -16,12 +16,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import fcntl
 import hashlib
 import io
+import os
 import re
 import subprocess  # noqa: S404 - git with fixed arguments, never a shell
 import sys
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -294,7 +297,8 @@ def write_reference(clone: Path) -> int:
     raw = engine.raw_connection()
     try:
         cursor = raw.cursor()
-        cursor.execute("set transaction read only")
+        # one snapshot for every export: the CSVs agree with each other
+        cursor.execute("set transaction isolation level repeatable read, read only")
         cursor.execute("set local timezone = 'UTC'")
         for name, query in EXPORTS.items():
             with (folder / f"{name}.csv").open("w", encoding="utf-8", newline="") as out:
@@ -345,9 +349,11 @@ def guard_on(clone: Path) -> None:
         text=True,
         capture_output=True,
     )
-    if result.stdout.strip() != HOOKS_PATH:
+    hook = clone / HOOKS_PATH / "pre-push"
+    if result.stdout.strip() != HOOKS_PATH or not os.access(hook, os.X_OK):
         raise RecordError(
-            f"the data repo's secret guard is off: git config core.hooksPath {HOOKS_PATH}"
+            f"the data repo's secret guard is off: git config core.hooksPath {HOOKS_PATH} "
+            f"and an executable {HOOKS_PATH}/pre-push"
         )
 
 
@@ -357,6 +363,22 @@ def refresh(root: Path, clone: Path, *, push: bool = True) -> str:
     if not (clone / ".git").exists():
         raise RecordError(f"no data repo clone at {clone} (HAT_DATA_REPO)")
     guard_on(clone)
+    with _lock(clone):
+        return _refresh(root, clone, push=push)
+
+
+@contextmanager
+def _lock(clone: Path) -> Iterator[None]:
+    """One record run per clone at a time (a hand run and the update's step)."""
+    with (clone / ".git" / "hat-record.lock").open("w") as handle:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise RecordError("another record run holds the data repo") from exc
+        yield
+
+
+def _refresh(root: Path, clone: Path, *, push: bool) -> str:
     changes = write_manifests(root, clone)
     tables = write_reference(clone)
     stamp = datetime.now(UTC).date().isoformat()

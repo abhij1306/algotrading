@@ -661,7 +661,9 @@ uploads `SHA256SUMS` and the record `snapshots/<tag>.json` (every asset's size a
 every file each tar holds), checks the assets on GitHub against it (size and GitHub's sha256
 digest) and commits the record to the clone. `check --tag T --repo OWNER/algotradingdata`
 re-checks a release later. pg_dump is `--pg-dump` or `HAT_PG_DUMP` (version 18; for the database
-container `docker exec <container> pg_dump -U postgres`).
+container `docker exec <container> pg_dump -U postgres`). The command carries its own connection:
+the unit loads no `.env`, so a host pg_dump takes `PGHOST`/`PGUSER` in the command and the
+password from `~/.pgpass`.
 
 The weekly release (`scripts/hat_snapshot_weekly.sh`, Sundays 10:00 IST) is incremental: both
 dumps, and the files of `raw/` and `bars_5m/` that the earlier records do not already hold.

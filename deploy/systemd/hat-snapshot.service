@@ -3,6 +3,7 @@
 [Unit]
 Description=HAT weekly snapshot release
 Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
@@ -12,7 +13,7 @@ Environment=DB_NAME=hat_live
 # the run stages one asset (up to 1.9 GB) at a time: on the root disk, not the data disk
 Environment=HAT_SNAPSHOT_STAGE=/var/tmp
 Environment="HAT_PG_DUMP=@PG_DUMP@"
-ExecStart=@REPO@/scripts/hat_snapshot_weekly.sh
+ExecStart="@REPO@/scripts/hat_snapshot_weekly.sh"
 Nice=10
 MemoryMax=2G
 TimeoutStartSec=6h

@@ -76,6 +76,8 @@ def test_exclusion_by_component_or_by_prefix_from_the_root() -> None:
         assert snapshot.excluded(secret, snapshot.SECRET_PATTERNS)
     assert snapshot.excluded("a/.ENV", [])  # credentials in any case, whatever the patterns
     assert snapshot.excluded("MyToken.json", [])
+    assert snapshot.excluded("deploy/production.env", [])
+    assert snapshot.excluded("home/google-chrome/Default/Cookies", [])
 
 
 def test_an_incremental_release_carries_only_new_or_changed_files() -> None:
@@ -113,7 +115,9 @@ def test_the_asset_check_names_missing_resized_and_changed_assets() -> None:
         "a is missing from the release",
         "b digest differs from the record",
     ]
-    assert snapshot.asset_problems({"b": {"size": 2, "sha256": "y"}}, {"b": {"size": 2}}) == []
+    assert snapshot.asset_problems({"b": {"size": 2, "sha256": "y"}}, {"b": {"size": 2}}) == [
+        "b has no sha256 digest on GitHub to check"
+    ]
     stale = {"b": {"size": 2, "sha256": "y"}, "b.part9": {"size": 1}, "SHA256SUMS": {"size": 1}}
     assert snapshot.asset_problems(recorded, stale, ["SHA256SUMS"]) == [
         "b.part9 is on the release but not in the record",
