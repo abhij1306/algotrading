@@ -39,11 +39,9 @@ the DSR trial count. A run flagged for promotion takes none (`RunConventions`).
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
-from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from decimal import Decimal
 from pathlib import Path
@@ -51,7 +49,6 @@ from typing import Any
 
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..errors import HatError
-from ..money import exact
 from ..risk import policy_file
 from ..risk.policy import LEVELS, PolicyError, PolicyVersion, RiskPolicy, parse_policy
 
@@ -74,7 +71,6 @@ IDENTITY_KEYS = frozenset({"bot", "market"})
 # sizes nothing. `base_weight` is read: it is a sleeve's weight unless the run names its own
 # (`spec.sleeve_weight`).
 NO_EFFECT_POLICY = ("kill", "health_bands", "weights_confirmed")
-NO_OP = "backtest_override_no_op"
 NO_EFFECT = "backtest_override_no_effect"
 _SEGMENT = re.compile(r"([a-z_][a-z0-9_]*)(?:\[([a-z0-9_+-]+(?:#\d{1,2})?)\])?", re.ASCII)
 _INDEX = re.compile(r"\d{1,3}", re.ASCII)
@@ -174,18 +170,6 @@ def set_path(doc: dict[str, Any], path: str, value: object) -> str:
     raise OverrideError("backtest_bad_override_path")  # pragma: no cover - a path has a segment
 
 
-def get_path(doc: Mapping[str, Any], path: str) -> object:
-    """The value at a path `set_path` returned (list items by index) in `doc`; None where the
-    path names nothing (a field the canonical form leaves out at its default)."""
-    node: Any = doc
-    for key, selector in _segments(path):
-        node = node.get(key) if isinstance(node, Mapping) else None
-        if selector is not None:
-            index = int(selector)
-            node = node[index] if isinstance(node, list) and index < len(node) else None
-    return node
-
-
 def policy_text(text: str) -> RiskPolicy:
     """A whole policy document (YAML or JSON, `policy_file.policy_text`) as a typed policy;
     `backtest_policy_invalid` for text that does not parse or a document the policy refuses."""
@@ -238,38 +222,6 @@ def _set_policy_field(doc: dict[str, Any], path: str, value: object) -> None:
     node[leaf] = value
 
 
-def _policy_field(doc: Mapping[str, Any], path: str) -> object:
-    """The value at the dotted `path` of the policy document `doc`; None where it names
-    nothing (`_set_policy_field` refuses that path)."""
-    node: Any = doc
-    for key in path.split("."):
-        node = node.get(key) if isinstance(node, Mapping) else None
-    return node
-
-
-def _same(a: object, b: object) -> bool:
-    """Whether two override values are one value: equal as JSON, a number and its decimal text
-    alike (the policy keeps its numbers as text)."""
-    if isinstance(a, bool) or isinstance(b, bool) or a is None or b is None:
-        return a == b
-    if isinstance(a, int | float | str) and isinstance(b, int | float | str):
-        x, y = exact(a, floats=True), exact(b, floats=True)
-        return a == b if x is None or y is None else x == y
-    return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
-
-
-def _leaves_unchanged(doc: Mapping[str, Any], path: str, value: object) -> bool:
-    """Whether setting `path` of the canonical config `doc` to `value`, alone, parses to the
-    same canonical config (a value the model normalises to the one in force among them); a set
-    the model refuses on its own is a change."""
-    alone = copy.deepcopy(dict(doc))
-    set_path(alone, path, value)
-    try:
-        return _same(parse_config(alone).to_json(), parse_config(doc).to_json())
-    except ConfigError:
-        return False
-
-
 @dataclass(frozen=True)
 class Overrides:
     """A run's overrides: config `sets` applied in order, a whole candidate `policy` and the
@@ -318,8 +270,8 @@ class Overrides:
             if not self.playbooks or not set(self.playbooks) <= names:
                 raise OverrideError("backtest_override_no_item")
             doc["playbooks"] = [p for p in doc["playbooks"] if p["name"] in self.playbooks]
-        before = copy.deepcopy(doc)
-        changed = [set_path(doc, path, value) for path, value in self.sets]
+        for path, value in self.sets:
+            set_path(doc, path, value)
         try:
             config = parse_config(doc)
         except ConfigError as exc:
@@ -332,13 +284,6 @@ class Overrides:
             )
             code = "backtest_bad_override_path" if unknown else "backtest_override_invalid"
             raise OverrideError(code) from None
-        for (path, value), where in zip(self.sets, changed, strict=True):
-            # a set that leaves its field as it was changes nothing (an appended item, or a field
-            # the canonical form had left out, has no earlier value); judged on `before` with
-            # that set alone, since parsing re-sorts list items and an index path may then name
-            # another item
-            if get_path(before, where) is not None and _leaves_unchanged(before, path, value):
-                raise OverrideError(NO_OP)
         return config
 
     def apply_policy(self, version: PolicyVersion) -> PolicyVersion:
@@ -352,8 +297,6 @@ class Overrides:
         for path, value in self.policy_sets:
             if path.split(".")[0] in NO_EFFECT_POLICY:
                 raise OverrideError(NO_EFFECT)
-            if _same(_policy_field(doc, path), value):
-                raise OverrideError(NO_OP)
             _set_policy_field(doc, path, value)
         if self.risk_pct is not None:
             doc["risk_pct"] = str(self.risk_pct)

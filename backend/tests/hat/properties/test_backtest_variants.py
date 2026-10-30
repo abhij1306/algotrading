@@ -177,37 +177,19 @@ def test_apply_config_changes_only_the_named_values() -> None:
     with pytest.raises(OverrideError, match="backtest_override_invalid"):
         no_hard_stop.apply_config(config)
     assert Overrides(sets=(("bot", "other"),)).touches_identity()
-    # a set to the value in force changes nothing, and is refused
-    same = config.to_json()["exits"][0]
-    for path, value in (
-        ("exits[0]", same),
-        ("exits[trailing_swing_low].lookback_days", rules["trailing_swing_low"].lookback_days),
-    ):
-        unchanged = Overrides(sets=((path, value),))
-        base = changed if "swing" in path else config
-        with pytest.raises(OverrideError, match="backtest_override_no_op"):
-            unchanged.apply_config(base)
 
 
-def test_a_set_on_an_item_parsing_moves_is_not_a_no_op() -> None:
-    # the appended book_vcp takes vcp's old order, so it sorts into vcp's old index: the vcp
-    # sets are judged on vcp, not on whatever item now sits at its index
+def test_an_appended_criterion_takes_the_order_one_set_moves() -> None:
+    # the appended book_vcp takes vcp's old order, and sorts into vcp's old index
     criteria = "playbooks[default].setup.criteria"
     config = Overrides(
         sets=(
-            (f"{criteria}[vcp].enabled", False),
             (f"{criteria}[vcp].order", 20),
             (f"{criteria}[+]", {"type": "book_vcp", "stage": "setup", "mode": "hard", "order": 11}),
         )
     ).apply_config(seed_config("stage2-contraction-breakout"))
-    vcp = next(c for c in config.playbook("default").setup.criteria if c.type == "vcp")
-    assert (vcp.order, vcp.enabled) == (20, False)
-    # a set to the value in force is still refused
-    for path, value in ((f"{criteria}[vcp].order", 11), ("exits[time_stop].enabled", False)):
-        with pytest.raises(OverrideError, match="backtest_override_no_op"):
-            Overrides(sets=((path, value),)).apply_config(
-                seed_config("stage2-contraction-breakout")
-            )
+    orders = {c.type: c.order for c in config.playbook("default").setup.criteria}
+    assert (orders["book_vcp"], orders["vcp"]) == (11, 20)
 
 
 def test_apply_policy_and_record() -> None:
@@ -305,12 +287,10 @@ def test_candidate_policy_then_fields_then_caps() -> None:
         ((("adv_cap_pct.x", "0.1"),), "backtest_bad_override_path"),
         ((("risk_pct.x", "0.1"),), "backtest_bad_override_path"),
         ((("max_entries_per_day", 0),), "backtest_override_invalid"),
-        # a field no backtest reads, and a set to the value in force, change nothing
+        # a field no backtest reads changes nothing
         ((("kill.account_drawdown_pct", "0.1"),), "backtest_override_no_effect"),
         ((("health_bands.half_dd", "0.12"),), "backtest_override_no_effect"),
         ((("weights_confirmed", True),), "backtest_override_no_effect"),
-        ((("adv_cap_pct", "0.010"),), "backtest_override_no_op"),
-        ((("p_max.stage2-contraction-breakout", "0.2"),), "backtest_override_no_op"),
     ):
         bad_sets = Overrides(policy_sets=sets)
         with pytest.raises(OverrideError, match=code):
@@ -431,7 +411,6 @@ def test_a_sweep_with_an_unknown_path_fails_before_any_run() -> None:
         ({"set": ["exits[nope].enabled=false"]}, "backtest_override_no_item"),
         ({"policy_set": ["adv_cap_pctt=0.15"]}, "backtest_bad_override_path"),
         ({"policy_set": ["kill.bot_drawdown_pct=0.15"]}, "backtest_override_no_effect"),
-        ({"set": ["exits[0].enabled=true"]}, "backtest_override_no_op"),
     ):
         sweep = parse_variants(_sweep({"label": "a"}, {"label": "b", **bad}), RunConventions())
         with pytest.raises(BacktestError, match=code):
