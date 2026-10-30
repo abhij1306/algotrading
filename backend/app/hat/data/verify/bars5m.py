@@ -386,8 +386,9 @@ def restored_volumes(
     day: the bars pair by the labelling rule, every stored bar has a source bar of the same
     prices at the day's scale (`compare_bars`: prices within `PRICE_BOUND`, the export's rounding
     of its adjusted prices to the tick; none stored only; the rule's alignment), and the restored
-    session volume reconciles with the bhavcopy's (`day_volume_fits`). None otherwise: the day is
-    left as it is."""
+    session volume reconciles with the bhavcopy's (`day_volume_fits`). None otherwise, and when
+    a paired export bar has a negative volume (the export has such rows): the day is left as it
+    is."""
     result = compare_bars(day, stored, source)
     if result.worst > PRICE_BOUND or result.stored_only or not result.rule or not daily_volume:
         return None
@@ -396,7 +397,7 @@ def restored_volumes(
     out = {}
     for t in stored:
         found = by_label.get((datetime.combine(day, t) + move).time())
-        if found is None:
+        if found is None or found.volume < 0:
             return None
         out[t] = found.volume
     session = sum(v for t, v in out.items() if SESSION[0] <= t < SESSION[1])

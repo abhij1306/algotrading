@@ -842,6 +842,8 @@ def test_d4_the_export_restores_a_volume_only_when_it_proves_the_day() -> None:
     assert bars5m.restored_volumes(D1, halved, source, 31) == {t915: 10, t920: 20}
     assert bars5m.restored_volumes(D1, halved, source, 60) is None  # still half the bhavcopy's
     assert bars5m.restored_volumes(D1, halved, source, None) is None
+    negative = [*source[:2], _src("09:25", 102, -20), source[3]]  # the export has such rows
+    assert bars5m.restored_volumes(D1, halved, negative, 31) is None
     moved = {**halved, t920: (51.5, 51.5, 51.5, 51.5, 10)}
     assert bars5m.restored_volumes(D1, moved, source, 31) is None  # not the export's bar
     at = datetime(2024, 3, 1, 3, 45, tzinfo=UTC)
