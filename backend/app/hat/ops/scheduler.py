@@ -56,7 +56,7 @@ from enum import StrEnum
 from sqlalchemy import select, update
 
 from ..clock import SYSTEM_CLOCK, Clock
-from ..models import HatJobRun
+from ..models import HatHeartbeat, HatJobRun
 from ..notify import LogNotifier, Notifier
 from ..time import IST, trade_date_of, utc_now
 from .jobs import JobResult, OnFinish, RunStatus, SessionFactory, run_job
@@ -74,6 +74,7 @@ DEFAULT_DEADLINE = timedelta(hours=1)
 JOB_FAILED = "job.failed"
 JOB_MISSED = "job.missed"
 JOB_RUNNING_LONG = "job.running_long"
+HEARTBEAT = "scheduler"  # its `hat_heartbeat` row, stamped each loop (`ops/watch.py` reads it)
 
 JobBody = Callable[[date], JobResult | None]
 TradingDay = Callable[[date], bool]
@@ -366,7 +367,9 @@ class HatScheduler:
     def _alert(self, name: str, day: date, code: str, error: str | None) -> None:
         """Send `code` for (name, day) unless it was alerted before: in this process, or on the
         run row (`alerted_at`, claimed by one conditional update, so a restart or a second
-        failure of the retry sends nothing more). Never raises."""
+        failure of the retry sends nothing more). A send that failed gives the claim back, so the
+        next sweep tells the owner (a failed run past its deadline as `job.missed`). Never
+        raises."""
         key = (name, day)
         if key in self._alerted:
             return
@@ -389,17 +392,42 @@ class HatScheduler:
                         return  # an earlier process sent it
             self._alerted.add(key)
             detail = {"job": name} if error is None else {"job": name, "error": error}
-            self._notifier.alert(code, day, detail)
+            if not self._notifier.alert(code, day, detail):
+                self._unclaim(key)
         except Exception:
             logger.exception("job alert %s for %s not sent", code, name)
+
+    def _unclaim(self, key: tuple[str, date]) -> None:
+        """Give back the claim of an alert that was not delivered."""
+        name, day = key
+        self._alerted.discard(key)
+        with self._factory()() as session:
+            session.execute(
+                update(HatJobRun)
+                .where(HatJobRun.job == name, HatJobRun.trade_date == day)
+                .values(alerted_at=None)
+            )
+            session.commit()
 
     async def drain(self) -> None:
         """Wait for every running job (tests and shutdown)."""
         while self._running:
             await asyncio.gather(*list(self._running.values()), return_exceptions=True)
 
+    def beat(self) -> None:
+        """Stamp the scheduler's `hat_heartbeat` row; never raises (a database that is down is
+        the watch's own finding)."""
+        try:
+            with self._factory()() as session:
+                session.merge(HatHeartbeat(name=HEARTBEAT, beat_at=utc_now(self._clock)))
+                session.commit()
+        except Exception:
+            logger.warning("scheduler heartbeat not written", exc_info=True)
+
     async def _loop(self) -> None:
         while True:
+            if not self._halted:
+                await asyncio.to_thread(self.beat)
             try:
                 await self.tick()
             except Exception:

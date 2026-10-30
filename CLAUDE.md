@@ -48,7 +48,8 @@ Server exits at start: run it in a terminal for the traceback and check port 800
 until midnight IST; log in again from the app header. Other helpers in `scripts/`:
 `lock_ci_requirements.py`, `export_openapi.py` (for `pnpm gen:api`), the operator's
 `hat_backup.py`, `hat_deploy_guard.py`, `set_secrets.py` and `fyers_login.py`, the daily data update
-(`hat_data_update.sh`, `install_data_update_timer.sh`; runbook), the data download
+(`hat_data_update.sh`, `install_data_update_timer.sh`; runbook), the health watch
+(`hat_watch.sh`, `install_watch_timer.sh`; runbook), the data download
 tools in `scripts/data/` (runbook) and the orchestrator's `scripts/agents/` (`docs/agents/`).
 
 ---

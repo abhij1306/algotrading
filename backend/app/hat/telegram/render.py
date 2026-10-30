@@ -20,6 +20,8 @@ from ..money import exact
 from ..time import IST
 
 __all__ = [
+    "ACTIONS",
+    "ACTION_DEFAULT",
     "URGENT_ALERTS",
     "BotDay",
     "CardView",
@@ -44,6 +46,7 @@ __all__ = [
     "position_event_text",
     "positions_text",
     "rejection_digest_text",
+    "resolved_text",
     "shadow_text",
     "status_text",
     "veto_digest_text",
@@ -64,6 +67,8 @@ __all__ = [
 # An exit view that raised: that position's exit rules are off until it reads again.
 # Q11: the broker calls of the day are spent: no new entry until the next trade date.
 # A lost entry of an earlier session may hold shares with no position and no stop.
+# The broker unreachable for minutes, the runtime down or wedged, a database down (the
+# out-of-process watch, `ops/watch.py`).
 URGENT_ALERTS = frozenset(
     {
         "job.failed",
@@ -90,8 +95,109 @@ URGENT_ALERTS = frozenset(
         "entry.unresolved",
         "broker.budget_spent",
         "stop.cancel_unacked",
+        "broker.unreachable",
+        "runtime.down",
+        "db.down",
+        "watch.state_unwritable",
+        "watch.failed",
     }
 )
+# What the owner does about each alert, one line under it (runbook, Alerts and failures, has the
+# detail). A code without a line here gets `ACTION_DEFAULT`.
+ACTIONS: Mapping[str, str] = {
+    # jobs, loops, the runtime and the host
+    "job.failed": "Read hat_job_run and the log for the job; it retries every 10 min that date.",
+    "job.missed": "The job never ran by its deadline: check the runtime is up, then the log.",
+    "job.running_long": "The job is still running past its deadline: read the log; restart only "
+    "outside the session.",
+    "periodic.stalled": "A loop stopped: live exits or housekeeping are off. Restart with "
+    "--force --reason; broker stops still protect.",
+    "runtime.lock_lost": "No new entries until a restart; check the database, then restart.",
+    "runtime.down": "The HAT runtime is not running or wedged: broker stops protect positions. "
+    "Start it ($COMPOSE up -d), then Restart recovery.",
+    "db.down": "PostgreSQL does not answer: start it, then check the backend recovered.",
+    "disk.low": "Free space on that disk (logs, old snapshots) before the night's data and "
+    "backup fill it.",
+    "calendar.short": "Add the next year's NSE holidays before the calendar runs out.",
+    "events.partitions_short": "Event partitions are running out: read the log of "
+    "events.partitions.",
+    # data
+    "update.failed": "Read the step's detail and log (update --status), fix, rerun with --only.",
+    "update.late": "The daily data update has not run for the due date: check the timer "
+    "(systemctl --user list-timers) and the machine.",
+    "verify.failed": "A data verification check failed: read verify.md in that report and "
+    "correct through the check's own path.",
+    "watch.check_error": "One check of the health watch raised (journalctl --user -u "
+    "hat-watch); the other checks still run.",
+    "watch.state_unwritable": "The health watch cannot save its state (disk full or ops/ "
+    "broken), so it tells nothing more until it can: free space or fix the folder.",
+    "watch.failed": "The health watch stopped: journalctl --user -u hat-watch; nothing is "
+    "watched until it runs again.",
+    "quality.failed": "Affected bots are manage-only until the gate passes; read hat_job_run and "
+    "the log. Never re-arm by hand.",
+    "quality_failed": "Affected bots are manage-only until the gate passes; read the log.",
+    "quality.quarantined": "Store the action, or `quarantine clear SYMBOL` for real news.",
+    "coverage.gaps": "python -m app.hat.data.coverage report; fill the missing days.",
+    "feed.stale": "No triggers for those symbols; restart if it persists. Before 15:15 decide "
+    "on /flatten for an exit that must go.",
+    "symbol_silent": "The symbol was resubscribed; nothing to do unless it stays silent.",
+    "gapscan_late": "Check the gapscan run time before 09:20.",
+    "corporate_action.unchecked": "Corporate actions were not checked: rerun ca.adjust after "
+    "the source is back.",
+    "corporate_action.unhandled": "A corporate action HAT cannot handle: decide on the "
+    "position before the ex-date.",
+    "corporate_action.pending": "The position is manage-only until it is rescaled; check "
+    "ca.rescale.",
+    # broker and orders
+    "broker.session_lost": "Bots are manage-only; log in again if the token expired. Stops stay "
+    "at the broker.",
+    "broker.unreachable": "Broker calls are failing: no new entries, stops and sales retry. "
+    "Check the network and Fyers status; decide on positions at Fyers if it lasts.",
+    "broker.budget_spent": "No new entry until tomorrow; find what burned the calls in the logs.",
+    "order.rejected": "Retried once. Fix the cause (band, margin, freeze, IP); never place by "
+    "hand.",
+    "order.unconfirmed": "The broker did not answer the order: HAT settles it by its tag. Check "
+    "the Fyers order book; never place it again by hand.",
+    "entry.not_placed": "The entry was not placed; nothing to do unless the reason is a bug.",
+    "entry.unresolved": "Check the contract note: shares it bought have no HAT stop. Sell or "
+    "protect them at Fyers.",
+    "reconcile.failed": "No entry on that account until a pass succeeds; check the session.",
+    "reconcile.mismatch": "That bot's entries are blocked; compare the Fyers book with "
+    "/positions. A duplicate order: /kill first.",
+    "reconcile.unreadable_row": "Check the Fyers book for a manual order.",
+    "fill.excess": "An entry filled beyond its size: check the position and decide on /flatten.",
+    "fill.off_lifecycle": "A fill landed after its trade ended: check the position and decide on "
+    "/flatten.",
+    # stops, GTTs and exits
+    "stop.not_placed": "The position may be unprotected: compare Fyers' orders and GTTs with "
+    "/positions; decide on /flatten.",
+    "stop.not_moved": "The broker stop stays where it was (still protective); the sync retries.",
+    "stop.would_move_down": "The broker stop stays (protective); the stored stop is wrong: "
+    "report it.",
+    "stop.cancel_unacked": "Check the Fyers order book: a resting stop protects; none means "
+    "decide on /flatten.",
+    "gtt.missing": "Every real position needs one GTT at its stop: check Fyers' GTT page; "
+    "unprotected overnight is an incident.",
+    "gtt.unverified": "Check Fyers' GTT page against /positions before the next open.",
+    "gtt.swap_failed": "Check Fyers' GTT page against /positions before the next open.",
+    "gtt.unfilled": "A triggered GTT left shares unsold: decide on /flatten or a sale at Fyers.",
+    "exit.not_placed": "The exit did not go: check the book and band; decide on /flatten "
+    "before 15:15.",
+    "exits.view_failed": "Only the broker stop protects this position: read the log; decide on "
+    "/flatten.",
+    "sale.unfilled": "Check the book and band; decide on /flatten or a sale at Fyers.",
+    "sale.settled_from_holdings": "Book the sale from the contract note with resolve-sale.",
+    "position.series_changed": "Exits continue under the new symbol; `unmapped`: decide "
+    "whether to sell at Fyers.",
+    # risk
+    "kill.drawdown": "Bots are manage-only. Review, then /arm and Confirm when fixed.",
+    "drawdown.fallback_marks": "Some holdings were marked without a fresh close: check the "
+    "night's bars.",
+    "journal.mismatch": "A trade's state is not its events' fold: a bug to report; do not edit "
+    "rows by hand.",
+    "relay.skipped": "Telegram refused a message for good: read the event.",
+}
+ACTION_DEFAULT = "Read the log for this code; runbook, Alerts and failures."
 _SAFE = re.compile(r"^[A-Za-z0-9_.:\-]{1,64}$")
 _DIGEST_LIMIT = 40
 
@@ -193,6 +299,11 @@ class PositionEventView:
     price: Decimal | None
     r_so_far: Decimal | None
     dividends: Decimal | None = None  # a closed trade's, already in its R (R-DIV)
+    # a fill's order: the shares filled by this fill and the shares ordered (None: not a fill),
+    # and whether the order still works at the broker
+    filled: int | None = None
+    ordered: int | None = None
+    working: bool = False
 
 
 _EVENT_TITLES = {
@@ -205,7 +316,7 @@ _EVENT_TITLES = {
 
 def position_event_text(event_type: str, view: PositionEventView) -> str:
     """A fill, exit or stop move on a real position: price, qty and R so far (and a closed
-    trade's dividends, when it earned any)."""
+    trade's dividends, when it earned any; a fill that leaves its order part filled says so)."""
     title = _EVENT_TITLES.get(event_type, event_type)
     qty = "n/a" if view.qty is None else str(view.qty)
     text = (
@@ -214,6 +325,9 @@ def position_event_text(event_type: str, view: PositionEventView) -> str:
     )
     if view.dividends:
         text += f"  incl. dividends {money(view.dividends)}"
+    if view.filled is not None and view.ordered is not None and view.filled < view.ordered:
+        rest = "the rest still works" if view.working else "the rest will not fill"
+        text += f"\nPartial: {view.filled} of {view.ordered} filled; {rest}"
     return text
 
 
@@ -221,9 +335,21 @@ def position_event_text(event_type: str, view: PositionEventView) -> str:
 
 
 def alert_text(code: str, trade_date: date, detail: Mapping[str, object]) -> str:
-    """A health alert: its code, the trade date and the detail's fixed codes and ids."""
+    """A health alert: its code, the trade date, the detail's fixed codes and ids, and what to
+    do (`ACTIONS`)."""
     head = "URGENT: " if code in URGENT_ALERTS else "Alert: "
     lines = [f"{head}{_safe(code)} ({trade_date.isoformat()})"]
+    lines += [
+        f"{_safe(k)}: {_safe(v)}" for k, v in sorted(detail.items(), key=lambda kv: str(kv[0]))
+    ]
+    lines.append(f"Do: {ACTIONS.get(code, ACTION_DEFAULT)}")
+    return "\n".join(lines)
+
+
+def resolved_text(code: str, trade_date: date, detail: Mapping[str, object]) -> str:
+    """The note that an alert's cause has cleared (the out-of-process watch's), with the
+    alert's detail, so it names its subject (which database, disk or run)."""
+    lines = [f"Resolved: {_safe(code)} ({trade_date.isoformat()})"]
     lines += [
         f"{_safe(k)}: {_safe(v)}" for k, v in sorted(detail.items(), key=lambda kv: str(kv[0]))
     ]

@@ -636,6 +636,37 @@ it, so run it after they finish.
 
 ## Alerts and failures
 
+Every alert ends with a `Do:` line, what to do (`telegram/render.py:ACTIONS`); the entries
+below are the detail.
+
+### Health watch
+
+What the runtime cannot tell about itself: `python -m app.hat.ops.watch` (or
+`scripts/hat_watch.sh`), every five minutes on the host by a systemd user timer installed with
+`scripts/install_watch_timer.sh <HAT_DATA_ROOT>` (the database and Telegram settings from the
+repo's `.env`; `HAT_ENABLED=true` there turns on the heartbeat check). `--dry-run` prints the
+findings and sends nothing. Each finding is alerted once while it stands and told `Resolved:`,
+with its subject, when it clears; the open ones are in `HAT_DATA_ROOT/ops/watch.json`, saved
+before anything is sent, and an alert Telegram did not take is tried again at the next run.
+Install it on the machine that runs the backend or the daily data update; `systemctl --user
+list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
+
+- **`runtime.down`** (URGENT): the scheduler's `hat_heartbeat` row (stamped every 30 s) is over
+  3 minutes old: the backend is dead or wedged. Broker stops protect positions; `$COMPOSE ps`,
+  `$COMPOSE logs backend`, start it, then Restart recovery.
+- **`db.down`** (URGENT, `live` or `state`): `SELECT 1` fails. `$COMPOSE ps postgres`.
+- **`disk.low`**: under 10 GB or 10% free on the data root's or the root file system.
+- **`update.failed`** (one per run), **`update.late`** (no run started for the due date: today
+  from 21:30 IST, else yesterday): Daily data update, Recover; for late, `systemctl --user
+  list-timers hat-data-update.timer` and linger.
+- **`verify.failed`**: the newest report that ran a check failed it; read its `verify.md`
+  (Data verification).
+- **`watch.check_error`**: one check raised (its name and error type); the others ran.
+- **`watch.state_unwritable`** (URGENT, once until a save works): `ops/watch.json` cannot be
+  written, so the watch tells nothing else; free the disk or fix `ops/`.
+- **`watch.failed`** (URGENT, once per failure spell): a run failed outright; when it could not
+  send that itself, the `OnFailure=` unit `hat-watch-failed` does, at most once a day.
+
 - **`quality.failed`, `ingest.failed`:** affected bots manage-only. `select job, trade_date,
   status, error_code from hat_job_run where trade_date = current_date order by started_at;` and
   the log. Failed jobs retry every 10 minutes that date (chained ones until 08:30); the kill clears
@@ -650,6 +681,11 @@ it, so run it after they finish.
 - **`broker.session_lost`:** bots manage-only, stops at the broker; recovery is automatic once the
   session is back (log in if the token expired). A token the broker refused (revoked or expired
   at the broker) shows not connected in the app header until a new login.
+- **`broker.unreachable`:** URGENT, once per outage for every account sharing the broker's
+  circuit breaker, from 08:30 IST to the close. The broker's calls have failed in a row for two
+  minutes, though the token may be valid: no entry goes; stops, sales
+  and reconciliation retry. Check the network and Fyers' status; if it lasts into the close,
+  decide on the positions at Fyers.
 - **`broker.budget_spent`:** URGENT. The day's broker calls are spent: no new entry and no
   reconciliation until tomorrow; stops, sales and the fill sync go on. Check the logs for what
   burned the calls before the next session.
@@ -661,7 +697,9 @@ it, so run it after they finish.
   then on, so an exit missed by 15:15 waits for the next session (or the owner's `/flatten`
   before 15:15).
 - **`order.rejected`:** retried once. Fix the cause (band, margin, freeze, IP); never place by
-  hand.
+  hand. **`order.unconfirmed`:** once per entry; the broker did not answer, so the entry is
+  never sent again and its tag is settled by reconciliation and the fill sync. A fill of part of
+  an order says `Partial: n of m filled` under its fill message.
 - **`relay.skipped`:** Telegram refused a message for good; read the event. A skipped card expires.
 - **`reconcile.failed`:** no entry on that account until a pass succeeds; check the session.
   Raised once a day: before the day's first success, or once passes have failed after one for
@@ -673,7 +711,8 @@ it, so run it after they finish.
   `/kill`, then the same.
 - **`gtt.missing`, `gtt.unverified`, `gtt.swap_failed`, `stop.not_placed`:** every real position
   needs one GTT at its stop (Fyers GTT page vs `/positions`). A position unprotected overnight is
-  an incident: decide on `/flatten`. `stop.not_placed` and `stop.not_moved` come once a day per
+  an incident: decide on `/flatten`. `gtt.missing` and `gtt.unverified` come once a day per
+  position and reason. `stop.not_placed` and `stop.not_moved` come once a day per
   position and reason while each sync keeps trying. **`stop.would_move_down`:** the position's
   stop is below its resting broker stop, which only rises, so the broker stop stays where it is
   (still protective); the stored stop or tick is wrong: a bug to report.

@@ -57,6 +57,7 @@ from ..models import (
     HatAnnouncement,
     HatApproval,
     HatEvent,
+    HatFill,
     HatOrder,
     HatPosition,
     HatSignal,
@@ -83,6 +84,8 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 RELAY_LAG = timedelta(seconds=5)
+# An order the broker may still fill (`engine.snapshot.ENTRY_WORKING` for an entry).
+ORDER_WORKING = frozenset({"pending", "unconfirmed", "placed", "partially_filled"})
 SKIPPED = "relay.skipped"
 # A refusal that will not pass (`TelegramError.retryable` False) is tried this many times, then
 # its event is skipped, so it cannot hold back the cards and alerts after it.
@@ -204,6 +207,23 @@ def _position_of(session: Session, event: HatEvent) -> HatPosition | None:
     return None
 
 
+def _order_progress(session: Session, event: HatEvent) -> tuple[int | None, int | None, bool]:
+    """(shares filled by this fill, shares ordered, whether the order still works) of a fill's
+    order; (None, None, False) for another event. A fill recorded after this one's event is
+    not counted, so a message sent late still says what this fill left."""
+    if event.event_type != "order.filled" or event.aggregate_type != "order":
+        return None, None, False
+    order = session.get(HatOrder, event.aggregate_id)
+    if order is None:
+        return None, None, False
+    filled = session.scalar(
+        select(func.coalesce(func.sum(HatFill.qty), 0)).where(
+            HatFill.order_id == order.id, HatFill.filled_at <= event.occurred_at
+        )
+    )
+    return int(filled or 0), int(order.qty), order.status in ORDER_WORKING
+
+
 def _position_message(session: Session, event: HatEvent) -> Outbound | None:
     position = _position_of(session, event)
     if position is None or position.is_virtual:
@@ -220,12 +240,16 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
         dividends = Decimal(result.dividends) if result is not None else None
     else:
         r = reads.r_so_far(Decimal(position.avg_entry), Decimal(position.initial_stop), price)
+    filled, ordered, working = _order_progress(session, event)
     view = render.PositionEventView(
         symbol=symbol_of(session, position.instrument_id),
         qty=qty if isinstance(qty, int) and not isinstance(qty, bool) else None,
         price=price,
         r_so_far=r,
         dividends=dividends,
+        filled=filled,
+        ordered=ordered,
+        working=working,
     )
     return Outbound(
         event.event_type, position.id, render.position_event_text(event.event_type, view)

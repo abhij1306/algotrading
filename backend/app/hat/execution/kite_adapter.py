@@ -170,6 +170,12 @@ class KiteHatBroker:
         budget = self._broker.budget
         return budget is not None and budget.day_spent()
 
+    def claim_unreachable_alert(self, after: float) -> float | None:
+        return self._broker.claim_unreachable_alert(after)
+
+    def release_unreachable_alert(self) -> None:
+        self._broker.release_unreachable_alert()
+
     def write_refusal(self) -> str | None:
         return self._broker.write_refusal()
 
