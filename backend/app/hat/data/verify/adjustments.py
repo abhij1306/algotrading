@@ -62,12 +62,25 @@
    no Fyers symbol or no kept answer and a year Fyers has that the series lacks; under
    `SECOND_SOURCE_MIN_STOCKS` of the sample or `SECOND_SOURCE_MIN_YEARS` stock-years compared
    fails (the second source did not run).
-4. NSE's base: each stored split, bonus, rights and demerger (a chain's factors of one day,
-   multiplied) against NSE's own base price that day, the ex-session's previous close in the
-   bhavcopy over the chain's last close (`nse_factor`, from `bars_daily_raw`, no network). NSE
-   keeps the raw close as the base on nearly every ex-date (`unadjusted`); where it adjusted, its
-   factor must agree with the stored one (`nse_base_verdict`), else it warns (`nse_base_differs`,
-   a reviewed one excepted). Counted by verdict for 2011-2021 and from 2022.
+4. The bhavcopy's previous close (`PrvsClsgPric`) on each ex-session over the chain's last raw
+   close (`bhavcopy_factor`, from `bars_daily_raw`, no network), for each stored split, bonus,
+   rights and demerger (a chain's applied copies of one day, multiplied: `chain_day_factors`).
+   This is not NSE's adjusted base price: the bhavcopy keeps the raw close on nearly every
+   ex-date, which is no evidence on the factor (`no_evidence`). It does not check split or bonus
+   factors; only where the bhavcopy's previous close moved must it agree with the stored factor
+   (`bhavcopy_verdict`), else it warns (`bhavcopy_prev_close_differs`, a reviewed one excepted).
+   Counted by verdict for 2011-2021 and from 2022.
+5. Split and bonus evidence: each stored split and bonus day of a chain against four kinds of
+   independent evidence on this machine, each `agrees`, `disagrees` or `no_evidence`
+   (`evidence_verdict`, within `EVIDENCE_TOLERANCE`): the ex-session's raw open over the last raw
+   close (`open_evidence`), the median raw volume of `EVIDENCE_SESSIONS` sessions before over
+   after (`volume_evidence`), the share count (paid-up capital over face value) of the results
+   XBRL at the quarter ends around the ex-date (2020 on), and screener's paid-up capital at the
+   year ends (a bonus only; 2015 on) (`count_evidence`). Counted per year, every action listed
+   (`split_bonus_evidence`, pass). A disagreement warns (`split_bonus_<kind>_disagrees`, a
+   reviewed one excepted), except a volume one that another kind's agreement outvotes
+   (`OUTVOTED`, counted); two kinds disagreeing with none agreeing fails
+   (`split_bonus_factor_contradicted`: the factor is shown wrong).
 Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
@@ -84,7 +97,9 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from math import log, prod
 from pathlib import Path
+from statistics import median
 from typing import TYPE_CHECKING, Any
 
 from app.paths import D2_COST_SPLITS, D2_EXCEPTIONS
@@ -132,7 +147,21 @@ EXPLAINED_LISTED = ("circuit", "results", "market")
 PENNY = 5.0  # rupees: below it a tick of 0.05 (0.01 since 2023) is 1% or more
 PREV_DAYS = 20  # calendar days: a reference's close before the ex-date is looked for this far back
 DEMERGER_GAP = Fraction(5, 100)  # a demerger not stored whose close gap is beyond this fails
-NSE_BASE_SLACK = 0.002  # NSE's base factor agrees with the stored one within this (or a tick)
+BHAVCOPY_SLACK = 0.002  # the bhavcopy's factor agrees with the stored one within this (or a tick)
+# Independent evidence on a split or bonus factor, each a log distance from the factor expected
+# beyond which it disagrees: the ex-session's open over the last close (within the widest price
+# band, 20%, of the adjusted base: log 1/0.8), the median volume of `EVIDENCE_SESSIONS` sessions
+# each side (trading swings with interest: a factor of 4), the XBRL share count at the quarter
+# ends around the ex-date and screener's paid-up capital at the year ends (other issues between).
+EVIDENCE_TOLERANCE = {"open": 0.223, "volume": 1.386, "shares": 0.05, "capital": 0.10}
+# Evidence whose disagreement another kind's agreement outweighs: it is listed only alone.
+OUTVOTED = frozenset({"volume"})
+CAPITAL_ROUNDING = 5_000_000.0  # rupees: screener gives the capital in whole crores
+ALLOTMENT_DAYS = 15  # a period end this soon after the ex-date may precede the allotment
+EVIDENCE_SESSIONS = 20
+# A count at a period end further from the ex-date than this is no evidence: XBRL is quarterly,
+# screener's balance sheet yearly.
+EVIDENCE_PERIOD_DAYS = {"shares": 100, "capital": 400}
 COST_SPLIT_GAP = Fraction(10, 100)  # a stored factor this far from the parent's cost share warns
 FUND_PREFIX = "INF"  # mutual-fund units (ETFs): not stocks, not judged
 NON_EQUITY = frozenset({"preference", "debentures", "warrants"})
@@ -1320,9 +1349,10 @@ def judge_second_source(
 ) -> list[dict[str, Any]]:
     """`second_source_not_run` (fail) when the second source compared under
     `SECOND_SOURCE_MIN_STOCKS` of the sample's stocks or under `SECOND_SOURCE_MIN_YEARS`
-    stock-years: too little of it to vouch for the series."""
-    if sampled and (
-        compared_stocks < SECOND_SOURCE_MIN_STOCKS * sampled
+    stock-years, or with no sample at all: too little of it to vouch for the series."""
+    if (
+        not sampled
+        or compared_stocks < SECOND_SOURCE_MIN_STOCKS * sampled
         or stock_years < SECOND_SOURCE_MIN_YEARS
     ):
         detail = f"{compared_stocks} of {sampled} stocks, {stock_years} stock-years compared"
@@ -1423,95 +1453,227 @@ def _second_source(
     return summary, findings
 
 
-# --- the stored factors against NSE's own base price ----------------------------------------------
+# --- the stored factors against the bhavcopy and independent evidence --------------------------
+
+# A raw bar around an ex-date: day, open, the bhavcopy's previous close, close, volume.
+RawBar = tuple[date, float, float, float, int]
 
 
-def nse_factor(
-    bars: Sequence[tuple[date, float, float]], ex_date: date
-) -> tuple[float, float, float] | None:
-    """NSE's factor for an action from one chain's raw bars (day, previous close, close) around
-    its ex-date: the ex-session's previous close (NSE's base price for the day) over the chain's
-    last close before it, with both prices; None without a bar on each side."""
-    ordered = sorted(bars)
-    before = [b for b in ordered if b[0] < ex_date]
-    after = [b for b in ordered if b[0] >= ex_date]
-    if not before or not after or before[-1][2] <= 0:
+def bhavcopy_factor(bars: Sequence[RawBar], ex_date: date) -> tuple[float, float, float] | None:
+    """The bhavcopy's factor for an action from one chain's raw bars around its ex-date: the
+    ex-session's previous close (`PrvsClsgPric`) over the chain's last close before it, with
+    both prices; None without a bar on each side. The bhavcopy's previous close is the raw
+    close on nearly every ex-date, so this is no evidence on a factor unless it moved."""
+    before = [b for b in bars if b[0] < ex_date]
+    after = [b for b in bars if b[0] >= ex_date]
+    if not before or not after or before[-1][3] <= 0:
         return None
-    base, last = after[0][1], before[-1][2]
+    base, last = after[0][2], before[-1][3]
     return base / last, base, last
 
 
-def nse_base_verdict(stored: float, nse: float, last_close: float) -> str:
-    """How NSE's base factor (`nse_factor`) stands to the stored factor: `agrees` within
-    `NSE_BASE_SLACK` or one tick of the last close, `unadjusted` (NSE kept the last close as the
-    base, as on nearly every ex-date: its bhavcopy's previous close is the raw close), or
-    `differs`."""
-    slack = max(NSE_BASE_SLACK, TICK / last_close) if last_close > 0 else NSE_BASE_SLACK
-    if abs(stored - nse) <= slack:
-        return "agrees"
-    if abs(nse - 1) <= slack:
-        return "unadjusted"
-    return "differs"
+def bhavcopy_verdict(stored: float, bhavcopy: float, last_close: float) -> str:
+    """How the bhavcopy's factor (`bhavcopy_factor`) stands to the stored factor: `no_evidence`
+    when it is 1 (the previous close is the raw close, as on nearly every ex-date), else `agrees`
+    within `BHAVCOPY_SLACK` or one tick of the last close, or `differs`."""
+    slack = max(BHAVCOPY_SLACK, TICK / last_close) if last_close > 0 else BHAVCOPY_SLACK
+    if abs(bhavcopy - 1) <= slack and abs(stored - 1) > slack:
+        return "no_evidence"
+    return "agrees" if abs(stored - bhavcopy) <= slack else "differs"
 
 
-_NSE_BASE_SQL = """
-SELECT isin, date, CAST(prev_close AS DOUBLE), CAST(close AS DOUBLE)
+def open_evidence(bars: Sequence[RawBar], ex_date: date) -> float | None:
+    """The ex-session's raw open over the chain's last raw close before it: the market's first
+    price on the new share, which a split or bonus scales by its factor."""
+    before = [b for b in bars if b[0] < ex_date]
+    after = [b for b in bars if b[0] >= ex_date]
+    if not before or not after or before[-1][3] <= 0 or after[0][1] <= 0:
+        return None
+    return after[0][1] / before[-1][3]
+
+
+def volume_evidence(
+    bars: Sequence[RawBar], ex_date: date, sessions: int = EVIDENCE_SESSIONS
+) -> float | None:
+    """The median raw volume of the `sessions` sessions before the ex-date over that of the
+    `sessions` from it: a split or bonus multiplies the shares, and so the shares traded, by
+    1/factor. None with under half the sessions traded on either side."""
+    before = [b[4] for b in bars if b[0] < ex_date and b[4] > 0][-sessions:]
+    after = [b[4] for b in bars if b[0] >= ex_date and b[4] > 0][:sessions]
+    if min(len(before), len(after)) < sessions // 2:
+        return None
+    return median(before) / median(after)
+
+
+def count_evidence(
+    rows: Sequence[tuple[date, float, float]],
+    ex_date: date,
+    days: int,
+    factors: Mapping[date, float],
+    *,
+    split: bool,
+    rounding: float = 0.0,
+) -> tuple[float, float, float] | None:
+    """The share count around an ex-date, from (period end, paid-up capital, face value) rows:
+    the count (capital over face value) at the last period end before the ex-date over that at the
+    first `ALLOTMENT_DAYS` or more after it (the new shares are allotted after the record date),
+    each within `days`; what the stored actions say it should be (the product of `factors`, by
+    ex-date, between the two period ends: a split or bonus multiplies the shares by 1/factor); and
+    the log slack the capital's `rounding` (absolute, either way) allows on each side. None without
+    a row on each side, or for a split (`split`) whose filings give the same face value on both
+    sides: the filer did not restate it, so the count shows nothing."""
+    span = timedelta(days=days)
+    first = ex_date + timedelta(days=ALLOTMENT_DAYS)
+    before = [r for r in sorted(rows) if ex_date - span <= r[0] < ex_date and r[1] > 0 < r[2]]
+    after = [r for r in sorted(rows) if first <= r[0] <= ex_date + span and r[1] > 0 < r[2]]
+    if not before or not after or (split and before[-1][2] == after[0][2]):
+        return None
+    (start, capital_before, face_before), (end, capital_after, face_after) = before[-1], after[0]
+    expected = prod(f for day, f in factors.items() if start < day <= end)
+    observed = (capital_before / face_before) / (capital_after / face_after)
+    return observed, expected, rounding / capital_before + rounding / capital_after
+
+
+def evidence_verdict(expected: float, observed: float | None, tolerance: float) -> str:
+    """`no_evidence` without an observation or when the expected factor is within `tolerance`
+    (log) of 1 (the evidence cannot tell it from no action), else `disagrees` when the observed
+    factor is more than `tolerance` from the expected one, else `agrees`."""
+    if observed is None or observed <= 0 or expected <= 0 or abs(log(expected)) <= tolerance:
+        return "no_evidence"
+    return "disagrees" if abs(log(observed / expected)) > tolerance else "agrees"
+
+
+def factor_contradicted(verdicts: Mapping[str, str]) -> bool:
+    """A stored factor is shown wrong when at least two independent kinds of evidence disagree
+    with it and none agrees."""
+    seen = list(verdicts.values())
+    return seen.count("disagrees") >= 2 and "agrees" not in seen
+
+
+def chain_day_factors(
+    stored: Iterable[StoredAction], heads: Mapping[str, tuple[str, int]]
+) -> tuple[dict[tuple[str, date], Fraction], ...]:
+    """Each (chain, ex-date)'s factor of every price action (splits, bonuses, rights, demergers),
+    of its splits and bonuses, and of its bonuses alone: the product of the copies the adjusted
+    series applies (`applied_copies`), so an action stored on two ISINs of a chain counts once."""
+    by_day: dict[date, dict[str, list[StoredAction]]] = defaultdict(lambda: defaultdict(list))
+    for a in stored:
+        if a.action_type in PRICE_TYPES or a.action_type == "other" or a.demerger:
+            by_day[a.ex_date][a.instrument_id].append(a)
+    every: dict[tuple[str, date], Fraction] = {}
+    split_bonus: dict[tuple[str, date], Fraction] = {}
+    bonus: dict[tuple[str, date], Fraction] = {}
+    for day, per_instrument in by_day.items():
+        for chain, acts in applied_copies(per_instrument, heads).items():
+            key = (chain, day)
+            every[key] = prod(a.factor for a in acts)
+            if any(a.action_type in PRICE_TYPES for a in acts):
+                split_bonus[key] = prod(a.factor for a in acts if a.action_type in PRICE_TYPES)
+            if any(a.action_type == "bonus" for a in acts):
+                bonus[key] = prod(a.factor for a in acts if a.action_type == "bonus")
+    return every, split_bonus, bonus
+
+
+_RAW_BARS_SQL = """
+SELECT isin, date, CAST(open AS DOUBLE), CAST(prev_close AS DOUBLE), CAST(close AS DOUBLE),
+       volume
 FROM bars_daily_raw_latest WHERE date BETWEEN ? AND ? AND isin IN (SELECT unnest(?))
 """
-NSE_BASE_DAYS = (40, 10)  # calendar days of bars read before and after each ex-date
+RAW_BARS_DAYS = (45, 45)  # calendar days of bars read before and after each ex-date
+# Each instrument's share count (paid-up capital over face value) at each period end its NSE
+# results XBRL gives, the latest version's; and its paid-up capital at each year end screener's
+# balance sheet gives (no face value by period there, so a count only for a bonus).
+_SHARES_SQL = """
+SELECT DISTINCT ON (f.instrument_id, f.period_end)
+       CAST(f.instrument_id AS TEXT), f.period_end,
+       max(a.value) FILTER (WHERE a.item = 'paid_up_capital'),
+       max(a.value) FILTER (WHERE a.item = 'face_value')
+FROM hat_fundamental_fact a JOIN hat_fundamental_filing f ON f.id = a.filing_id
+WHERE f.source = 'nse' AND a.item IN ('paid_up_capital', 'face_value')
+  AND a.period_end = f.period_end
+GROUP BY f.id, f.instrument_id, f.period_end, f.version
+ORDER BY f.instrument_id, f.period_end, f.version DESC
+"""
+_CAPITAL_SQL = """
+SELECT DISTINCT ON (f.instrument_id, a.period_end)
+       CAST(f.instrument_id AS TEXT), a.period_end, a.value
+FROM hat_fundamental_fact a JOIN hat_fundamental_filing f ON f.id = a.filing_id
+WHERE f.source = 'screener' AND a.item = 'share_capital' AND a.period_kind = 'instant'
+ORDER BY f.instrument_id, a.period_end, f.fetched_at DESC
+"""
 
 
-def _nse_base(
+def _raw_bars(
+    con: duckdb.DuckDBPyConnection, keys: Sequence[tuple[date, set[str]]]
+) -> list[list[RawBar]]:  # pragma: no cover - real data
+    """Each (ex-date, ISINs) key's raw bars within `RAW_BARS_DAYS`, one per day (the most traded
+    of a chain's ISINs that day), in date order. Read a year at a time: the store is read by
+    date."""
+    before, after = (timedelta(days=d) for d in RAW_BARS_DAYS)
+    wanted: dict[int, list[int]] = defaultdict(list)
+    for n, (ex, _) in enumerate(keys):
+        wanted[ex.year].append(n)
+    out: list[list[RawBar]] = [[] for _ in keys]
+    for year, asked in sorted(wanted.items()):
+        rows = con.execute(
+            _RAW_BARS_SQL,
+            [
+                date(year, 1, 1) - before,
+                date(year, 12, 31) + after,
+                sorted(set().union(*(keys[n][1] for n in asked))),
+            ],
+        ).fetchall()
+        by_isin: dict[str, list[RawBar]] = defaultdict(list)
+        for isin, day, op, prev, close, volume in rows:
+            by_isin[isin].append((day, op or 0.0, prev or 0.0, close or 0.0, volume or 0))
+        for n in asked:
+            ex, isins = keys[n]
+            days: dict[date, RawBar] = {}
+            for b in (b for i in isins for b in by_isin[i] if ex - before <= b[0] <= ex + after):
+                if b[0] not in days or b[4] > days[b[0]][4]:
+                    days[b[0]] = b
+            out[n] = [days[d] for d in sorted(days)]
+    return out
+
+
+def _period(ex: date) -> str:
+    return "2011_2021" if ex.year <= 2021 else "2022_on"
+
+
+def _stored_against_market(
     ctx: Context,
     con: duckdb.DuckDBPyConnection,
     stored: Sequence[StoredAction],
     heads: Mapping[str, tuple[str, int]],
     exceptions: Exceptions,
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+    """The bhavcopy's previous close against every stored price action (`bhavcopy_verdict`), and
+    each stored split and bonus against the evidence of the open, the volume, the XBRL share count
+    and screener's paid-up capital (`evidence_verdict`)."""
     isin_of = dict(ctx.rows("SELECT CAST(id AS TEXT), isin FROM hat_instrument"))
     symbol_of = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
     members: dict[str, set[str]] = defaultdict(set)
     for instrument, (head, _) in heads.items():
         members[head].add(instrument)
-    factors: dict[tuple[str, date], Fraction] = defaultdict(lambda: Fraction(1))
-    for a in stored:
-        head = heads.get(a.instrument_id, (a.instrument_id, 0))[0]
-        if (a.action_type in PRICE_TYPES or a.action_type == "other" or a.demerger) and (
-            ordinary_equity(isin_of.get(head, ""))
-        ):
-            factors[(head, a.ex_date)] *= a.factor
+    factors, split_bonus, bonus = chain_day_factors(stored, heads)
+    factors = {k: f for k, f in factors.items() if ordinary_equity(isin_of.get(k[0], ""))}
     keys = sorted(factors)
-    before, after = (timedelta(days=d) for d in NSE_BASE_DAYS)
-    wanted: dict[int, list[tuple[int, set[str]]]] = defaultdict(list)  # by year: key, ISINs
-    for n, (head, ex) in enumerate(keys):
-        wanted[ex.year].append((n, {isin_of[m] for m in members[head] | {head} if m in isin_of}))
-    bars: dict[int, list[tuple[date, float, float]]] = defaultdict(list)
-    for year, asked in sorted(wanted.items()):  # a year at a time: the store is read by date
-        rows = con.execute(
-            _NSE_BASE_SQL,
-            [
-                date(year, 1, 1) - before,
-                date(year, 12, 31) + after,
-                sorted(set().union(*(isins for _, isins in asked))),
-            ],
-        ).fetchall()
-        by_isin: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
-        for isin, day, prev, close in rows:
-            by_isin[isin].append((day, prev or 0.0, close or 0.0))
-        for n, isins in asked:
-            ex = keys[n][1]
-            bars[n] = [b for i in isins for b in by_isin[i] if ex - before <= b[0] <= ex + after]
+    chain = {head: members[head] | {head} for head, _ in keys}
+    bars = _raw_bars(
+        con, [(ex, {isin_of[m] for m in chain[head] if m in isin_of}) for head, ex in keys]
+    )
+
     counts: Counter[str] = Counter()
     differs = []
     for n, (head, ex) in enumerate(keys):
-        found = nse_factor(bars[n], ex)
+        found = bhavcopy_factor(bars[n], ex)
         if found is None:
             counts["no_bars"] += 1
             continue
-        nse, base, last = found
+        observed, base, last = found
         stored_factor = float(factors[(head, ex)])
-        verdict = nse_base_verdict(stored_factor, nse, last)
-        counts[f"{verdict}_{'2011_2021' if ex.year <= 2021 else '2022_on'}"] += 1
+        verdict = bhavcopy_verdict(stored_factor, observed, last)
+        counts[f"{verdict}_{_period(ex)}"] += 1
         if verdict == "differs":
             differs.append(
                 {
@@ -1519,16 +1681,112 @@ def _nse_base(
                     "isin": isin_of.get(head, ""),
                     "ex_date": ex.isoformat(),
                     "stored": round(stored_factor, 6),
-                    "nse": round(nse, 6),
-                    "nse_prev_close": base,
+                    "bhavcopy": round(observed, 6),
+                    "bhavcopy_prev_close": base,
                     "last_close": last,
                 }
             )
     findings = []
-    differs = exceptions.split("nse_base_differs", differs)
+    differs = exceptions.split("bhavcopy_prev_close_differs", differs)
     if differs:
-        findings.append(finding("nse_base_differs", WARN, differs))
-    return {"actions": len(keys), **dict(sorted(counts.items()))}, findings
+        findings.append(finding("bhavcopy_prev_close_differs", WARN, differs))
+    bhavcopy = {
+        "source": "the bhavcopy's previous close on the ex-session (raw on nearly every ex-date: "
+        "no evidence on a split or bonus factor unless it moved)",
+        "actions": len(keys),
+        **dict(sorted(counts.items())),
+    }
+
+    counts: dict[str, dict[str, list[tuple[date, float, float]]]] = {
+        "shares": defaultdict(list),
+        "capital": defaultdict(list),
+    }
+    for instrument, day, paid_up, face in ctx.rows(_SHARES_SQL):
+        if paid_up and face:
+            counts["shares"][instrument].append((day, float(paid_up), float(face)))
+    for instrument, day, value in ctx.rows(_CAPITAL_SQL):
+        if value:  # no face value by period: the capital alone, which a split leaves
+            counts["capital"][instrument].append((day, float(value), 1.0))
+    by_chain: dict[str, dict[str, dict[date, float]]] = {
+        "shares": defaultdict(dict),
+        "capital": defaultdict(dict),
+    }
+    for (head, ex), f in split_bonus.items():
+        by_chain["shares"][head][ex] = float(f)
+    for (head, ex), f in bonus.items():
+        by_chain["capital"][head][ex] = float(f)
+    by_year: dict[str, Counter[str]] = defaultdict(Counter)
+    listed, disagree, contradicted = [], defaultdict(list), []
+    outvoted: Counter[str] = Counter()
+    for n, (head, ex) in enumerate(keys):
+        if (head, ex) not in split_bonus:
+            continue
+        stored_factor = float(factors[(head, ex)])
+        split = split_bonus[(head, ex)] != bonus.get((head, ex), 1)
+        observed: dict[str, float | None] = {
+            "open": open_evidence(bars[n], ex),
+            "volume": volume_evidence(bars[n], ex),
+        }
+        expected = {"open": stored_factor, "volume": stored_factor}
+        slack: dict[str, float] = {}
+        for kind, table in counts.items():
+            if kind == "capital" and (head, ex) not in bonus:
+                continue  # a split leaves the paid-up capital
+            found = count_evidence(
+                [r for m in chain[head] for r in table[m]],
+                ex,
+                EVIDENCE_PERIOD_DAYS[kind],
+                by_chain[kind][head],
+                split=split and kind == "shares",
+                rounding=CAPITAL_ROUNDING if kind == "capital" else 0.0,
+            )
+            if found is not None:
+                observed[kind], expected[kind], slack[kind] = found
+        verdicts = {
+            kind: evidence_verdict(
+                expected.get(kind, stored_factor), observed.get(kind), tol + slack.get(kind, 0.0)
+            )
+            for kind, tol in EVIDENCE_TOLERANCE.items()
+        }
+        item = {
+            "symbol": symbol_of.get(head, ""),
+            "isin": isin_of.get(head, ""),
+            "ex_date": ex.isoformat(),
+            "stored": round(stored_factor, 6),
+            **verdicts,
+            **{f"{k}_factor": round(v, 4) for k, v in observed.items() if v is not None},
+            **{
+                f"{k}_expected": round(v, 6)
+                for k, v in expected.items()
+                if abs(v - stored_factor) > 1e-9
+            },
+        }
+        listed.append(item)
+        for kind, verdict in verdicts.items():
+            by_year[str(ex.year)][f"{kind}_{verdict}"] += 1
+            if verdict != "disagrees":
+                continue
+            if kind in OUTVOTED and "agrees" in verdicts.values():
+                outvoted[kind] += 1
+            else:
+                disagree[kind].append(item)
+        if factor_contradicted(verdicts):
+            contradicted.append(item)
+    evidence = {
+        "actions": len(listed),
+        "tolerance_log": EVIDENCE_TOLERANCE,
+        "disagrees_outvoted": dict(outvoted),
+        "by_year": {y: dict(sorted(c.items())) for y, c in sorted(by_year.items())},
+    }
+    findings.append(finding("split_bonus_evidence", PASS, listed))
+    for kind in EVIDENCE_TOLERANCE:
+        left = exceptions.split(f"split_bonus_{kind}_disagrees", disagree[kind])
+        if left:
+            findings.append(finding(f"split_bonus_{kind}_disagrees", WARN, left))
+    contradicted = exceptions.split("split_bonus_factor_contradicted", contradicted)
+    if contradicted:
+        findings.append(finding("split_bonus_factor_contradicted", FAIL, contradicted))
+    return bhavcopy, evidence, findings
 
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
@@ -1623,8 +1881,10 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings += move_findings
         summary["second_source"], second = _second_source(ctx, con, members, heads, exceptions)
         findings += second
-        summary["nse_base"], base_findings = _nse_base(ctx, con, stored, heads, exceptions)
-        findings += base_findings
+        summary["bhavcopy_prev_close"], summary["split_bonus_evidence"], market = (
+            _stored_against_market(ctx, con, stored, heads, exceptions)
+        )
+        findings += market
     summary["excepted"] = exceptions.summary()
     result = check_result("D2", summary, [*findings, *exceptions.findings()])
     return result if coverage is None else covered(result, *coverage)
