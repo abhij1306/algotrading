@@ -7,6 +7,7 @@ from datetime import date
 
 import pytest
 
+from app.hat.backtest.data import is_stock_isin
 from app.hat.data.index_membership import (
     Change,
     IndexMembershipError,
@@ -104,3 +105,10 @@ def test_parse_refuses_a_bad_file(body: str, code: str) -> None:
     with pytest.raises(IndexMembershipError) as raised:
         parse_membership_csv(header + body)
     assert raised.value.code == code
+
+
+def test_nse_stocks_reads_shares_and_dvrs_not_funds() -> None:
+    assert is_stock_isin("INE002A01018")  # an equity share
+    assert is_stock_isin("IN9155A01020")  # a DVR share
+    assert not is_stock_isin("INF204KB14I2")  # an ETF unit
+    assert not is_stock_isin(None)

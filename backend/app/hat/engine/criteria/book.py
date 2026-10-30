@@ -9,11 +9,12 @@ each have their own parameter and failure reason, checked in the funnel's order 
   depth (Hi - Li) / Hi; no swing high above H0. The base (H0 to the signal date, both counted)
   lasts `base_sessions`; there are `contractions` of them; the first is `first_depth_pct` deep;
   each at most `depth_ratio_max` x the one before; the final at most `final_depth_max_pct` deep
-  and at least `final_min_sessions` long. The final contraction is a window, not a zigzag swing
-  (`tight_window`): the longest run of the last `window_sessions` bars after the last confirmed
-  swing high, at most `final_depth_max_pct` and `depth_ratio_max` x the last zigzag contraction
-  deep (`no_tight_window` without one); the contractions before it are the zigzag's. Pivot: the
-  window's highest high; stop basis: its lowest low.
+  and at least `final_min_sessions` long. A pullback after the zigzag's last contraction too
+  shallow for the zigzag to confirm is the final contraction when it is a window
+  (`tight_window`): from the highest high after the last swing low through the signal date,
+  `window_sessions` long, at most `final_depth_max_pct` and `depth_ratio_max` x the last zigzag
+  contraction deep; without one the zigzag's last contraction is the final one. Pivot: the
+  final contraction's highest high; stop basis: its lowest low.
 - time compression (D): sessions from the base's deepest low to the signal date at least
   `tc_min_ratio` x the sessions from H0 to that low, and at least `tc_min_sessions`.
 - dry-up (E): over the final contraction, mean volume below `dryup_mean_max` x the mean of the
@@ -68,7 +69,6 @@ GATES: tuple[tuple[str, frozenset[str]], ...] = (
                 "depth_ratio_too_wide",
                 "final_depth_too_deep",
                 "final_contraction_too_short",
-                "no_tight_window",
             }
         ),
     ),
@@ -267,32 +267,50 @@ def area(high: Sequence[float], low: Sequence[float], start: int, end: int) -> C
 def tight_window(
     high: Sequence[float],
     low: Sequence[float],
-    contractions: Sequence[Contraction],
-    first: int,
+    last: Contraction,
     end: int,
     sessions: Sequence[int],
     max_pct: float,
     ratio: float,
-) -> tuple[tuple[Contraction, ...], Contraction] | None:
-    """(the zigzag's confirmed contractions, the final contraction as a window): the longest run
-    of the last n bars through `end` (n in `sessions`) starting at `first` or later and after the
-    last confirmed contraction's swing high, at most `max_pct` deep and at most `ratio` x that
-    contraction's depth; None without a confirmed contraction or when no n qualifies. A
-    contraction shallower than the zigzag's reversal threshold never confirms a swing, so the
-    zigzag alone merges a tight final one into the one before."""
-    if not contractions:
+) -> Contraction | None:
+    """The tight pullback after the zigzag's last confirmed contraction `last`: the bars from the
+    first highest high after its swing low through `end` (so its high is the pivot), when they
+    number within `sessions` and are at most `max_pct` and at most `ratio` x `last` deep; else
+    None (the high within the last `sessions[0]` bars or more than `sessions[1]` back, or too
+    deep). A pullback shallower than the zigzag's reversal threshold never confirms a swing, so
+    the zigzag alone misses it."""
+    if end <= last.end:
         return None
-    last = contractions[-1]
+    after = high[last.end + 1 : end + 1]
+    top = last.end + 1 + after.index(max(after))
+    if not sessions[0] <= end - top + 1 <= sessions[1]:
+        return None
+    window = area(high, low, top, end)
     limit = min(dec(max_pct), dec(ratio) * last.depth_pct)
-    shortest, longest = sessions
-    for n in range(longest, shortest - 1, -1):
-        start = end - n + 1
-        if start < first or start <= last.start:
-            continue
-        window = area(high, low, start, end)
-        if window.depth_pct <= limit:
-            return tuple(contractions), window
-    return None
+    return window if window.depth_pct <= limit else None
+
+
+def with_window(
+    high: Sequence[float],
+    low: Sequence[float],
+    contractions: Sequence[Contraction],
+    end: int,
+    params: BookVcpParams,
+) -> tuple[Contraction, ...]:
+    """The zigzag's contractions and, when there is one, the tight pullback after the last
+    (`tight_window`) as the final contraction."""
+    if not contractions:
+        return tuple(contractions)
+    window = tight_window(
+        high,
+        low,
+        contractions[-1],
+        end,
+        params.window_sessions,
+        params.final_depth_max_pct,
+        params.depth_ratio_max,
+    )
+    return tuple(contractions) if window is None else (*contractions, window)
 
 
 @dataclass(frozen=True)
@@ -343,24 +361,14 @@ def chain_geometry(
     end: int,
     params: BookVcpParams,
 ) -> Geometry | tuple[str, float | None]:
-    """The base from bar `h0` to the signal bar `end`: the zigzag's contractions from `h0`, the
-    final one the window (`tight_window`), when it keeps every rule of C, else (reason, value)."""
+    """The base from bar `h0` to the signal bar `end`: the zigzag's contractions from `h0` and
+    the tight pullback after them (`with_window`), when it keeps every rule of C, else (reason,
+    value)."""
     swings = zigzag(high, low, threshold, h0, end)
     top = high[h0]
     above = sum(1 for s in swings[1:] if s.high and s.price > top)
-    found = tight_window(
-        high,
-        low,
-        contractions_of(high, low, swings),
-        h0 + 1,
-        end,
-        params.window_sessions,
-        params.final_depth_max_pct,
-        params.depth_ratio_max,
-    )
-    if found is None:
-        return "no_tight_window", None
-    geo = Geometry(h0, (*found[0], found[1]), above)
+    chain = with_window(high, low, contractions_of(high, low, swings), end, params)
+    geo = Geometry(h0, chain, above)
     fault = geometry_fault(geo, end, params)
     return geo if fault is None else fault
 

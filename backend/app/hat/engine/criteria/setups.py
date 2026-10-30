@@ -16,20 +16,19 @@ Detectors (each publishes `pivot`, `final_contraction_low` (the tight area's low
   The template's price checks passed on H0's bar (`h0_template`).
 - `book_cup_handle` (Setup 3): the cup, and the handle from the highest high since C (the
   right lip) to the signal date: `handle_sessions` long, its low in the cup's upper part
-  (`handle_low_min_fraction`), its high at most H0, at most `handle_depth_max_pct` deep. Its
-  final tightening, the tight area, is a window inside it (`book.tight_window`: the last
-  `window_sessions` bars, at most `tight_max_pct` and `tight_ratio_max` x the last zigzag
-  contraction from H0 deep).
+  (`handle_low_min_fraction`), its high at most H0, at most `handle_depth_max_pct` deep. The
+  handle is the tight area: a final tightening anchored at its high, as `book.tight_window`'s,
+  starts at the lip, so it is the handle.
 - `book_power_play` (Setup 4): T the highest high of the last `thrust_sessions`, at least
   `thrust_multiple` x the lowest low of the `thrust_base_sessions` before it; the flag from T to
   the signal date `flag_sessions` long and at most `flag_depth_max_pct` deep, with
-  `min_contractions` contractions (zigzag from T, the final one a window as `book_vcp`'s,
-  `book.chain_geometry`) each at most `depth_ratio_max` x the one before, the final at most
-  `final_depth_max_pct`.
+  `min_contractions` contractions (zigzag from T and the tight pullback after them, as
+  `book_vcp`'s, `book.chain_geometry`) each at most `depth_ratio_max` x the one before, the
+  final at most `final_depth_max_pct`.
 - `book_primary_base` (Setup 5): only on `history_sessions` of history (the scan calendar's
   sessions since the instrument's first bar, across gaps: `listed_sessions`); H0 the highest
   high, the base from it at least `base_min_sessions` long and at most `base_depth_max_pct`
-  deep, with `contractions` like a VCP's (the final one a window); close above the SMA50 from
+  deep, with `contractions` like a VCP's (with the tight pullback); close above the SMA50 from
   `sma50_min_history` sessions and the eligible RS rank at least `rs_min` from
   `rs_min_history`.
 
@@ -82,7 +81,6 @@ from .book import (
     sma_series,
     swing_thresholds,
     template_passes,
-    tight_window,
     zigzag,
 )
 from .setup import RsRankParams, SmaAboveParams, rs_rank, sma_above
@@ -115,7 +113,6 @@ GATES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
                     "handle_above_h0",
                     "handle_too_low",
                     "handle_too_deep",
-                    "no_tight_window",
                 }
             ),
         ),
@@ -134,7 +131,6 @@ GATES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
                     "too_many_contractions",
                     "depth_ratio_too_wide",
                     "final_depth_too_deep",
-                    "no_tight_window",
                 }
             ),
         ),
@@ -154,7 +150,6 @@ GATES: dict[str, tuple[tuple[str, frozenset[str]], ...]] = {
                     "too_many_contractions",
                     "depth_ratio_too_wide",
                     "final_depth_too_deep",
-                    "no_tight_window",
                 }
             ),
         ),
@@ -186,7 +181,7 @@ class _DryUp(ParamModel):
 
 
 class _Window(_DryUp):
-    # The final contraction's window (`book.tight_window`), as `book_vcp`'s.
+    # The tight pullback after the last zigzag contraction (`book.tight_window`), as `book_vcp`'s.
     window_sessions: list[int] = Field(default_factory=lambda: [5, 15], min_length=2, max_length=2)
 
     @model_validator(mode="after")
@@ -460,16 +455,11 @@ class BookCupHandleParams(_CupParams):
     handle_sessions: list[int] = Field(default_factory=lambda: [5, 25], min_length=2, max_length=2)
     handle_low_min_fraction: float = Field(default=0.67, ge=0, le=1)
     handle_depth_max_pct: float = Field(default=12.0, gt=0, le=100)
-    window_sessions: list[int] = Field(default_factory=lambda: [5, 15], min_length=2, max_length=2)
-    tight_max_pct: float = Field(default=10.0, gt=0, le=100)
-    tight_ratio_max: float = Field(default=0.75, gt=0, le=1)
 
     @model_validator(mode="after")
     def _check(self) -> BookCupHandleParams:
         if not 1 <= self.handle_sessions[0] <= self.handle_sessions[1]:
             raise ValueError("handle_sessions is [min, max] with 1 <= min <= max")
-        if not 1 <= self.window_sessions[0] <= self.window_sessions[1]:
-            raise ValueError("window_sessions is [min, max] with 1 <= min <= max")
         return self
 
 
@@ -497,34 +487,8 @@ def handle_of(
     return handle
 
 
-def handle_tightening(
-    series: Series,
-    threshold: Sequence[float],
-    cup: Cup,
-    handle: Contraction,
-    end: int,
-    params: BookCupHandleParams,
-) -> tuple[Contraction, int] | None:
-    """(the handle's final tightening, the zigzag's contraction count from H0): the window
-    (`book.tight_window`) inside the handle, against the zigzag's contractions from H0."""
-    swings = zigzag(series.high, series.low, threshold, cup.h0, end)
-    contractions = contractions_of(series.high, series.low, swings)
-    found = tight_window(
-        series.high,
-        series.low,
-        contractions,
-        handle.start,
-        end,
-        params.window_sessions,
-        params.tight_max_pct,
-        params.tight_ratio_max,
-    )
-    return None if found is None else (found[1], len(contractions))
-
-
 def book_cup_handle(ctx: EvalContext, params: BookCupHandleParams) -> CriterionResult:
-    """Setup 3: passes with the levels of the handle's final tightening and log (`handle_start`,
-    `handle_depth_pct`), or fails with the first rule broken."""
+    """Setup 3: passes with the handle's levels and log, or fails with the first rule broken."""
     series = series_of(ctx)
     if series is None:
         return no_data()
@@ -535,20 +499,15 @@ def book_cup_handle(ctx: EvalContext, params: BookCupHandleParams) -> CriterionR
     handle = handle_of(series.high, series.low, cup, end, params)
     if not isinstance(handle, Contraction):
         return verdict(False, handle[1], handle[0])
-    threshold = thresholds(series)
-    found = handle_tightening(series, threshold, cup, handle, end, params)
-    if found is None:
-        return verdict(False, None, "no_tight_window")
-    tight, count = found
-    ratios = area_dryup(series.volume, tight)
+    ratios = area_dryup(series.volume, handle)
     fault = dryup_fault(ratios, params)
     if fault is not None:
         return verdict(False, None if ratios is None else float(ratios[0]), fault)
-    log = _log(series, CUP_HANDLE, tight, cup.h0, ratios, cup.depth_pct, count, params)
+    threshold = thresholds(series)
+    count = _cup_count(series, threshold, cup, end)
+    log = _log(series, CUP_HANDLE, handle, cup.h0, ratios, cup.depth_pct, count, params)
     log["cup_depth_pct"] = float(cup.depth_pct)
     log["cup_low_date"] = series.dates[cup.c].isoformat()
-    log["handle_start"] = series.dates[handle.start].isoformat()
-    log["handle_depth_pct"] = float(handle.depth_pct)
     return _with_base_number(ctx, series, threshold, cup.h0, log)
 
 

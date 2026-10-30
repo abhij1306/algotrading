@@ -12,8 +12,9 @@ changes a normal run. In-sample 2016-01-01..2021-12-31 only.
 - `s1-diag-setups.yaml` (`--universe nifty500`): r1 VCP (`book_vcp`), r2a-d each of setups 2-5
   alone, r3 all five on one account (one setup per instrument), each on s1-book-01's exits,
   sizing and policy overrides (`BASE`, `EXITS`, `ACCOUNT`);
-- `s1-diag-universe.yaml` (`--universe NSE_STOCKS`): r3 on every NSE stock with the turnover
-  floor at 5 crore;
+- `s1-diag-universe.yaml` (`--universe NSE_STOCKS`): r3 on every NSE stock (DVRs included, no
+  ETF or fund) of series EQ only (no BE: no REIT, InvIT, SME or debt series either) with the
+  turnover floor at 5 crore and no price floor;
 - `s1-diag-loo.yaml` (`--universe nifty500`): `shadow`, r3 without cash or slot limits
   (`SHADOW`: 0.02% risk on 100 crore, a position cap and day caps no run reaches, no ADV cap,
   no minimum position), then one variant per rule of `RULES` with only that rule removed, from
@@ -25,7 +26,9 @@ changes a normal run. In-sample 2016-01-01..2021-12-31 only.
 prints, per rule: the extra setups (the funnel's `setup` count over the shadow run's), the extra
 entries (entries, by instrument and entry date, the shadow run has not) and the entries lost,
 and the extra entries' count, win % and expectancy R (a trade's legs summed), overall and per
-setup tag, beside the shadow run's own.
+setup tag, beside the shadow run's own. One setup per instrument means a removed rule can swap
+the setup an instrument takes, at another pivot and so often on another date: a lost entry
+whose instrument has an extra entry is counted as a swap.
 """
 
 from __future__ import annotations
@@ -166,7 +169,7 @@ SHADOW: dict[str, Any] = {  # no cash or slot limit: every entry is taken
 }
 REASON = "the plan's setup playbooks as one candidate (owner 2026-10-30); no part is tuned"
 LOO_REASON = "leave-one-out diagnostic (owner 2026-10-30): not a candidate"
-REGIME_OFF = 'regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 0}}'
+REGIME_OFF = 'regime={"index": "NIFTY 500", "rule": "always_on", "params": {}}'
 
 
 def books_set(books: Sequence[dict[str, Any]]) -> str:
@@ -289,11 +292,10 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "depth_ratio",
-        "each contraction <= 0.75 x the one before (the window's too)",
+        "each contraction <= 0.75 x the one before (the tight pullback's too)",
         _params(
             {
                 "book_vcp": {"depth_ratio_max": 1.0},
-                "book_cup_handle": {"tight_ratio_max": 1.0},
                 "book_power_play": {"depth_ratio_max": 1.0},
                 "book_primary_base": {"depth_ratio_max": 1.0},
             }
@@ -301,12 +303,11 @@ RULES: tuple[Rule, ...] = (
     ),
     Rule(
         "final_depth",
-        "final contraction / handle tightening / pause depth cap",
+        "final contraction / pause depth cap",
         _params(
             {
                 "book_vcp": {"final_depth_max_pct": 100.0},
                 "book_cheat": {"pause_range_max_pct": 100.0},
-                "book_cup_handle": {"tight_max_pct": 100.0},
                 "book_power_play": {"final_depth_max_pct": 100.0},
                 "book_primary_base": {"final_depth_max_pct": 100.0},
             }
@@ -400,11 +401,13 @@ def setups_sweep() -> dict[str, Any]:
 def universe_sweep() -> dict[str, Any]:
     combined = _variant(
         "r3-nse",
-        "setups 1-5 together on every NSE stock, turnover >= 5 crore",
+        "setups 1-5 together on every NSE stock: series EQ, turnover >= 5 crore, no price floor",
         [
             books_set([playbook(n) for n in SETUPS]),
             ONE_SETUP,
+            'universe[series_in].params.series=["EQ"]',
             "universe[min_turnover].params.inr_cr=5",
+            "universe[min_price].enabled=false",
         ],
         ACCOUNT,
     )
@@ -506,6 +509,13 @@ def entry_diff(base: Sequence[Trade], variant: Sequence[Trade]) -> tuple[list[Tr
     return [t for t in variant if t.key not in have], [t for t in base if t.key not in got]
 
 
+def swaps(added: Sequence[Trade], lost: Sequence[Trade]) -> int:
+    """The lost entries whose instrument has an extra entry: one setup per instrument swapped
+    the setup it took."""
+    instruments = {t.key[0] for t in added}
+    return sum(1 for t in lost if t.key[0] in instruments)
+
+
 def extra_setups(base: Mapping[str, Any], variant: Mapping[str, Any]) -> dict[str, int]:
     """Per playbook, the funnel's `setup` stock-days of `variant` over `base` (`run.json`)."""
     a = base.get("by_playbook", {})
@@ -558,7 +568,11 @@ def loo_report(runs: Mapping[str, str], root: Path) -> str:
     lines.append(f"| all | {_cells(stats(base_trades))} |")
     head = [
         "",
-        "| rule | run | extra setups | extra entries | lost entries | shadow win % | "
+        "One setup per instrument: removing a rule can swap the setup an instrument takes (at "
+        "another pivot, often on another date), so some lost entries are swaps; `lost (swaps)` "
+        "counts the lost entries whose instrument has an extra entry.",
+        "",
+        "| rule | run | extra setups | extra entries | lost (swaps) | shadow win % | "
         "shadow expectancy R | by setup (n, win %, exp R) |",
         "|---|---|---|---|---|---|---|---|",
     ]
@@ -580,7 +594,8 @@ def loo_report(runs: Mapping[str, str], root: Path) -> str:
             for k, v in sorted(parts.items())
         )
         lines.append(
-            f"| {rule.name} | `{run_id}` | {sum(setups.values())} | {total.count} | {len(lost)} "
+            f"| {rule.name} | `{run_id}` | {sum(setups.values())} | {total.count} "
+            f"| {len(lost)} ({swaps(added, lost)}) "
             f"| {_fmt(total.win_pct, 1)} | {_fmt(total.expectancy_r, 3)} | {split} |"
         )
     return "\n".join(lines) + "\n"

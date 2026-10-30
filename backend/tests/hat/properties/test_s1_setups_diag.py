@@ -88,6 +88,9 @@ def test_trades_sum_their_legs_and_extra_is_by_entry() -> None:
     added, lost = d.entry_diff(base, variant)
     assert [t.key[0] for t in added] == ["i3"]
     assert [t.key[0] for t in lost] == ["i2"]
+    assert d.swaps(added, lost) == 0
+    # i2 lost on one date and taken on another (one setup per instrument swapped its setup)
+    assert d.swaps([*added, *d.trades_of([_row("2", "1", day="2017-02-01")])], lost) == 1
     assert d.stats(added) == d.Stats(1, 0.0, -0.5)
     assert d.stats(base) == d.Stats(2, 50.0, 0.5)
     assert d.stats([]) == d.Stats(0, None, None)

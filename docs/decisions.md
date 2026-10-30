@@ -106,13 +106,15 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (`mine` in each criterion's extras).
 - **S1 final contraction is a window (owner 2026-10-30).** The zigzag's reversal threshold
   (max(3%, 1.5 x ATR14 / close)) cannot confirm a contraction shallower than itself, so a tight
-  final one merged into the one before. The contractions before the final one stay the zigzag's
-  confirmed ones; the final one is the longest run of the last 5-15 sessions after the last
-  confirmed swing high, its range over its high at most the final depth cap (10%; power play 8%)
-  and at most 0.75 x the last confirmed contraction (`book.tight_window`). Pivot its high, stop
-  its low less the buffer. `book_vcp`, the power play's flag, the primary base and the cup with
-  handle's final tightening (inside the handle, at most 10%) use it; the cheat's pause already is
-  a window. Setup 1 (`book_vcp`) is back in the S1 runs.
+  final one merged into the one before. The contractions stay the zigzag's confirmed ones, and a
+  tight pullback after the last is added as the final one: the bars from the highest high after
+  the last swing low to the signal date, 5-15 sessions, their range over that high at most the
+  final depth cap (10%; power play 8%) and at most 0.75 x the last confirmed contraction
+  (`book.tight_window`). Pivot that high, stop its low less the buffer. Without one (price still
+  rising, the high under 5 or over 15 sessions back, or too deep) the zigzag's last contraction
+  is the final one, as before. `book_vcp`, the power play's flag and the primary base use it; the
+  cup with handle's tight area is the handle from the lip (a window anchored at its high), and
+  the cheat's pause already is a window. Setup 1 (`book_vcp`) is back in the S1 runs.
 - **S1 validity window (owner 2026-10-30).** A setup of a playbook with `valid_sessions` N,
   named by (playbook, instrument, `pivot_date`), is valid D+1..D+N from the night D it was first
   found (`hat_setup_window`, one row per setup and strategy version). Re-detection never extends

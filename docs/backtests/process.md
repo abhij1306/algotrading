@@ -315,7 +315,7 @@ line flag sets the same for one run or every variant.
 | Initial stop and its cap | `set: ['playbooks[default].stop={"rule": "atr_multiple", "days": 14, "multiple": 2, "max_pct": 8}']`, `...stop.max_pct=10` | `--set` |
 | Exits (partial, breakeven, step trail, SMA/EMA close, swing low, ATR trail, time stop, early failure, max hold) | `set: ['exits[step_trail].step_r=1.5', 'exits[time_stop].enabled=false', 'exits[+]={"rule": "early_failure", "days": 5}']` | `--set` |
 | SMA exit grace window (no SMA exit in the first N sessions after the entry session; stops still act; unset = off) | `set: ['exits[close_below_sma].grace_sessions=10']` | `--set` |
-| Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100` | `--set` |
+| Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100`; rule `always_on` is no gate | `--set` |
 | Regime sizing (1 or the live regime engine) | `regime_mult: policy` | `--regime-mult` |
 | Risk per trade | `risk_pct: 0.005` | `--risk-pct` |
 | Sleeve weight | `sleeve_weight: 0.5` | `--sleeve-weight` |

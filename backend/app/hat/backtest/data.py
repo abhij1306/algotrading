@@ -77,6 +77,7 @@ from ..models import (
     HatIndustry,
     HatInstrument,
     HatInstrumentSymbolHistory,
+    HatMarket,
     HatUniverseVersion,
 )
 from ..money import exact
@@ -774,29 +775,34 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 """
 
 
-# The built-in research universe (no stored row, `--universe NSE_STOCKS`): every stock the
-# instrument table holds, its ISIN `INE...` (an ETF's or a fund's is `INF...`, a partly paid
-# share's `IN9...`), a member throughout. A stock is only scanned on the nights it has bars, so a
+# The built-in research universe (no stored row, `--universe NSE_STOCKS`): every NSE stock the
+# instrument table holds, its ISIN `INE...` (a company's equity share) or `IN9...` (a DVR share;
+# a partly paid share's too, which trades in its own series), never an ETF's or a fund's
+# (`INF...`), a member throughout. A stock is only scanned on the nights it has bars, so a
 # delisted one is in the universe until its last trade and a listing from its first; the bot's
 # universe criteria (series, turnover, price) filter it point in time.
 NSE_STOCKS = "NSE_STOCKS"
 NSE_STOCKS_VERSION_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000001")
 NSE_STOCKS_UNIVERSE_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000002")
-STOCK_ISIN_PREFIX = "INE"
+STOCK_ISIN_PREFIXES = ("INE", "IN9")
 
 
 def is_stock_isin(isin: str | None) -> bool:
-    """Whether an ISIN is an Indian company's equity share (`INE...`), not an ETF or fund unit
-    (`INF...`), a partly paid share (`IN9...`) or another security."""
-    return isin is not None and isin.startswith(STOCK_ISIN_PREFIX)
+    """Whether an ISIN is an Indian company's share (`INE...`, or `IN9...` for a DVR or a partly
+    paid share), not an ETF or fund unit (`INF...`) or another security."""
+    return isin is not None and isin.startswith(STOCK_ISIN_PREFIXES)
 
 
 def nse_stock_members(
     session: Session, lineage: Mapping[str, str], since: date, until: date
 ) -> tuple[tuple[Interval, ...], dict[str, Any]]:
     """`NSE_STOCKS`'s members over `since..until` by chain id (`point_in_time_members` with
-    every stock as an include) and what they were read from (the snapshot's `membership`)."""
-    rows = session.execute(select(HatInstrument.id, HatInstrument.isin)).all()
+    every NSE stock as an include) and what they were read from (the snapshot's `membership`)."""
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.isin)
+        .join(HatMarket, HatMarket.id == HatInstrument.market_id)
+        .where(HatMarket.code == "NSE")
+    ).all()
     stocks = sorted(i for i, isin in rows if is_stock_isin(isin))
     members = point_in_time_members(
         (), include=stocks, exclude=(), lineage=lineage, since=since, until=until
