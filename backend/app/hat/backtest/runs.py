@@ -76,7 +76,6 @@ from .loop import run_backtest
 from .overlay import EtfData, OverlayConfig, OverlayError, replay_overlay
 from .overrides import (
     NO_EFFECT,
-    NO_OP,
     OverrideError,
     Overrides,
     parse_policy_set,
@@ -1071,14 +1070,13 @@ def _bundle(item: Mapping[str, object]) -> str | None:
     return reason
 
 
-# a path naming nothing, or an override that changes nothing (`overrides.NO_OP`, `NO_EFFECT`):
+# a path naming nothing, or a policy field no backtest reads (`overrides.NO_EFFECT`):
 # refused for the whole sweep before any variant runs
 PATH_CODES = frozenset(
     {
         "backtest_bad_override_path",
         "backtest_override_no_item",
         "backtest_override_ambiguous",
-        NO_OP,
         NO_EFFECT,
     }
 )
