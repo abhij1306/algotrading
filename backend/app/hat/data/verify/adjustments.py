@@ -1586,19 +1586,24 @@ SELECT isin, date, CAST(open AS DOUBLE), CAST(prev_close AS DOUBLE), CAST(close 
 FROM bars_daily_raw_latest WHERE date BETWEEN ? AND ? AND isin IN (SELECT unnest(?))
 """
 RAW_BARS_DAYS = (45, 45)  # calendar days of bars read before and after each ex-date
-# Each instrument's share count (paid-up capital over face value) at each period end its NSE
-# results XBRL gives, the latest version's; and its paid-up capital at each year end screener's
-# balance sheet gives (no face value by period there, so a count only for a bonus).
+# Each instrument's share count (paid-up capital over face value, both of one XBRL context) at
+# each period end its NSE results XBRL gives, the latest version's; and its paid-up capital at
+# each year end screener's balance sheet gives (no face value by period there, so a count only
+# for a bonus).
 _SHARES_SQL = """
-SELECT DISTINCT ON (f.instrument_id, f.period_end)
-       CAST(f.instrument_id AS TEXT), f.period_end,
-       max(a.value) FILTER (WHERE a.item = 'paid_up_capital'),
-       max(a.value) FILTER (WHERE a.item = 'face_value')
-FROM hat_fundamental_fact a JOIN hat_fundamental_filing f ON f.id = a.filing_id
-WHERE f.source = 'nse' AND a.item IN ('paid_up_capital', 'face_value')
-  AND a.period_end = f.period_end
-GROUP BY f.id, f.instrument_id, f.period_end, f.version
-ORDER BY f.instrument_id, f.period_end, f.version DESC
+WITH pairs AS (
+    SELECT f.instrument_id, f.period_end, f.version, a.context,
+           max(a.value) FILTER (WHERE a.item = 'paid_up_capital') AS paid_up,
+           max(a.value) FILTER (WHERE a.item = 'face_value') AS face
+    FROM hat_fundamental_fact a JOIN hat_fundamental_filing f ON f.id = a.filing_id
+    WHERE f.source = 'nse' AND a.item IN ('paid_up_capital', 'face_value')
+      AND a.period_end = f.period_end
+    GROUP BY f.id, f.instrument_id, f.period_end, f.version, a.context
+)
+SELECT DISTINCT ON (instrument_id, period_end)
+       CAST(instrument_id AS TEXT), period_end, paid_up, face
+FROM pairs WHERE paid_up IS NOT NULL AND face IS NOT NULL
+ORDER BY instrument_id, period_end, version DESC, context
 """
 _CAPITAL_SQL = """
 SELECT DISTINCT ON (f.instrument_id, a.period_end)
@@ -1717,9 +1722,14 @@ def _stored_against_market(
         "shares": defaultdict(dict),
         "capital": defaultdict(dict),
     }
-    for (head, ex), f in split_bonus.items():
+    # a count's span reaches past the window: its expectation takes the actions around it too
+    around = timedelta(days=max(EVIDENCE_PERIOD_DAYS.values()))
+    _, near_split_bonus, near_bonus = chain_day_factors(
+        _stored(ctx, ctx.start - around, ctx.end + around), heads
+    )
+    for (head, ex), f in near_split_bonus.items():
         by_chain["shares"][head][ex] = float(f)
-    for (head, ex), f in bonus.items():
+    for (head, ex), f in near_bonus.items():
         by_chain["capital"][head][ex] = float(f)
     by_year: dict[str, Counter[str]] = defaultdict(Counter)
     listed, disagree, contradicted = [], defaultdict(list), []
@@ -1797,6 +1807,20 @@ def _stored_against_market(
     return bhavcopy, evidence, findings
 
 
+def _stored(ctx: Context, start: date, end: date) -> list[StoredAction]:  # pragma: no cover
+    """The stored corporate actions with an ex-date from `start` to `end`."""
+    return [
+        StoredAction(str(i), d, t, Fraction(f), exact(c, floats=True), dm, s, x or "")
+        for i, d, t, f, c, dm, s, x in ctx.rows(
+            "SELECT CAST(instrument_id AS TEXT), ex_date, action_type, adjustment_factor, "
+            "cash_amount, demerger, source, raw_text "
+            "FROM hat_corporate_action WHERE ex_date BETWEEN :a AND :b",
+            a=start,
+            b=end,
+        )
+    ]
+
+
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     from ..chains import chains, stored_adjustment, stored_links  # noqa: PLC0415
 
@@ -1806,16 +1830,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     announcements: tuple[Mapping, Mapping] = ({}, {})
     coverage = None
     exceptions = Exceptions(read_exceptions(D2_EXCEPTIONS, "D2"))
-    stored = [
-        StoredAction(str(i), d, t, Fraction(f), exact(c, floats=True), dm, s, x or "")
-        for i, d, t, f, c, dm, s, x in ctx.rows(
-            "SELECT CAST(instrument_id AS TEXT), ex_date, action_type, adjustment_factor, "
-            "cash_amount, demerger, source, raw_text "
-            "FROM hat_corporate_action WHERE ex_date BETWEEN :a AND :b",
-            a=ctx.start,
-            b=ctx.end,
-        )
-    ]
+    stored = _stored(ctx, ctx.start, ctx.end)
     if ctx.ca_data is not None and ctx.ca_data.is_dir():
         refs, skipped, rights_pulled = read_reference(ctx.ca_data)
         refs = [r for r in refs if ctx.start <= r.ex_date <= ctx.end]
