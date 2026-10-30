@@ -82,17 +82,19 @@ class VolumeReport:
     off: Counter[int] = field(default_factory=Counter)  # days off the bhavcopy, by year
     scaled: Counter[int] = field(default_factory=Counter)  # fit it, but off the export's volume
     restored: Counter[int] = field(default_factory=Counter)
+    # the export proves them and every stored bar already has its volume (a repaired day)
+    agrees: Counter[int] = field(default_factory=Counter)
     unproven: Counter[int] = field(default_factory=Counter)  # the export cannot prove them
     no_file: Counter[int] = field(default_factory=Counter)  # the export has no bars for them
     changes: list[Change] = field(default_factory=list)
     left: list[tuple[str, date, str]] = field(default_factory=list)  # instrument, day, why
 
     def summary(self) -> str:
-        lines = ["year off scaled restored unproven no_file"]
+        lines = ["year off scaled restored agrees unproven no_file"]
         for year in sorted(self.off.keys() | self.scaled.keys()):
             lines.append(
                 f"{year} {self.off[year]} {self.scaled[year]} {self.restored[year]} "
-                f"{self.unproven[year]} {self.no_file[year]}"
+                f"{self.agrees[year]} {self.unproven[year]} {self.no_file[year]}"
             )
         lines.append(f"bars changed: {len(self.changes)}")
         return "\n".join(lines) + "\n"
@@ -125,6 +127,23 @@ def common_factor(pairs: Iterable[tuple[int, int]]) -> float | None:
     f = sum(s for s, _ in pairs) / total
     held = sum(k for s, k in pairs if abs(s - k * f) <= max(1.0, FACTOR_SLACK * s))
     return f if held >= FACTOR_SHARE * total else None
+
+
+RESTORED, AGREES, UNPROVEN = "restored", "agrees", "unproven"
+
+
+def verdict(stored: Mapping[time, int], volumes: Mapping[time, int] | None) -> str:
+    """A candidate day's verdict from its stored bar volumes and the export's (`restored_volumes`,
+    None when the export cannot prove the day): `AGREES` when every stored bar already has the
+    export's volume (a repaired day: the candidate test sums the export by label, the store by
+    start, so the edge bars can keep it a candidate), `RESTORED` when they differ by one common
+    factor other than 1 (`common_factor`), else `UNPROVEN`."""
+    if volumes is None:
+        return UNPROVEN
+    if stored and all(stored[t] == volumes[t] for t in stored):
+        return AGREES
+    factor = common_factor((stored[t], volumes[t]) for t in stored)
+    return UNPROVEN if factor is None or abs(factor - 1) <= EXPORT_SLACK else RESTORED
 
 
 def is_candidate(stored: int, daily: int | None, export: int) -> tuple[bool, bool]:
@@ -183,14 +202,13 @@ def _judge(
             volumes = restored_volumes(
                 day, {t: bar for t, (_, bar) in mine.items()}, rows, daily_volume
             )
-            factor = (
-                None
-                if volumes is None
-                else common_factor((int(bar[4]), volumes[t]) for t, (_, bar) in mine.items())
-            )
-            if factor is None or abs(factor - 1) <= EXPORT_SLACK:
+            why = verdict({t: int(bar[4]) for t, (_, bar) in mine.items()}, volumes)
+            if why == AGREES:
+                report.agrees[day.year] += 1
+                continue
+            if why == UNPROVEN:
                 report.unproven[day.year] += 1
-                report.left.append((instrument, day, "unproven"))
+                report.left.append((instrument, day, UNPROVEN))
                 continue
             report.restored[day.year] += 1
             report.changes += changes_of(instrument, day, mine, volumes)  # type: ignore[arg-type]

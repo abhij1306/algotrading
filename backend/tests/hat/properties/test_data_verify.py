@@ -5,7 +5,7 @@ reads."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -873,6 +873,20 @@ def test_volume_repair_needs_one_common_factor() -> None:
     assert bars5m_volume.is_candidate(97, 100, 94) == (False, True)  # fits, off the export's
     assert bars5m_volume.is_candidate(97, 100, 97) == (False, False)
     assert bars5m_volume.is_candidate(97, None, 0) == (False, False)
+
+
+def test_a_repaired_day_agrees_and_is_not_left() -> None:
+    """A candidate whose stored bars already have the export's volumes agrees (a repaired day,
+    still a candidate by the edge bars); one factor off restores; else unproven. Harm: a correct
+    repair growing the list of days left unproven."""
+    a, b = time(9, 15), time(9, 20)
+    v = bars5m_volume.verdict
+    assert v({a: 10, b: 20}, {a: 10, b: 20}) == bars5m_volume.AGREES
+    assert v({a: 50, b: 100}, {a: 10, b: 20}) == bars5m_volume.RESTORED
+    assert v({a: 1000, b: 2000}, {a: 1000, b: 2001}) == bars5m_volume.UNPROVEN  # factor ~1
+    assert v({a: 10, b: 20}, {a: 10, b: 90}) == bars5m_volume.UNPROVEN  # no common factor
+    assert v({a: 10}, None) == bars5m_volume.UNPROVEN
+    assert v({}, {}) == bars5m_volume.UNPROVEN
 
 
 def test_d4_bars_stored_a_bar_off_fail_and_never_pair_up() -> None:

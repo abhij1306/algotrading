@@ -8,6 +8,7 @@ through. With `ctx.dry_run` a body works out what it would do and runs nothing."
 
 from __future__ import annotations
 
+import shutil
 import subprocess  # noqa: S404 - runs the repo's own command lines, never a shell
 import sys
 import uuid
@@ -27,6 +28,7 @@ from .plan import gaps, recent_sessions, sessions_to_fill
 BACKEND = PROJECT_ROOT / "backend"
 SCRIPTS = PROJECT_ROOT / "scripts" / "data"
 WORK = Path("work")  # under the data root: the download tools' working directories
+ADMIN = Path("admin")  # under the data root: the only folder the admin commands read files from
 
 
 class StepError(Exception):
@@ -391,21 +393,44 @@ def membership(ctx: Context) -> Done:
     if last is not None and last >= ctx.through:
         return Done(last, "up to date")
     work = work_dir(ctx, "NIFTY500_DIR", "nifty500")
-    csv = work / "nifty500-membership.csv"
     tool = "nifty500_membership.py"
-    commands = [
+    build = [
         *(script(tool, "--work", work, step) for step in ("fetch", "text", "parse", "reference")),
         script(tool, "--work", work, "build", "--as-of", ctx.today),
-        module("app.hat.admin", "load-index-membership", "--csv", csv, "--as-of", ctx.today)
-        + ["--apply"],
     ]
+    load = membership_load(ctx.today)
     if ctx.dry_run:
-        return Done(last, would(commands))
+        return Done(last, would([*build, load]))
     try:
-        chain(ctx, commands)
+        chain(ctx, build)
+        # the admin command reads only files inside the admin folder: the build is copied there
+        (ctx.root / ADMIN).mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(
+            work / "nifty500-membership.csv", ctx.root / ADMIN / membership_admin_name(ctx.today)
+        )
+        chain(ctx, [load])
     except StepError as exc:
         raise StepError(exc.detail, _covered_to()) from None
     return Done(_covered_to(), f"loaded as of {ctx.today}")
+
+
+def membership_admin_name(today: date) -> str:
+    """The name, inside the admin folder, of the NIFTY 500 history built on `today`."""
+    return f"nifty500-membership-{today.isoformat()}.csv"
+
+
+def membership_load(today: date) -> list[str]:
+    """`load-index-membership` of the history built on `today`, named inside the admin folder
+    (a path outside it is refused `file_outside_admin`)."""
+    return module(
+        "app.hat.admin",
+        "load-index-membership",
+        "--csv",
+        membership_admin_name(today),
+        "--as-of",
+        today,
+        "--apply",
+    )
 
 
 def _covered_to() -> date | None:

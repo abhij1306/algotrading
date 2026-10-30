@@ -89,3 +89,19 @@ def test_gaps_are_per_instrument_and_skip_ledgered_refusals() -> None:
     assert plan.gaps(expected, stored) == {WED: {"b", "c"}}
     assert plan.gaps(expected, stored, {("c", WED)}) == {WED: {"b"}}
     assert plan.gaps(expected, {WED: {"a", "b", "c"}, THU: {"a", "b"}}) == {}
+
+
+def test_the_membership_load_names_the_history_inside_the_admin_folder() -> None:
+    """The update copies the built history into the admin folder under a dated name and loads it
+    by that name. Harm: the step refused `file_outside_admin` every night (an absolute work path),
+    the membership never covering the new sessions."""
+    from app.hat.data.update.steps import membership_admin_name, membership_load
+
+    day = date(2026, 10, 30)
+    assert membership_admin_name(day) == "nifty500-membership-2026-10-30.csv"
+    argv = membership_load(day)
+    at = argv.index("--csv")
+    assert argv[at + 1] == "nifty500-membership-2026-10-30.csv"
+    assert "/" not in argv[at + 1]
+    assert argv[argv.index("--as-of") + 1] == "2026-10-30"
+    assert argv[-1] == "--apply"
