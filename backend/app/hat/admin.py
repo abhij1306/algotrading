@@ -111,6 +111,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from .clock import SYSTEM_CLOCK, Clock
+from .daily.books import read_books, report_doc
 from .data.broker_symbols import refresh_kite_symbols
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
@@ -223,6 +224,8 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m app.hat.admin")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("show")
+    books = commands.add_parser("books")  # read-only: the live and paper books' report
+    books.add_argument("--date", type=date.fromisoformat, default=None)
     commands.add_parser("seed-policy")
     commands.add_parser("show-policy")
     commands.add_parser("set-policy").add_argument("--file", required=True)
@@ -483,6 +486,12 @@ def _setup(
     command = args.command
     if command == "show":
         return release.release_overview(session, user_id)
+    if command == "books":
+        as_of = args.date or trade_date_of(now)
+        return {
+            "as_of": as_of.isoformat(),
+            "books": report_doc(read_books(session, deps.store(), as_of)),
+        }
     if command == "show-policy":
         version = effective_version(load_versions(session, user_id), now)
         if version is None:

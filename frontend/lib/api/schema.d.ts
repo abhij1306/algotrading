@@ -345,6 +345,27 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/hat/books": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /**
+     * Hat Books
+     * @description Each live and paper book through the last stored session: P&L, costs, invested share,
+     *     trades' R and the headline metrics against the NIFTY 500 TRI.
+     */
+    get: operations["hat_books_api_hat_books_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/hat/events": {
     parameters: {
       query?: never;
@@ -686,6 +707,118 @@ export interface components {
       universes: components["schemas"]["BacktestUniverse"][];
       /** Version */
       version: number;
+    };
+    /** BookPositionView */
+    BookPositionView: {
+      /** Avg Entry */
+      avg_entry: string;
+      /** Current Stop */
+      current_stop: string;
+      /** Initial Stop */
+      initial_stop: string;
+      /** Mark */
+      mark: string | null;
+      /** Open R */
+      open_r: string | null;
+      /**
+       * Opened
+       * Format: date
+       */
+      opened: string;
+      /** Qty */
+      qty: number;
+      /** Symbol */
+      symbol: string;
+      /** Unrealised */
+      unrealised: string;
+      /** Value */
+      value: string;
+    };
+    /** BookTradeView */
+    BookTradeView: {
+      /**
+       * Entry
+       * Format: date
+       */
+      entry: string;
+      /**
+       * Exit
+       * Format: date
+       */
+      exit: string;
+      /** Exit Reason */
+      exit_reason: string;
+      /** Fees */
+      fees: string;
+      /** Hold */
+      hold: number;
+      /** Net Pnl */
+      net_pnl: string;
+      /** R */
+      r: string;
+      /** Symbol */
+      symbol: string;
+    };
+    /**
+     * BookView
+     * @description One live or paper book: money as exact strings; `metrics` the Backtest Result
+     *     Standard's headline metrics, as a run's `run.json` holds them.
+     */
+    BookView: {
+      /**
+       * As Of
+       * Format: date
+       */
+      as_of: string;
+      /** Benchmark Return Pct */
+      benchmark_return_pct: number | null;
+      /** Bot */
+      bot: string;
+      /** Day Pnl */
+      day_pnl: string;
+      /** Equity */
+      equity: string;
+      /** Fees */
+      fees: string;
+      /** Fees Today */
+      fees_today: string;
+      /** Invested Pct */
+      invested_pct: number | null;
+      /** Kind */
+      kind: string;
+      /** Metrics */
+      metrics: {
+        [key: string]: number | boolean | string | null;
+      };
+      /**
+       * Period Start
+       * Format: date
+       */
+      period_start: string;
+      /** Position Value */
+      position_value: string;
+      /** Positions */
+      positions: components["schemas"]["BookPositionView"][];
+      /** Realised */
+      realised: string;
+      /** Realised Today */
+      realised_today: string;
+      /** Start Capital */
+      start_capital: string;
+      /** Trades */
+      trades: components["schemas"]["BookTradeView"][];
+      /** Unrealised */
+      unrealised: string;
+    };
+    /** BooksResponse */
+    BooksResponse: {
+      /**
+       * As Of
+       * Format: date
+       */
+      as_of: string;
+      /** Books */
+      books: components["schemas"]["BookView"][];
     };
     /** BotView */
     BotView: {
@@ -1686,6 +1819,40 @@ export interface operations {
       };
       /** @description The read failed */
       500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  hat_books_api_hat_books_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["BooksResponse"];
+        };
+      };
+      /** @description The read failed */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description The database could not be read */
+      503: {
         headers: {
           [name: string]: unknown;
         };

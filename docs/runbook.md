@@ -126,6 +126,8 @@ exits; values are typed at runtime, never printed or logged.
 `$ADMIN --help` and `app/hat/admin.py` list every command. Each is one transaction printing JSON;
 a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are names inside
 `<HAT_DATA_ROOT>/admin/`. `$ADMIN show` lists strategies, versions and sleeves with ids.
+`$ADMIN books [--date YYYY-MM-DD]` prints each bot's live and paper book through that session
+(read-only; Live and paper books).
 Strategies, versions, the risk policy versions, broker accounts and sleeves are config files
 (`<HAT_DATA_ROOT>/admin/config/<kind>/<id>/<rev>.json`, the revision in force in
 `<kind>/in_force.json`, every earlier pointer in `<kind>/pointers/`); the commands are the only
@@ -633,6 +635,20 @@ never needed for it. A release that changes a feature formula or the adjusted vi
 every date (`inputs_changed`); `features --full` does the same at once. The writers of actions,
 lineage and symbol history share the `hat_reference_data` advisory lock; `features` does not take
 it, so run it after they finish.
+
+### Live and paper books
+
+Each bot's real positions (`live`) and shadow ones (`paper`) are one book each, from its first
+allocation with capital (`capital`, or the sleeve's nominal `virtual_capital` for paper), marked
+at the official closes (`daily/books.py`). The report: equity and the day's P&L, realised P&L
+(net, with dividends) and unrealised, costs, the invested share (today's and the mean; idle cash
+is a failure), each closed trade's R, and the Backtest Result Standard's headline metrics
+(`standard.book_metrics`, the code a run's `run.json` uses, so `win_pct`, `expectancy_r`,
+`max_dd_pct`, `invested_pct`, `cost_share_pct` and the rest compare one to one with the
+strategy's evidence run) against the NIFTY 500 TRI. Telegram sends it at 23:45 IST after
+`ingest.nightly` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
+books` show it on demand. A held stock whose shares a split or bonus changed is valued from its
+fills at the raw close until it closes, so its book reads wrong in between.
 
 ## Alerts and failures
 

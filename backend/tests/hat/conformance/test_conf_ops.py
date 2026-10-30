@@ -97,6 +97,7 @@ ADMIN_IMPORTS = {
     "app.hat.data.corporate_actions",
     "app.hat.data.index_membership",  # the index membership loader
     "app.hat.data.industry_history",  # the industry history loader
+    "app.hat.daily.books",  # the books report: reads only
     "app.hat.data.symbol_history",  # the symbol history repair (DB6)
     "app.hat.data.broker_symbols",  # the zerodha symbol refresh
     "app.hat.data.kite_symbols",  # the zerodha symbol refresh's inputs

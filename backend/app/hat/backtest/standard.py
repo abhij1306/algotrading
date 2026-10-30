@@ -1,7 +1,8 @@
 """The Backtest Result Standard's pure rules (docs/backtests/result-standard.md): the refusal
 codes and the map onto them of every reason the engine refuses an entry with, the buckets, the
 trade-list hash and binding, the forward R of a refused entry, and the metric formulas. No I/O;
-`folder` assembles and writes a run's files from them.
+`folder` assembles and writes a run's files from them. `book_metrics` is the headline metric set
+of a book (a run, or a live or paper book: `daily/pnl_report.py`), so the two compare one to one.
 """
 
 from __future__ import annotations
@@ -9,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import math
 from bisect import bisect_left, bisect_right
+from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -26,8 +28,11 @@ __all__ = [
     "NOT_A_SIGNAL",
     "REFUSAL_CODES",
     "REFUSAL_OF",
+    "BookSession",
+    "BookTrade",
     "Drawdowns",
     "binding",
+    "book_metrics",
     "breadth_bucket",
     "cagr_pct",
     "changed_paths",
@@ -36,8 +41,12 @@ __all__ = [
     "exit_sma",
     "fwd_r",
     "max_consecutive_losses",
+    "mean_of",
+    "money_of",
+    "pct_of",
     "quintile",
     "refusal_code",
+    "rounded",
     "sessions_held",
     "sharpe",
     "sortino",
@@ -47,6 +56,9 @@ __all__ = [
 
 FORMAT_VERSION = "1.5"
 TRADING_DAYS = 252
+_PLACES = 4
+_ZERO = Decimal(0)
+_HUNDRED = Decimal(100)
 LADDER_LEVEL = "ladder_level"
 REFUSAL_CODES = (
     "max_positions",
@@ -448,4 +460,135 @@ def changed_paths(resolved: Mapping[str, object], base: Mapping[str, object]) ->
         path: mine.get(path)
         for path in sorted(set(mine) | set(theirs))
         if mine.get(path) != theirs.get(path) or (path in mine) != (path in theirs)
+    }
+
+
+# --- the headline metrics of a book ----------------------------------------------------------
+
+
+def rounded(value: float | Decimal | None, places: int = _PLACES) -> float | None:
+    """A metric as run.json holds it: a float to `places`; None for None or a non-finite."""
+    if value is None:
+        return None
+    number = float(value)
+    return round(number, places) if math.isfinite(number) else None
+
+
+def money_of(value: Decimal) -> float:
+    return float(round(value, 2))
+
+
+def mean_of(values: Sequence[float | Decimal]) -> float | None:
+    return sum(float(v) for v in values) / len(values) if values else None
+
+
+def pct_of(value: Decimal | None, whole: Decimal | None) -> float | None:
+    if value is None or whole is None or whole <= 0:
+        return None
+    return rounded(value / whole * _HUNDRED)
+
+
+@dataclass(frozen=True)
+class BookTrade:
+    """A closed trade as the metrics read it: net of costs, its hold in sessions; `mfe_r` and
+    `mae_r` None where the book keeps none (a real trade)."""
+
+    symbol: str
+    r: Decimal
+    net_pnl: Decimal
+    fees: Decimal
+    hold: int
+    mfe_r: Decimal | None = None
+    mae_r: Decimal | None = None
+
+
+@dataclass(frozen=True)
+class BookSession:
+    """One session's close of the book: its mark, the open positions' value and count."""
+
+    day: date
+    equity: Decimal
+    position_value: Decimal
+    open_positions: int
+
+
+def _before(closes: Sequence[tuple[date, Decimal]], day: date) -> Decimal | None:
+    """The last close before `day`."""
+    found = [c for d, c in closes if d < day]
+    return found[-1] if found else None
+
+
+def book_metrics(
+    trades: Sequence[BookTrade],
+    curve: Sequence[tuple[date, Decimal]],
+    sessions: Sequence[BookSession],
+    start: Decimal,
+    period_start: date,
+    benchmark: Sequence[tuple[date, Decimal]] = (),
+    rf_pct: float = 0.0,
+) -> dict[str, Any]:
+    """The standard's headline metrics (section 1, metrics) of a book with start capital
+    `start` from `period_start`: its closed `trades` in entry order, its closing equity `curve`
+    and `sessions`, against the `benchmark` closes (NIFTY 500 TRI). Every metric of a run but
+    the ones only a run has (signals, DSR, PBO, liquidity), in the same units and rounding."""
+    rs = [t.r for t in trades]
+    wins = [t for t in trades if t.r > 0]
+    losses = [t for t in trades if t.r <= 0]
+    final = curve[-1][1] if curve else start
+    net = sum((t.net_pnl for t in trades), _ZERO)
+    fees = sum((t.fees for t in trades), _ZERO)
+    days = (curve[-1][0] - period_start).days + 1 if curve else 0
+    dd = drawdowns(curve, start)
+    previous = float(start)
+    returns = []
+    for _, value in curve:
+        returns.append(float(value) / previous - 1 if previous > 0 else 0.0)
+        previous = float(value)
+    rf_daily = rf_pct / 100 / TRADING_DAYS
+    cagr = cagr_pct(final, start, days)
+    top5 = sorted((t.net_pnl for t in trades), reverse=True)[:5]
+    by_symbol: dict[str, Decimal] = defaultdict(lambda: _ZERO)
+    for t in trades:
+        by_symbol[t.symbol] += t.net_pnl
+    bench_start = _before(benchmark, curve[0][0]) if curve else None
+    bench_end = dict(benchmark).get(curve[-1][0]) if curve else None
+    gross = net + fees
+    mfe = [t.mfe_r for t in trades if t.mfe_r is not None]
+    mae = [t.mae_r for t in trades if t.mae_r is not None]
+    return {
+        "trades": len(trades),
+        "win_pct": rounded(len(wins) / len(trades) * 100) if trades else None,
+        "avg_win_r": rounded(mean_of([t.r for t in wins])),
+        "avg_loss_r": rounded(mean_of([t.r for t in losses])),
+        "expectancy_r": rounded(mean_of(rs)),
+        "avg_mfe_r": rounded(mean_of(mfe)),
+        "avg_mae_r": rounded(mean_of(mae)),
+        "cagr_pct": rounded(cagr),
+        "max_dd_pct": rounded(dd.max_pct),
+        "avg_dd_pct": rounded(dd.avg_pct),
+        "mar": rounded(cagr / dd.max_pct) if cagr is not None and dd.max_pct > 0 else None,
+        "sharpe": rounded(sharpe(returns, rf_daily)),
+        "sortino": rounded(sortino(returns, rf_daily)),
+        "invested_pct": rounded(
+            mean_of([pct_of(s.position_value, s.equity) or 0.0 for s in sessions])
+        ),
+        "avg_open_positions": rounded(mean_of([s.open_positions for s in sessions])),
+        "longest_dd_sessions": dd.longest_sessions,
+        "longest_dd_recovered": dd.longest_recovered,
+        "longest_dd_start": None if dd.longest_start is None else dd.longest_start.isoformat(),
+        "longest_dd_end": None if dd.longest_end is None else dd.longest_end.isoformat(),
+        "total_return_pct": rounded((final / start - 1) * 100) if start > 0 else None,
+        "final_equity": money_of(final),
+        "fees": money_of(fees),
+        "cost_share_pct": rounded(fees / gross * 100) if gross > 0 else None,
+        "benchmark_cagr_pct": rounded(cagr_pct(bench_end, bench_start, days))
+        if bench_start and bench_end
+        else None,
+        "avg_hold_sessions_win": rounded(mean_of([t.hold for t in wins])),
+        "avg_hold_sessions_loss": rounded(mean_of([t.hold for t in losses])),
+        "max_consecutive_losses": max_consecutive_losses(rs),
+        "symbols_traded": len(by_symbol),
+        "top5_trades_pnl_share_pct": rounded(top_share_pct(top5, 5, net)),
+        "top10_symbols_pnl_share_pct": rounded(top_share_pct(by_symbol.values(), 10, net)),
+        "cagr_ex_top5_trades_pct": rounded(cagr_pct(final - sum(top5, _ZERO), start, days)),
     }

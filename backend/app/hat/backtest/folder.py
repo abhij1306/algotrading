@@ -13,7 +13,6 @@ from __future__ import annotations
 import csv
 import io
 import json
-import math
 import os
 import shutil
 import uuid
@@ -39,19 +38,21 @@ from .spec import BASIS_5M, BacktestError
 from .standard import (
     FORMAT_VERSION,
     NOT_A_SIGNAL,
+    BookSession,
+    BookTrade,
     binding,
+    book_metrics,
     breadth_bucket,
-    cagr_pct,
     daily_returns,
     drawdowns,
     exit_code,
     leg_shares,
-    max_consecutive_losses,
+    mean_of,
+    money_of,
+    pct_of,
     refusal_code,
+    rounded,
     sessions_held,
-    sharpe,
-    sortino,
-    top_share_pct,
 )
 
 __all__ = [
@@ -90,7 +91,6 @@ CSV_FILES = (
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
 STOPOUT_DAYS = 90
-_PLACES = 4
 _ZERO = Decimal(0)
 _HUNDRED = Decimal(100)
 
@@ -358,29 +358,14 @@ class RunInputs:
     rf_pct: float = 0.0
 
 
-def _f(value: float | Decimal | None, places: int = _PLACES) -> float | None:
-    if value is None:
-        return None
-    number = float(value)
-    return round(number, places) if math.isfinite(number) else None
-
-
-def _money(value: Decimal) -> float:
-    return float(round(value, 2))
-
-
-def _mean(values: Sequence[float | Decimal]) -> float | None:
-    return sum(float(v) for v in values) / len(values) if values else None
-
-
 def _bucket(trades: Sequence[_Trade]) -> dict[str, Any]:
     rs = [t.row.r_multiple for t in trades]
     return {
         "trades": len(trades),
-        "win_pct": _f(sum(1 for r in rs if r > 0) / len(rs) * 100) if rs else None,
-        "expectancy_r": _f(_mean(rs)),
-        "avg_hold_sessions": _f(_mean([t.hold for t in trades])),
-        "net_pnl": _money(sum((t.row.realized_pnl for t in trades), _ZERO)),
+        "win_pct": rounded(sum(1 for r in rs if r > 0) / len(rs) * 100) if rs else None,
+        "expectancy_r": rounded(mean_of(rs)),
+        "avg_hold_sessions": rounded(mean_of([t.hold for t in trades])),
+        "net_pnl": money_of(sum((t.row.realized_pnl for t in trades), _ZERO)),
     }
 
 
@@ -446,14 +431,14 @@ def _yearly(
         out.append(
             {
                 "year": year,
-                "return_pct": _f((days[-1][1] / base - 1) * 100) if base > 0 else None,
-                "max_dd_pct": _f(year_dd.max_pct),
+                "return_pct": rounded((days[-1][1] / base - 1) * 100) if base > 0 else None,
+                "max_dd_pct": rounded(year_dd.max_pct),
                 "trades_entered": len(entries),
-                "expectancy_r_by_entry": _f(_mean([t.row.r_multiple for t in entries])),
+                "expectancy_r_by_entry": rounded(mean_of([t.row.r_multiple for t in entries])),
                 "trades_exited": len(exits),
-                "expectancy_r_by_exit": _f(_mean([t.row.r_multiple for t in exits])),
-                "realized_pnl_by_exit": _money(sum((t.row.realized_pnl for t in exits), _ZERO)),
-                "benchmark_return_pct": _f((last_bench / bench_base - 1) * 100)
+                "expectancy_r_by_exit": rounded(mean_of([t.row.r_multiple for t in exits])),
+                "realized_pnl_by_exit": money_of(sum((t.row.realized_pnl for t in exits), _ZERO)),
+                "benchmark_return_pct": rounded((last_bench / bench_base - 1) * 100)
                 if last_bench is not None and bench_base
                 else None,
                 "entries_5m": entered.get(BASIS_5M, 0),
@@ -492,21 +477,15 @@ def _trades(result: BacktestResult, days: Sequence[date]) -> list[_Trade]:
     return out
 
 
-def _pct_of(value: Decimal | None, whole: Decimal | None) -> float | None:
-    if value is None or whole is None or whole <= 0:
-        return None
-    return _f(value / whole * _HUNDRED)
-
-
 def _context(signal: SignalRow | None) -> dict[str, Any]:
     if signal is None:
         return {}
     return {
         "ladder_level": signal.ladder_level,
         "open_positions_at_entry": signal.open_positions,
-        "open_risk_pct_at_entry": _pct_of(signal.open_risk, signal.equity),
+        "open_risk_pct_at_entry": pct_of(signal.open_risk, signal.equity),
         "index_regime_on": signal.regime_on,
-        "breadth_pct": _f(signal.breadth_pct),
+        "breadth_pct": rounded(signal.breadth_pct),
     }
 
 
@@ -524,7 +503,7 @@ def _position_pct_adv(t: _Trade) -> float | None:
     adv = exact(t.features.get("adv_20d_cr"), floats=True, positive=True)
     if adv is None:
         return None
-    return _f(t.row.entry_price * t.row.qty / (adv * CRORE) * _HUNDRED)
+    return rounded(t.row.entry_price * t.row.qty / (adv * CRORE) * _HUNDRED)
 
 
 def _legs_of(row: TradeRow) -> tuple[LegRow, ...]:
@@ -573,7 +552,7 @@ def _trade_rows(
                     "initial_stop": row.initial_stop,
                     "risk_per_share": risk,
                     "qty": leg.qty,
-                    "risk_pct_equity": _pct_of(
+                    "risk_pct_equity": pct_of(
                         risk * row.qty, None if signal is None else signal.equity
                     ),
                     "exit_date": leg.day,
@@ -627,13 +606,13 @@ def _equity_rows(
                 "equity": s.equity,
                 "cash": s.cash,
                 "position_value": s.position_value,
-                "invested_pct": _pct_of(s.position_value, s.equity),
+                "invested_pct": pct_of(s.position_value, s.equity),
                 "open_positions": s.open_positions,
-                "open_risk_pct": _pct_of(s.open_risk, s.equity),
-                "drawdown_pct": _f((1 - s.equity / peak) * _HUNDRED) if peak > 0 else None,
+                "open_risk_pct": pct_of(s.open_risk, s.equity),
+                "drawdown_pct": rounded((1 - s.equity / peak) * _HUNDRED) if peak > 0 else None,
                 "ladder_level": s.ladder_level,
                 "index_regime_on": s.regime_on,
-                "breadth_pct": _f(s.breadth_pct),
+                "breadth_pct": rounded(s.breadth_pct),
                 "benchmark_tri": bench.get(s.day),
             }
         )
@@ -643,73 +622,35 @@ def _equity_rows(
 def _metrics(
     result: BacktestResult, trades: Sequence[_Trade], signals: int, inputs: RunInputs
 ) -> dict[str, Any]:
-    start = inputs.start_capital
-    equity = list(result.equity)
-    rs = [t.row.r_multiple for t in trades]
-    wins = [t for t in trades if t.row.r_multiple > 0]
-    losses = [t for t in trades if t.row.r_multiple <= 0]
-    final = equity[-1][1] if equity else start
-    net = sum((t.row.realized_pnl for t in trades), _ZERO)
-    fees = sum((t.row.fees for t in trades), _ZERO)
-    first = date.fromisoformat(inputs.data["period_start"])
-    days = (equity[-1][0] - first).days + 1 if equity else 0
-    dd = drawdowns(equity, start)
-    previous = float(start)
-    returns = []
-    for _, value in equity:
-        returns.append(float(value) / previous - 1 if previous > 0 else 0.0)
-        previous = float(value)
-    rf_daily = inputs.rf_pct / 100 / 252
-    cagr = cagr_pct(final, start, days)
-    top5 = sorted((t.row.realized_pnl for t in trades), reverse=True)[:5]
-    by_symbol: dict[str, Decimal] = defaultdict(lambda: _ZERO)
-    for t in trades:
-        by_symbol[t.features.get("symbol") or t.row.instrument_id] += t.row.realized_pnl
-    bench_start = _before(inputs.benchmark, equity[0][0]) if equity else None
-    bench_end = _closes_on(inputs.benchmark).get(equity[-1][0]) if equity else None
+    book = book_metrics(
+        [
+            BookTrade(
+                t.features.get("symbol") or t.row.instrument_id,
+                t.row.r_multiple,
+                t.row.realized_pnl,
+                t.row.fees,
+                t.hold,
+                t.row.mfe_r,
+                t.row.mae_r,
+            )
+            for t in trades
+        ],
+        list(result.equity),
+        [BookSession(s.day, s.equity, s.position_value, s.open_positions) for s in result.sessions],
+        inputs.start_capital,
+        date.fromisoformat(inputs.data["period_start"]),
+        inputs.benchmark,
+        inputs.rf_pct,
+    )
     adv = [p for p in (_position_pct_adv(t) for t in trades) if p is not None]
-    gross = net + fees
-    sessions = list(result.sessions)
     return {
-        "trades": len(trades),
+        **book,
         "signals": signals,
-        "win_pct": _f(len(wins) / len(trades) * 100) if trades else None,
-        "avg_win_r": _f(_mean([t.row.r_multiple for t in wins])),
-        "avg_loss_r": _f(_mean([t.row.r_multiple for t in losses])),
-        "expectancy_r": _f(_mean(rs)),
-        "avg_mfe_r": _f(_mean([t.row.mfe_r for t in trades])),
-        "avg_mae_r": _f(_mean([t.row.mae_r for t in trades])),
-        "cagr_pct": _f(cagr),
-        "max_dd_pct": _f(dd.max_pct),
-        "avg_dd_pct": _f(dd.avg_pct),
-        "mar": _f(cagr / dd.max_pct) if cagr is not None and dd.max_pct > 0 else None,
-        "sharpe": _f(sharpe(returns, rf_daily)),
-        "sortino": _f(sortino(returns, rf_daily)),
-        "invested_pct": _f(_mean([_pct_of(s.position_value, s.equity) or 0.0 for s in sessions])),
-        "avg_open_positions": _f(_mean([s.open_positions for s in sessions])),
-        "longest_dd_sessions": dd.longest_sessions,
-        "longest_dd_recovered": dd.longest_recovered,
-        "longest_dd_start": None if dd.longest_start is None else dd.longest_start.isoformat(),
-        "longest_dd_end": None if dd.longest_end is None else dd.longest_end.isoformat(),
-        "dsr_prob": _f(inputs.dsr_prob, 6),
+        "dsr_prob": rounded(inputs.dsr_prob, 6),
         "dsr_n_trials": inputs.dsr_n_trials,
         "dsr_n_trials_effective": inputs.dsr_n_trials_effective,
-        "pbo": _f(inputs.pbo, 6),
-        "total_return_pct": _f((final / start - 1) * 100) if start > 0 else None,
-        "final_equity": _money(final),
-        "fees": _money(fees),
-        "cost_share_pct": _f(fees / gross * 100) if gross > 0 else None,
-        "benchmark_cagr_pct": _f(cagr_pct(bench_end, bench_start, days))
-        if bench_start and bench_end
-        else None,
-        "avg_hold_sessions_win": _f(_mean([t.hold for t in wins])),
-        "avg_hold_sessions_loss": _f(_mean([t.hold for t in losses])),
-        "max_consecutive_losses": max_consecutive_losses(rs),
-        "symbols_traded": len(by_symbol),
-        "top5_trades_pnl_share_pct": _f(top_share_pct(top5, 5, net)),
-        "top10_symbols_pnl_share_pct": _f(top_share_pct(by_symbol.values(), 10, net)),
-        "cagr_ex_top5_trades_pct": _f(cagr_pct(final - sum(top5, _ZERO), start, days)),
-        "max_position_pct_adv": _f(max(adv)) if adv else None,
+        "pbo": rounded(inputs.pbo, 6),
+        "max_position_pct_adv": rounded(max(adv)) if adv else None,
         "trades_over_5pct_adv": sum(1 for p in adv if p > ADV_LIMIT_PCT),
     }
 
@@ -774,11 +715,11 @@ def _stock_rows(signals: Sequence[SignalRow], trades: Sequence[_Trade]) -> list[
                 "wins": sum(1 for r in rs if r > 0),
                 "net_pnl": sum((t.row.realized_pnl for t in mine), _ZERO),
                 "total_r": total,
-                "expectancy_r": _f(total / len(rs)) if rs else None,
+                "expectancy_r": rounded(total / len(rs)) if rs else None,
                 "best_trade_r": max(rs) if rs else None,
                 "worst_trade_r": min(rs) if rs else None,
                 "stopouts": sum(1 for t in mine if t.exit == "initial_stop"),
-                "avg_hold_sessions": _f(_mean([t.hold for t in mine])),
+                "avg_hold_sessions": rounded(mean_of([t.hold for t in mine])),
                 "first_trade": min((t.row.entry_date for t in mine), default=None),
                 "last_trade": max((t.row.entry_date for t in mine), default=None),
             }

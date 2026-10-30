@@ -1,4 +1,5 @@
 import { AllocationsPanel } from "@/components/organisms/allocations-panel";
+import { BooksPanel } from "@/components/organisms/books-panel";
 import { BotsPanel } from "@/components/organisms/bots-panel";
 import { EventsPanel } from "@/components/organisms/events-panel";
 import { FreshnessLine } from "@/components/organisms/freshness-line";
@@ -21,6 +22,7 @@ export default function HatPage() {
       <div className="grid gap-x-16 gap-y-14 lg:grid-cols-12">
         <StatusPanel className="lg:col-span-12" />
         <BotsPanel className="lg:col-span-12" />
+        <BooksPanel className="lg:col-span-12" />
         <PositionsPanel className="lg:col-span-7" />
         <AllocationsPanel className="lg:col-span-5" />
         <SignalsPanel className="lg:col-span-12" />

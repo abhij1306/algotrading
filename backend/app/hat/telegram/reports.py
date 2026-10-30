@@ -8,6 +8,7 @@ is `verification/tla/JobScheduler.tla`, LoginPromptOrder and ReportsAfterClose).
 | `telegram.rejections` | 15:35 | the day's `signal.rejected` signals with their reasons |
 | `telegram.daily_report` | 15:40 | per bot P&L; last night's GTT check; close gaps |
 | `telegram.veto_digest` | 15:45 | the week's veto score and verdict (last trading day) |
+| `telegram.books` | 23:45 | the live and paper books (`daily.books`), after `ingest.nightly` |
 
 Each job runs once per trade date (`run_job`) and only on a trading day of
 `hat_trading_calendar`: on any other day it sends nothing. The reports start after the 15:30
@@ -27,7 +28,10 @@ from sqlalchemy.orm import Session, sessionmaker
 from ..clock import SYSTEM_CLOCK, Clock
 from ..configs.records import Bot
 from ..configs.unit import configs_of
+from ..daily.books import books_text, read_books
 from ..data.calendar import session_calendar
+from ..data.ingest import JOB_INGEST
+from ..data.store import DataStore
 from ..engine import approvals
 from ..engine.watchlist import EVENT_PUBLISHED
 from ..events import recorded_for
@@ -42,6 +46,7 @@ from . import reads, render, store
 from .client import BotClient, TelegramError
 
 __all__ = [
+    "BOOKS_AT",
     "DAILY_REPORT_AT",
     "LOGIN_PROMPT_AT",
     "LOGIN_REPROMPT_AT",
@@ -57,6 +62,7 @@ LOGIN_REPROMPT_AT = time(9, 5)
 REJECTIONS_AT = time(15, 35)
 DAILY_REPORT_AT = time(15, 40)
 VETO_DIGEST_AT = time(15, 45)
+BOOKS_AT = time(23, 45)  # after the night's official closes and NIFTY 500 TRI are stored
 SESSION_CLOSE = time(15, 30)
 GTT_VERIFY_JOB = "gtt.verify"
 SEND_FAILED = "telegram_send_failed"
@@ -88,11 +94,13 @@ class Reports:
         *,
         links: reads.LoginLinks | None = None,
         clock: Clock = SYSTEM_CLOCK,
+        store: DataStore | None = None,
     ) -> None:
         self._client = client
         self._factory = session_factory
         self._links = links
         self._clock = clock
+        self._store = store
 
     def _send(self, session: Session, kind: str, ref_id: uuid.UUID | None, text: str) -> None:
         try:
@@ -212,6 +220,18 @@ class Reports:
             self._send(session, "daily_report", None, text)
         return JobResult(calls=1, rows=len(bots))
 
+    def books(self, day: date) -> JobResult:
+        """23:45: each live and paper book through the trade date `day`, marked at its official
+        closes (`daily.books`); nothing on a non-trading day or without the bar store."""
+        if self._store is None:
+            return JobResult(rows=0)
+        with self._factory() as session:
+            if not is_trading_day(session_calendar(session), day):
+                return JobResult(rows=0)
+            books = read_books(session, self._store, day)
+            self._send(session, "books", None, books_text(day, books))
+        return JobResult(calls=1, rows=len(books))
+
     def veto_digest(self) -> JobResult:
         """On the week's last trading day: avoided and missed R of the week's closed veto
         trades (HAT-EXEC-130) and, after 50 decisions, the verdict (HAT-EXEC-131)."""
@@ -297,4 +317,5 @@ def telegram_jobs(reports: Reports) -> tuple[ScheduledJob, ...]:
         ScheduledJob("telegram.rejections", REJECTIONS_AT, lambda _day: reports.rejection_digest()),
         ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, lambda _day: reports.daily_report()),
         ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, lambda _day: reports.veto_digest()),
+        ScheduledJob("telegram.books", BOOKS_AT, reports.books, after=(JOB_INGEST,)),
     )
