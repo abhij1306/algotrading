@@ -8,6 +8,7 @@ from pathlib import Path
 from hat_conf_repo import APP_ROOT, imports_of
 
 from app.hat.backtest.dsr import ReturnStats, deflated_sharpe, expected_max_sharpe
+from app.hat.backtest.run_files import JSON_DOCS
 
 HAT = APP_ROOT / "hat"
 BACKTEST = HAT / "backtest" / "loop.py"
@@ -267,3 +268,23 @@ def test_gates_read_the_session_before() -> None:
     assert len(calls) >= 5  # not vacuous: the scan's four reads and the morning's gate
     for call in calls:
         assert [a.id for a in call.args if isinstance(a, ast.Name)] == ["prev"], ast.unparse(call)
+
+
+def test_run_writer_docs_are_publishable() -> None:
+    """Every JSON file the run writer hands `folder.publish` (a string key of a dict assigned to
+    `docs` in `runs.py`) is one of `JSON_DOCS`, which `publish` alone accepts: a name missing
+    there fails every run at publish (`backtest_bad_run_file`)."""
+    names = set()
+    for node in ast.walk(ast.parse((HAT / "backtest" / "runs.py").read_text(encoding="utf-8"))):
+        if isinstance(node, ast.Assign):
+            targets, value = node.targets, node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            targets, value = [node.target], node.value
+        else:
+            continue
+        if any(isinstance(t, ast.Name) and t.id == "docs" for t in targets) and isinstance(
+            value, ast.Dict
+        ):
+            names |= {k.value for k in value.keys if isinstance(k, ast.Constant)}
+    assert names  # not vacuous: the data audit, the run audit, the evidence and the ledger
+    assert names <= set(JSON_DOCS), sorted(names - set(JSON_DOCS))

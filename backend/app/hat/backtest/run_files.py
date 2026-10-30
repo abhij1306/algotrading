@@ -12,9 +12,10 @@ from typing import Any
 __all__ = ["JSON_DOCS", "is_run_id", "read_config", "read_doc", "read_run", "run_dir", "runs_dir"]
 
 # The folder's JSON files beside `run.json` and `config.json`: the run audit (`run_audit`, a
-# completed run only), the data audit it ran on (`data.audit`) and the facts the gates read of a
-# completed run (`evidence.evidence_doc`).
-JSON_DOCS = ("audit", "data_audit", "evidence")
+# completed run only), the data audit it ran on (`data.audit`), the facts the gates read of a
+# completed run (`evidence.evidence_doc`) and the money reconciled from the fills (`reconcile`,
+# a completed run or one failed `backtest_ledger_mismatch`).
+JSON_DOCS = ("audit", "data_audit", "evidence", "ledger")
 
 _RUN_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
