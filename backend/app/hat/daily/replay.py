@@ -55,7 +55,7 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..backtest.data import MarketView, load_market, looks_ahead, scan_night_members
-from ..backtest.intraday import on_basis, session_bars
+from ..backtest.intraday import Admission, session_bars
 from ..backtest.rotation import TrCloses
 from ..configs.records import Bot, StrategyVersion
 from ..configs.unit import configs_of
@@ -100,6 +100,7 @@ __all__ = [
     "merged",
     "prices_0920",
     "prices_0920_of",
+    "DayBar",
     "no_later",
     "replay",
     "rotation_night",
@@ -509,34 +510,65 @@ def backtest_sizing(
     return equity, rotation.orders(chosen, held, prices, equity, rules)
 
 
+@dataclass(frozen=True)
+class DayBar:
+    """An instrument's raw daily bar as the 09:20 price reads it: its open, low and high (the
+    estimate's range) and its ISIN (the coverage gaps)."""
+
+    open: Decimal
+    low: Decimal
+    high: Decimal
+    isin: str | None = None
+
+
 def prices_0920_of(
-    day: date, sessions: Mapping[str, Sequence[Bar]], opens: Mapping[str, Decimal]
+    day: date,
+    sessions: Mapping[str, Sequence[Bar]],
+    daily: Mapping[str, DayBar],
+    admits: Callable[[str, Sequence[Bar], DayBar], bool],
 ) -> dict[str, Decimal]:
     """Each instrument's price at 09:20 on `day` (`fill_0920`, the buy side: what a rebalance
-    sizes on): its 09:15 bar's close where its five-minute session (`sessions`, raw prices) fits
-    its daily `opens` (`intraday.on_basis`), else its open moved by the estimate."""
+    sizes on): its 09:15 bar's close where its five-minute session (`sessions`, raw prices) is
+    admitted (`admits`: the backtest's `intraday.session_admitted`), else its open moved by the
+    estimate within the day's range."""
     out = {}
-    for name, open_ in opens.items():
+    for name, bar in daily.items():
         bars = sessions.get(name)
-        readable = bars if bars and on_basis(day, bars, open_) else None
-        out[name] = fill_0920(day, "buy", readable, open_)[0]
+        readable = bars if bars and admits(name, bars, bar) else None
+        out[name] = fill_0920(day, "buy", readable, bar.open, low=bar.low, high=bar.high)[0]
     return out
 
 
 def prices_0920(store: DataStore, day: date) -> dict[str, Decimal]:
-    """`prices_0920_of` on the store's raw daily opens and five-minute bars of `day`: the one
-    price list both sides size a rebalance on, so the replay's price difference is zero."""
-    daily = store.read_bars(day)
-    opens = {
-        str(name): value
-        for name, open_ in zip(
-            daily["instrument_id"].to_list(), daily["open"].to_list(), strict=True
-        )
-        if (value := _decimal(open_)) is not None and value > 0
-    }
+    """`prices_0920_of` on the store's raw daily bars and five-minute bars of `day`, sessions
+    admitted as a run admits them (`intraday.Admission`): the one price list both sides size a
+    rebalance on, so the replay's price difference is zero. `replay_no_0920_prices` when the
+    store holds no daily bar of `day` (not stored yet): sizing on nothing would hide every
+    difference."""
+    raw = store.read_bars(day)
+    daily = {}
+    for name, isin, open_, low, high in zip(
+        raw["instrument_id"].to_list(),
+        raw["isin"].to_list(),
+        raw["open"].to_list(),
+        raw["low"].to_list(),
+        raw["high"].to_list(),
+        strict=True,
+    ):
+        o, lo, hi = _decimal(open_), _decimal(low), _decimal(high)
+        if o is not None and o > 0 and lo is not None and hi is not None:
+            daily[str(name)] = DayBar(o, lo, hi, None if isin is None else str(isin))
+    if not daily:
+        raise ReplayError("replay_no_0920_prices")
     five = BarStore(store.root)
-    scales = dict.fromkeys(five.instruments(day) & set(opens), Decimal(1))
-    return prices_0920_of(day, session_bars(five, day, scales), opens)
+    admission = Admission.read(five)
+    scales = dict.fromkeys(five.instruments(day) & set(daily), Decimal(1))
+    return prices_0920_of(
+        day,
+        session_bars(five, day, scales),
+        daily,
+        lambda name, bars, bar: admission.admits(name, day, bars, bar.open, bar.isin),
+    )
 
 
 def exit_check(

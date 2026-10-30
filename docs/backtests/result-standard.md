@@ -416,7 +416,8 @@ partial exit). Every rotation order fills at 09:20 (`engine/fill_0920.py`: the 0
 close, else the daily open moved by the measured median to 09:20); `run.json` metrics count them,
 `rotation_fills_0920` and `rotation_fills_estimated`. Known gaps
 `rotation_fills_0920_estimated_without_5m`, `rotation_sized_on_decision_close` and, while the
-median is not yet measured, `rotation_0920_estimate_provisional`.
+median is not yet measured, `fill_0920_estimate_provisional` (also reported by a run whose
+daily-estimate entries gapped over their level).
 
 **by_year.** `trades` and `expectancy_r` (the trades exiting that year, beside a mark-to-market
 return, with no label) are replaced by fields named by their basis: `trades_entered` and

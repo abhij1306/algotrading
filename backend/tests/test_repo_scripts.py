@@ -7,7 +7,7 @@ import json
 import sys
 import uuid
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -1203,6 +1203,18 @@ def test_open_to_0920__moves_read_fitting_sessions_only() -> None:
     fits = (Bar("a", first, Decimal(100), Decimal(103), Decimal(99), Decimal(102), 10),)
     off = (Bar("b", first, Decimal(150), Decimal(151), Decimal(149), Decimal(150), 10),)
     opens = {"a": Decimal(100), "b": Decimal(100)}
-    assert open_0920.moves_of(day, {"a": fits, "b": off}, opens, ["a", "b", "c"]) == [
+    from app.hat.backtest.intraday import Admission
+
+    refused_0920 = first + timedelta(minutes=5)  # a bucket the import refused, not stored
+    admission = Admission(refused={("g", day): frozenset({refused_0920})}, gaps={})
+    gapped = (Bar("g", first, Decimal(100), Decimal(101), Decimal(99), Decimal(100), 10),)
+
+    def admits(name: str, bars: object, open_: Decimal) -> bool:
+        return admission.admits(name, day, bars, open_, None)  # type: ignore[arg-type]
+
+    opens = {**opens, "g": Decimal(100)}
+    sessions = {"a": fits, "b": off, "g": gapped}
+    # g's stored bars hold a bucket the import refused, so it is not quiet there: not read
+    assert open_0920.moves_of(day, sessions, opens, ["a", "b", "c", "g"], admits) == [
         pytest.approx(0.02)
     ]

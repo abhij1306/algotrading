@@ -172,7 +172,6 @@ from ..configs.records import Bot
 from ..configs.unit import configs_of
 from ..costs import BacktestFills, CostModel
 from ..data.bars import Bar as DataBar
-from ..data.bars5m_gaps import in_gap
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
 from ..engine import (
@@ -244,9 +243,8 @@ from .intraday import (
     EP_ESTIMATE,
     NO_CATALYST_MODE,
     after_trigger,
-    lacks_refused,
-    on_basis,
     replay,
+    session_admitted,
     session_bars,
     trace,
     traded_low_after,
@@ -1038,20 +1036,23 @@ class _Run:
     def _sizing_price(self, instrument_id: str, day: date, bar: Bar) -> Decimal:
         """The price a rebalance sizes `instrument_id` on: its buy-side price at 09:20."""
         first = self._first_bar(instrument_id, day)
-        return fill_0920.fill_0920(day, "buy", None if first is None else (first,), bar.open)[0]
+        bars = None if first is None else (first,)
+        return fill_0920.fill_0920(day, "buy", bars, bar.open, low=bar.low, high=bar.high)[0]
 
     def _lower_locked_0920(
         self, instrument_id: str, day: date, bar: Bar, first: DataBar | None
     ) -> bool:
-        """Whether a sale at 09:20 finds the name pinned at its lower band: its 09:15 bar one
-        price at the band, else (no five-minute session) the whole day (`_lower_locked`)."""
+        """Whether a sale at 09:20 finds the name locked at its lower band: its 09:15 bar closing
+        at its low at the band (`close_lower_locked`, as a buy is refused on that bar's close at
+        its high at the upper band), else (no five-minute session) the whole day pinned there
+        (`_lower_locked`)."""
         if first is None:
             return self._lower_locked(instrument_id, day, bar)
-        ohlc = (first.open, first.high, first.low, first.close)
-        if not first.open == first.high == first.low == first.close:
-            return False
+        if first.close != first.low:
+            return False  # the common case, without reading the tick
         prev_close = self.view.prev_close(instrument_id, day)
-        return lower_circuit_locked(ohlc, prev_close, self.view.tick(instrument_id, day)) is True
+        tick = self.view.tick(instrument_id, day)
+        return close_lower_locked(first.close, first.low, prev_close, tick) is True
 
     def _first_bar(self, instrument_id: str, day: date) -> DataBar | None:
         """The 09:15 five-minute bar of `instrument_id` on `day` on the run's price basis, when
@@ -1443,9 +1444,14 @@ class _Run:
             i: bars
             for i, bars in session_bars(store, day, scales).items()
             if (bar := self.view.bar(i, day)) is not None
-            and not lacks_refused(bars, self.data.screened_5m.get((i, day), ()))
-            and not in_gap(self.data.gaps_5m, self.data.isins.get(i), day)
-            and on_basis(day, bars, bar.open)
+            and session_admitted(
+                day,
+                bars,
+                bar.open,
+                self.data.screened_5m.get((i, day), ()),
+                self.data.gaps_5m,
+                self.data.isins.get(i),
+            )
         }
 
     def _candidate(self, row: _Row, day: date, prev: date) -> trigger.Candidate:

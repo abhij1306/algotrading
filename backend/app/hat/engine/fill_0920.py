@@ -55,8 +55,8 @@ class OpenTo0920:
 
 
 # PROVISIONAL until `scripts/research/open_to_0920.py` has run on the data (decisions.md
-# "Rotation trades at 09:20"): a run that estimates any fill reports the known gap
-# `rotation_0920_estimate_provisional` while it is.
+# "Orders at 09:20"): a run that estimates any fill reports the known gap
+# `fill_0920_estimate_provisional` while it is (`spec.PROVISIONAL_0920`).
 OPEN_TO_0920 = OpenTo0920(buy=Decimal("0.0010"), sell=Decimal("0.0010"))
 OPEN_TO_0920_MEASURED = False
 
@@ -69,11 +69,25 @@ def price_0920(day: date, bars: Sequence[Bar]) -> tuple[Decimal, Bar] | None:
     return None if found is None else (found.close, found)
 
 
-def estimated_0920(open_: Decimal, side: str, estimate: OpenTo0920 = OPEN_TO_0920) -> Decimal:
+def estimated_0920(
+    open_: Decimal,
+    side: str,
+    estimate: OpenTo0920 = OPEN_TO_0920,
+    *,
+    low: Decimal | None = None,
+    high: Decimal | None = None,
+) -> Decimal:
     """The day's open moved against an order by the measured median move to 09:20: up for a buy,
-    down for a sale, to the price step."""
+    down for a sale, to the price step, and within the day's traded range (`low`..`high`, when
+    given): a day that opened at its high buys at most there, one that opened at its low sells
+    at least there."""
     move = estimate.buy if side == "buy" else -estimate.sell
-    return (open_ * (1 + move)).quantize(_PRICE_STEP, ROUND_HALF_EVEN)
+    price = (open_ * (1 + move)).quantize(_PRICE_STEP, ROUND_HALF_EVEN)
+    if high is not None:
+        price = min(price, high)
+    if low is not None:
+        price = max(price, low)
+    return price
 
 
 def fill_0920(
@@ -82,17 +96,20 @@ def fill_0920(
     bars: Sequence[Bar] | None,
     open_: Decimal,
     estimate: OpenTo0920 = OPEN_TO_0920,
+    *,
+    low: Decimal | None = None,
+    high: Decimal | None = None,
 ) -> tuple[Decimal, str]:
     """(the price a rotation order fills at on `day`, `REAL` or `ESTIMATED`): the session's price
     at 09:20 from its five-minute `bars` (None: the caller has none it may read, or refused
-    them), else `estimated_0920` of the day's open."""
+    them), else `estimated_0920` of the day's open, within the day's `low`..`high`."""
     found = price_0920(day, bars) if bars else None
     if found is not None:
         return found[0], REAL
-    return estimated_0920(open_, side, estimate), ESTIMATED
+    return estimated_0920(open_, side, estimate, low=low, high=high), ESTIMATED
 
 
 def gap_over_fill(open_: Decimal, high: Decimal, estimate: OpenTo0920 = OPEN_TO_0920) -> Decimal:
     """A daily-estimate entry whose session opened over its level: the buy's estimated price at
     09:20 (`estimated_0920`), at most the day's high (no fill above what traded)."""
-    return min(estimated_0920(open_, "buy", estimate), high)
+    return estimated_0920(open_, "buy", estimate, high=high)

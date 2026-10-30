@@ -8,7 +8,8 @@ backtest uses for an order at 09:20 on a day without five-minute bars (`engine/f
 For every session in the window with a stored `bars_5m` day, every point-in-time member of the
 universe that is liquid as a rotation buys it (the 20 sessions before the day averaging at least
 `--min-adv-cr` crore traded, and the previous close at least `--min-price`, the seed's universe
-stage) and whose five-minute session fits its daily bar (`intraday.on_basis`) gives one move:
+stage) and whose five-minute session a backtest admits (`intraday.session_admitted`: it fits
+its daily bar, lacks no refused bucket, lies in no known coverage gap) gives one move:
 the price at 09:20 (`fill_0920.price_0920`, the 09:15 bar's close) over the day's raw open, less
 1. It prints one JSON report: the count, the median, quartiles and mean of the move, the
 buy-side median (the move: a buy pays it) and the sell-side median (minus the move: a sale loses
@@ -25,7 +26,7 @@ import json
 import statistics
 import sys
 from collections import defaultdict, deque
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -99,16 +100,17 @@ def moves_of(
     sessions: Mapping[str, Sequence[Any]],
     opens: Mapping[str, Decimal],
     names: Iterable[str],
+    admits: Callable[[str, Sequence[Any], Decimal], bool],
 ) -> list[float]:
-    """The moves of `names` on `day`: the 09:20 price of each one whose five-minute session fits
-    its open (`on_basis`) over that open, less 1."""
-    from app.hat.backtest.intraday import on_basis
+    """The moves of `names` on `day`: the 09:20 price of each one whose five-minute session is
+    admitted as a backtest admits it (`admits`: `intraday.session_admitted`, through
+    `Admission`) over its open, less 1."""
     from app.hat.engine.fill_0920 import price_0920
 
     out = []
     for name in names:
         bars, open_ = sessions.get(name), opens.get(name)
-        if not bars or open_ is None or open_ <= 0 or not on_basis(day, bars, open_):
+        if not bars or open_ is None or open_ <= 0 or not admits(name, bars, open_):
             continue
         found = price_0920(day, bars)
         if found is not None:
@@ -126,7 +128,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from sqlalchemy import select, text
 
     from app.database import db_session_scope
-    from app.hat.backtest.intraday import session_bars
+    from app.hat.backtest.intraday import Admission, session_bars
     from app.hat.data.bars_store import BarStore
     from app.hat.data.store import DATASET_BARS, DataStore
     from app.hat.engine.portfolio.universe import members_on
@@ -155,12 +157,14 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     days = sorted(d for d in store.days(DATASET_BARS) if d <= args.end)
     liquidity = Liquidity(args.min_adv_cr * CRORE, args.min_price)
     rebalance = rebalance_sessions([d for d in days if d >= args.start])
+    admission = Admission.read(five)
     every: list[float] = []
     first_of_month: list[float] = []
     sessions_read = 0
     for day in days:
         daily = store.read_bars(day)
         ids = [str(i) for i in daily["instrument_id"].to_list()]
+        isins = dict(zip(ids, daily["isin"].to_list(), strict=True))
         opens = {
             i: o for i, v in zip(ids, daily["open"].to_list(), strict=True) if (o := _decimal(v))
         }
@@ -168,7 +172,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             members = {str(m) for m in members_on(rows, day)}
             wanted = sorted(n for n in members & set(opens) if liquidity.liquid(n))
             sessions = session_bars(five, day, dict.fromkeys(wanted, Decimal(1)))
-            found = moves_of(day, sessions, opens, wanted)
+            found = moves_of(
+                day,
+                sessions,
+                opens,
+                wanted,
+                lambda n, bars, o, day=day, isins=isins: admission.admits(
+                    n, day, bars, o, isins.get(n)
+                ),
+            )
             every.extend(found)
             sessions_read += 1
             if day in rebalance:

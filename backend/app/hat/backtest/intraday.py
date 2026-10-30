@@ -32,8 +32,11 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
+from app.paths import BARS5M_GAPS
+
 from ..data.audit import CLOSE_5M_PCT
 from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
+from ..data.bars5m_gaps import gap_spans, in_gap, read_gaps
 from ..data.bars_store import BarStore, RejectRow
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..engine.trigger import (
@@ -50,6 +53,7 @@ from .ep_log import trigger_depth
 
 __all__ = [
     "EP_ESTIMATE",
+    "Admission",
     "NO_CATALYST_MODE",
     "EpEstimate",
     "EpTrace",
@@ -59,6 +63,7 @@ __all__ = [
     "on_basis",
     "lacks_refused",
     "screened_buckets",
+    "session_admitted",
     "replay",
     "session_bars",
     "trace",
@@ -158,6 +163,51 @@ def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
     if first is None:
         return False
     return abs(first.open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
+
+
+def session_admitted(
+    day: date,
+    bars: Sequence[Bar],
+    daily_open: Decimal,
+    refused: Collection[datetime],
+    gaps: Mapping[str, tuple[tuple[date, date], ...]],
+    isin: str | None,
+) -> bool:
+    """Whether a session's five-minute bars may be read: it fits its daily bar (`on_basis`),
+    lacks no bucket the import refused (`lacks_refused`, `refused` the session's) and lies in no
+    known coverage gap (`bars5m_gaps.in_gap` of its `isin`). The one admission rule of the
+    backtest's replay, its 09:20 prices, the shadow-day replay and the 09:20 measurement."""
+    return (
+        not lacks_refused(bars, refused)
+        and not in_gap(gaps, isin, day)
+        and on_basis(day, bars, daily_open)
+    )
+
+
+@dataclass(frozen=True)
+class Admission:
+    """What admits a session's five-minute bars outside a run (`session_admitted`): the buckets
+    the import refused, by (instrument, day), and the known coverage gaps by ISIN, read from the
+    store as a run reads them (`backtest.data`)."""
+
+    refused: Mapping[tuple[str, date], frozenset[datetime]]
+    gaps: Mapping[str, tuple[tuple[date, date], ...]]
+
+    @classmethod
+    def read(cls, store: BarStore) -> Admission:
+        return cls(screened_buckets(store.read_rejects()), gap_spans(read_gaps(BARS5M_GAPS)))
+
+    def admits(
+        self,
+        instrument_id: str,
+        day: date,
+        bars: Sequence[Bar],
+        daily_open: Decimal,
+        isin: str | None,
+    ) -> bool:
+        return session_admitted(
+            day, bars, daily_open, self.refused.get((instrument_id, day), ()), self.gaps, isin
+        )
 
 
 def screened_buckets(rejects: Iterable[RejectRow]) -> dict[tuple[str, date], frozenset[datetime]]:

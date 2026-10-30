@@ -222,7 +222,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   run counts its rotation fills at real 09:20 prices and estimated ones (`rotation_fills_0920`,
   `rotation_fills_estimated`). **Measured values pending:** until the script has run on the
   data the estimate is a provisional 0.10% each side (`OPEN_TO_0920_MEASURED = False`; runs
-  report `rotation_0920_estimate_provisional`). Hard-stop exits that gap through at the open
+  report `fill_0920_estimate_provisional`, a rotation run or one with a gap-over entry). Hard-stop exits that gap through at the open
   still fill at the open (`fills.stop_fill`), not part of this rule.
 
 ## Data

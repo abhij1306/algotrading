@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -217,13 +217,12 @@ CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
 # (`rotation.fill_0920`), at the 09:15 bar's close where the session's five-minute bars may be
 # read and else at the daily open moved by the measured median to 09:20 (the run counts each,
 # `rotation_fills_0920`, `rotation_fills_estimated`), plus the run's slippage, and are sized on
-# the account's equity at the decision close, not marked at 09:20. While that median is not yet
-# measured on the data (`rotation.OPEN_TO_0920_MEASURED`), the estimate is provisional.
-ROTATION_GAPS = (
-    "rotation_fills_0920_estimated_without_5m",
-    "rotation_sized_on_decision_close",
-    *(() if OPEN_TO_0920_MEASURED else ("rotation_0920_estimate_provisional",)),
-)
+# the account's equity at the decision close, not marked at 09:20.
+ROTATION_GAPS = ("rotation_fills_0920_estimated_without_5m", "rotation_sized_on_decision_close")
+# Reported while the median move from the open to 09:20 (`fill_0920.OPEN_TO_0920`) is not yet
+# measured on the data, by a run that estimates a price at 09:20 with it: a rotation's fills, or
+# a daily-estimate entry that gapped over its level (`GAP_OVER_ESTIMATED`).
+PROVISIONAL_0920 = "fill_0920_estimate_provisional"
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",
@@ -497,8 +496,8 @@ def sleeve_weight(spec: RunSpec) -> Decimal:
 
 def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[str]:
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
-    of them when not known yet: a run that did not finish may have any), and the touch fill
-    under `touch`."""
+    of them when not known yet: a run that did not finish may have any), the touch fill
+    under `touch`, and `PROVISIONAL_0920` while its 09:20 estimate is unmeasured."""
     found = set(ESTIMATE_GAPS if estimated is None else estimated)
     return [
         # a portfolio run's account caps bind across its sleeves, as live
@@ -508,7 +507,16 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(ROTATION_GAPS if _rotates(spec) else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
+        *([PROVISIONAL_0920] if provisional_0920(spec, found) else []),
     ]
+
+
+def provisional_0920(spec: RunSpec, found: Collection[str]) -> bool:
+    """Whether the run estimated a price at 09:20 with the unmeasured median (`PROVISIONAL_0920`):
+    a rotation run, or one whose estimates include a gap-over entry."""
+    if OPEN_TO_0920_MEASURED:
+        return False
+    return _rotates(spec) or GAP_OVER_ESTIMATED in found
 
 
 def _rotates(spec: RunSpec) -> bool:

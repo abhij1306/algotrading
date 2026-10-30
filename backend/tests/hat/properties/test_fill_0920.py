@@ -64,3 +64,24 @@ def test_a_gap_over_fills_at_the_estimate_never_above_the_high() -> None:
     median = OpenTo0920(buy=D("0.01"), sell=D(0))
     assert gap_over_fill(D(100), D(105), median) == D("101.0000")
     assert gap_over_fill(D(100), D("100.5"), median) == D("100.5")  # nothing traded above
+
+
+def test_the_estimate_stays_within_the_days_range() -> None:
+    median = OpenTo0920(buy=D("0.01"), sell=D("0.01"))
+    # opened at its high: a buy pays at most the high; opened at its low: a sale gets the low
+    assert estimated_0920(D(100), "buy", median, low=D(97), high=D(100)) == D(100)
+    assert estimated_0920(D(100), "sell", median, low=D(100), high=D(103)) == D(100)
+    assert estimated_0920(D(100), "buy", median, low=D(97), high=D(103)) == D("101.0000")
+    found = fill_0920(DAY, "sell", None, D(100), median, low=D("99.5"), high=D(101))
+    assert found == (D("99.5"), ESTIMATED)
+
+
+def test_a_sale_is_refused_on_a_0915_bar_closing_locked_at_the_lower_band() -> None:
+    from app.hat.backtest.fillrules import close_lower_locked, lower_circuit_locked
+
+    # previous close 100, a 5% band: lower price 95. The bar traded a tick above, closed at 95.
+    bar = _bar(0, "95.05", "95", high="95.05")
+    tick = D("0.05")
+    assert close_lower_locked(bar.close, bar.low, D(100), tick) is True  # refused at 09:20
+    # the one-price rule alone would have sold it at the band
+    assert lower_circuit_locked((bar.open, bar.high, bar.low, bar.close), D(100), tick) is False

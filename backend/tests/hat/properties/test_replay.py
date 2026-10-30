@@ -5,12 +5,14 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from decimal import Decimal
+from pathlib import Path
 
 import polars as pl
 import pytest
 
 from app.hat.daily.replay import (
     Book,
+    DayBar,
     ExitCheck,
     Facts,
     ReplayError,
@@ -24,6 +26,7 @@ from app.hat.daily.replay import (
     facts_of,
     merged,
     no_later,
+    prices_0920,
     prices_0920_of,
     rotation_night,
 )
@@ -233,6 +236,7 @@ def test_merged_keeps_one_row_per_instrument_and_session() -> None:
 
 
 def test_both_sides_size_on_the_same_0920_prices() -> None:
+    from app.hat.backtest.intraday import Admission
     from app.hat.data.bars import Bar
     from app.hat.engine.fill_0920 import OPEN_TO_0920, estimated_0920
     from app.hat.time import IST
@@ -240,11 +244,35 @@ def test_both_sides_size_on_the_same_0920_prices() -> None:
     first = datetime.combine(DAY, time(9, 15), tzinfo=IST)
     readable = (Bar("a", first, D(100), D(102), D(99), D(101), 10),)
     off_basis = (Bar("b", first, D(150), D(151), D(149), D(150), 10),)  # 50% off its daily open
-    opens = {"a": D(100), "b": D(100), "c": D(50)}
-    found = prices_0920_of(DAY, {"a": readable, "b": off_basis}, opens)
+    gapped = (Bar("g", first, D(100), D(102), D(99), D(101), 10),)  # in a coverage gap
+    daily = {
+        "a": DayBar(D(100), D(98), D(104), "INEA"),
+        "b": DayBar(D(100), D(98), D(104), "INEB"),
+        "c": DayBar(D(50), D(49), D("50.02"), "INEC"),  # opened near its high
+        "g": DayBar(D(100), D(98), D(104), "INEG"),
+    }
+    admission = Admission(refused={}, gaps={"INEG": ((DAY, DAY),)})
+    found = prices_0920_of(
+        DAY,
+        {"a": readable, "b": off_basis, "g": gapped},
+        daily,
+        lambda n, bars, bar: admission.admits(n, DAY, bars, bar.open, bar.isin),
+    )
     assert found["a"] == D(101)  # the 09:15 bar's close
-    assert found["b"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # refused: the estimate
-    assert found["c"] == estimated_0920(D(50), "buy", OPEN_TO_0920)  # no bars: the estimate
+    assert found["b"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # off basis: the estimate
+    assert found["g"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # coverage gap: refused too
+    assert found["c"] == D("50.02")  # no bars: the estimate, at most the day's high
+
+
+def test_a_trade_date_not_stored_is_refused_not_sized_on_nothing() -> None:
+    from types import SimpleNamespace
+
+    from app.hat.data.store import BAR_SCHEMA
+
+    empty = pl.from_arrow(BAR_SCHEMA.empty_table())
+    store = SimpleNamespace(read_bars=lambda _day: empty, root=Path("/nonexistent"))
+    with pytest.raises(ReplayError, match="replay_no_0920_prices"):
+        prices_0920(store, DAY)  # type: ignore[arg-type]
 
 
 def test_no_later_refuses_a_frame_past_the_day() -> None:
