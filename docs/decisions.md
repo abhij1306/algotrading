@@ -256,6 +256,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   still warm the indicators up. That is all a run reads before its first session: the lookback
   reads bars and features, which rank all ordinary equity, never the index, so membership before
   2016 serves no backtest and the data verify (D3) warns on those sessions, never fails.
+- **D2's second source is Fyers' daily history** (owner, 2026-10-30: Yahoo is not reliable; it
+  refused this host for hours). The price basis' calendar-year price return is compared with
+  Fyers' (split- and bonus-adjusted, no dividends) within 2 points, for 2022 to 2025: Fyers
+  serves daily history about five years back. Dividends stay judged against NSE's amounts, and
+  a stock Fyers does not list (delisted) is listed, not compared.
 - **Industry history (orchestrator, 2026-10-26).** One taxonomy: the `Industry` column of NSE's
   current NIFTY 500 list. Each instrument chain takes its industry from the NIFTY 500 list
   snapshots that list one of its ISINs in that taxonomy (the lists from 2022; the 2010-2020
@@ -575,10 +580,7 @@ NSE sha in `results_events` (filings stored under an older ISIN of the same comp
 chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
 D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
 adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
-follow-ups: check each demerger factor against the company's published cost-of-acquisition ratio
-(today it is checked only against the same raw bars it was taken from); pin the NSE-side value in
-an exception beside the stored one; undo a face-value change for rights as of the NSE pull's
-date, not the last bar; and read a stock's series as of each day for `series_in`, not today's.
+follow-up: read a stock's series as of each day for `series_in`, not today's.
 
 ## Defaults awaiting owner confirmation
 

@@ -130,14 +130,16 @@ PROVIDER_SOCKET_FILE = "data/provider/fyers_websocket.py"
 SOCKET_NAMES = ("FyersDataSocket", "FyersSocket", "data_ws", "ws_connect", "WebSocketApp")
 # Who may import the feed: the app's wiring (K5b deleted the legacy read side of its ticks).
 FEED_IMPORTERS = {"main.py"}
-# Outside the provider package, the one module that may import from it, and the one name it may
-# take: the minute-history download asks the Fyers session's REST history through it. It builds no
-# socket and no provider session.
+# Outside the provider package, the modules that may import from it, and the one name they may
+# take: the minute-history download and D2's second-source download ask the Fyers session's REST
+# history through it. Neither builds a socket or a provider session.
+_HISTORY_ONLY = {
+    "app.hat.data.provider.fyers_websocket",
+    "app.hat.data.provider.fyers_websocket.fyers_history",
+}
 PROVIDER_IMPORTS = {
-    "hat/data/minute_history.py": {
-        "app.hat.data.provider.fyers_websocket",
-        "app.hat.data.provider.fyers_websocket.fyers_history",
-    }
+    "hat/data/minute_history.py": _HISTORY_ONLY,
+    "hat/data/verify/fyers.py": _HISTORY_ONLY,
 }
 
 

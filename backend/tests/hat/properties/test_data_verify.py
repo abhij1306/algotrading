@@ -12,12 +12,13 @@ from pathlib import Path
 
 import pytest
 
-from app.hat.data import audit, bars5m_volume, verify
+from app.hat.data import audit, bars5m_volume, ca_import, verify
 from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
     adjustments,
     bars5m,
     filings,
+    fyers,
     membership,
     rawbars,
     references,
@@ -522,7 +523,7 @@ def test_d2_a_wrong_or_missing_action_fails_and_an_owner_deletion_warns() -> Non
 
 
 def test_d2_moves_are_classed_by_what_explains_them() -> None:
-    move = {"ex_date": True, "move_pct": 20.02, "raw_move_pct": -85.0}
+    move = {"ex_date": True, "move_pct": 20.02, "raw_move_pct": -85.0, "pinned": True}
     assert adjustments.classify_move(move, False, 100.0) == "ex_date_circuit"
     assert adjustments.classify_move(move | {"move_pct": 51.0}, False, 100.0) == "ex_date_jump"
     plain = {"ex_date": False, "move_pct": -50.0, "raw_move_pct": -50.0}
@@ -531,8 +532,14 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
     crash = plain | {"move_pct": -30.0, "raw_move_pct": -30.0}
     assert adjustments.classify_move(crash, True, 100.0) == "results"
     assert adjustments.classify_move(crash, False, 100.0) == "unexplained"
-    band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98}  # a 20% band's upper circuit
+    # a 20% band's upper circuit: closed at the day's high
+    band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98, "pinned": True}
     assert adjustments.classify_move(band, False, 100.0) == "circuit"
+    # 20% on 6.60 is 7.92, traded at the next tick, 7.95: a band's move of 20.45%
+    tick = plain | {"move_pct": 20.45, "raw_move_pct": 20.45, "pinned": True}
+    assert adjustments.classify_move(tick, False, 6.60) == "circuit"
+    assert adjustments.classify_move(tick, False, 418.10) == "unexplained"
+    assert adjustments.classify_move(move | {"pinned": False}, False, 100.0) == "ex_date_jump"
     # a day the median stock fell 11%: a 30% fall that day is the market's, a rise is not
     assert adjustments.classify_move(crash, False, 100.0, market=-11.0) == "market"
     assert adjustments.classify_move(crash, False, 100.0, market=-2.0) == "unexplained"
@@ -552,22 +559,161 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
 
 
 def test_d2_second_source_returns_by_calendar_year() -> None:
-    # Yahoo's monthly bars start at local midnight: 1 Jan 2023 IST is 31 Dec 2022 UTC
-    months = [datetime(2021, 12, 1), datetime(2022, 12, 1), datetime(2023, 1, 1)]
-    stamps = [int(m.replace(tzinfo=IST).timestamp()) for m in months]
+    # Fyers' daily candles are stamped at IST midnight; the base is the December before
+    days = [date(2021, 12, 31), date(2022, 6, 30), date(2022, 12, 30)]
+    stamps = [int(datetime(d.year, d.month, d.day, tzinfo=IST).timestamp()) for d in days]
     answer = {
-        "meta": {"gmtoffset": 19800},
-        "timestamp": stamps,
-        "indicators": {"adjclose": [{"adjclose": [100, 110, 99]}]},
+        "s": "ok",
+        "candles": [[t, 1, 1, 1, c, 9] for t, c in zip(stamps, [100, 90, 110], strict=True)],
     }
-    data = json.dumps({"chart": {"result": [answer]}}).encode()
-    returns = adjustments.yahoo_year_returns(data)
-    assert set(returns) == {2022, 2023}
-    assert round(returns[2022], 6) == 10
-    assert round(returns[2023], 6) == -10
+    closes = adjustments.fyers_closes(json.dumps(answer).encode())
+    assert [d for d, _ in closes] == days
+    theirs = adjustments.year_returns(closes)
+    assert round(theirs[2022], 6) == 10
     ours = adjustments.year_returns([(date(2021, 12, 31), 50.0), (date(2022, 12, 30), 56.0)])
-    rows = adjustments.compare_returns(ours, {2022: 10.0}, 2022, 2022)
-    assert rows == [{"year": 2022, "hat_pct": 12.0, "yahoo_pct": 10.0, "gap_pp": 2.0}]
+    rows = adjustments.compare_returns(ours, theirs, 2022, 2022)
+    assert rows == [{"year": 2022, "hat_pct": 12.0, "fyers_pct": 10.0, "gap_pp": 2.0}]
+    # "no_data" is an answer (kept, no closes); an error is not
+    assert adjustments.fyers_answered({"s": "no_data", "candles": []})
+    assert adjustments.fyers_closes(b'{"s":"no_data","candles":[]}') == []
+    assert not adjustments.fyers_answered({"s": "error", "code": -50})
+    invalid = {"s": "error", "code": -300, "message": "Invalid symbol provided"}
+    assert adjustments.fyers_answered(invalid)
+    assert adjustments.fyers_closes(json.dumps(invalid).encode()) == []
+
+
+def test_d2_second_source_requests() -> None:
+    name, request = adjustments.fyers_request("NSE:M&M-EQ", 2023)
+    assert name == "M&M-EQ_2023.json"
+    assert (request["range_from"], request["range_to"]) == ("2023-01-01", "2023-12-31")
+    assert request["resolution"] == "D"
+    _, base = adjustments.fyers_request("NSE:M&M-EQ", 2021, base=True)
+    assert base["range_from"] == "2021-12-01"  # only the base's December
+    first, last = adjustments.SECOND_SOURCE_YEARS
+    asked = fyers.requests_for(["NSE:A-EQ"])
+    assert len(asked) == last - first + 2
+    assert asked[0][1]["range_from"] == f"{first - 1}-12-01"
+
+
+def test_d2_second_source_reads_the_chains_current_instrument() -> None:
+    # an old ISIN of a chain is read as the chain's current instrument and its Fyers symbol;
+    # a delisted stock has no Fyers symbol
+    symbols = {"old": "TRENT", "new": "TRENT", "gone": "CORPBANK"}
+    heads = {"old": ("new", 1)}
+    broker = {"new": "NSE:TRENT-EQ"}
+    assert adjustments.fyers_sample(["old", "gone"], symbols, heads, broker) == [
+        ("new", "TRENT", "NSE:TRENT-EQ"),
+        ("gone", "CORPBANK", None),
+    ]
+
+
+def test_d2_circuit_needs_the_close_held_at_the_band() -> None:
+    # ZENITHBIR 2011-06-24: prev 6.60, high = close = 7.95 (the band's 7.92 at the next tick)
+    zen = {"ex_date": False, "move_pct": 20.45, "raw_move_pct": 20.45}
+    zen["pinned"] = adjustments.pinned(20.45, close=7.95, high=7.95, low=6.70)
+    assert zen["pinned"]
+    assert adjustments.classify_move(zen, False, 6.60) == "circuit"
+    # RPOWER 2019-05-03: prev 5.35, close 6.45 (+20.56%) after a high of 6.65 (+24.3%): F&O,
+    # no band held it
+    rpower = {"ex_date": False, "move_pct": 20.56, "raw_move_pct": 20.56}
+    rpower["pinned"] = adjustments.pinned(20.56, close=6.45, high=6.65, low=5.40)
+    assert not rpower["pinned"]
+    assert adjustments.classify_move(rpower, False, 5.35) == "unexplained"
+    # a fall held at the lower band closes at the day's low; SAIL 2024-06-04 closed above it
+    assert adjustments.pinned(-20.0, close=80.0, high=99.0, low=80.0)
+    assert not adjustments.pinned(-20.02, close=133.05, high=164.90, low=124.80)
+
+
+def test_d2_second_source_sample_takes_one_stock_per_chain() -> None:
+    symbols = {f"i{n}": f"S{n}" for n in range(300)}
+    members = list(symbols)
+    plain = adjustments.second_source_sample(symbols, members, {})
+    assert len(plain) == adjustments.SAMPLE_SIZE
+    # tie the first two drawn into one chain: the second is replaced by the next in order
+    first, second = plain[0], plain[1]
+    heads = {first: (second, 1), second: (second, 0)}
+    deduped = adjustments.second_source_sample(symbols, members, heads)
+    assert len(deduped) == adjustments.SAMPLE_SIZE
+    assert first in deduped
+    assert second not in deduped
+    ranked = verify.seeded_sample(sorted(members), len(members), adjustments.SAMPLE_SEED)
+    assert deduped == [first, *ranked[2 : adjustments.SAMPLE_SIZE + 1]]
+
+
+def test_d2_second_source_fails_on_too_little_compared() -> None:
+    assert adjustments.judge_second_source(100, 82, 311) == []
+    assert adjustments.judge_second_source(100, 69, 300)[0]["code"] == "second_source_not_run"
+    assert adjustments.judge_second_source(100, 90, 249)[0]["code"] == "second_source_not_run"
+    assert adjustments.years_only_theirs(
+        {2022: 1.0}, {2022: 1.0, 2023: 2.0, 2026: 3.0}, 2022, 2025
+    ) == [2023]
+
+
+def test_d2_pull_date_is_read_from_the_pulls_note() -> None:
+    note = "# NSE backtest data\nCollected 24-Oct-2026. Window: 24-Oct-2011 to 23-Oct-2026.\n"
+    assert ca_import.collected_on(note) == date(2026, 10, 24)
+    assert ca_import.collected_on("# no date here\n") is None
+    assert ca_import.collected_on("Collected 31-Feb-2026.") is None
+
+
+def test_d2_nse_base_against_the_stored_factor() -> None:
+    ex = date(2022, 10, 6)
+    # AHLEAST: NSE's base 233.55 over the last close 350.35 is the 1:2 bonus alone (2/3)
+    bars = [
+        (date(2022, 10, 4), 333.7, 350.35),
+        (ex, 233.55, 175.75),
+        (date(2022, 10, 7), 175.75, 167.0),
+    ]
+    found = adjustments.nse_factor(bars, ex)
+    assert found is not None
+    nse, base, last = found
+    assert (base, last) == (233.55, 350.35)
+    assert adjustments.nse_base_verdict(2 / 3, nse, last) == "agrees"
+    assert adjustments.nse_base_verdict(0.5017, nse, last) == "differs"  # bonus and demerger
+    # NSE kept the raw close as the base: the bhavcopy's previous close is the last close
+    assert adjustments.nse_base_verdict(0.5, 1.0, 1377.85) == "unadjusted"
+    assert adjustments.nse_factor(bars[1:], ex) is None  # no bar before the ex-date
+
+
+def test_d2_dividends_count_against_the_chains_series() -> None:
+    # JBCHEPHARM: the Rs 40 special of 2011 is stored on the old ISIN; the adjusted series
+    # carries the chain's current instrument, so the cash must be keyed by it
+    def dividend(instrument: str, cash: str) -> StoredAction:
+        return StoredAction(instrument, D2, "dividend", Fraction(1), Decimal(cash), False, "x")
+
+    heads = {"old": ("new", 1), "new": ("new", 0)}
+    paid = adjustments.dividends_by_chain(
+        [dividend("old", "40"), dividend("old", "2"), dividend("solo", "1")], heads
+    )
+    assert paid == {("new", D2): 42.0, ("solo", D2): 1.0}
+    # a copy on the current ISIN wins over the old one's
+    paid = adjustments.dividends_by_chain([dividend("old", "40"), dividend("new", "39")], heads)
+    assert paid == {("new", D2): 39.0}
+
+
+def test_d2_demerger_factors_against_cost_splits() -> None:
+    rows = [
+        {"isin": "INE000A01011", "ex_date": "2020-01-21", "parent_pct": "47.54", "source_url": "u"},
+        {"isin": "INE000B01011", "ex_date": "2023-07-20", "parent_pct": "95.32", "source_url": "u"},
+        {"isin": "INE000B01011", "ex_date": "2023-07-20", "parent_pct": "90", "source_url": "u"},
+        {"isin": "INE000C01011", "ex_date": "2023-07-20", "parent_pct": "100", "source_url": "u"},
+        {"isin": "INE000D01011", "ex_date": "20-Jul-2023", "parent_pct": "50", "source_url": "u"},
+        {"isin": "INE000E01011", "ex_date": "2023-07-20", "parent_pct": "50", "source_url": ""},
+    ]
+    splits, unread = adjustments.read_cost_splits(rows)
+    assert unread == 4  # a second row, 100%, a non-ISO day, no source
+    assert splits[("INE000B01011", date(2023, 7, 20))].parent == Fraction(9532, 10000)
+    stored = [
+        ("INE000A01011", "SUVEN", date(2020, 1, 21), Fraction(504, 10000)),  # far: book vs market
+        ("INE000B01011", "RELIANCE", date(2023, 7, 20), Fraction(9079, 10000)),  # within 0.10
+        ("INE000F01011", "OTHER", date(2024, 1, 1), Fraction(1, 2)),  # no published split
+    ]
+    summary, findings = adjustments.compare_cost_splits(stored, splits)
+    assert (summary["compared"], summary["within"], summary["far"]) == (2, 1, 1)
+    codes = {f["code"]: f for f in findings}
+    assert codes["demerger_cost_split_far"]["items"][0]["symbol"] == "SUVEN"
+    assert codes["demerger_cost_split_far"]["items"][0]["gap"] == "-0.425"
+    assert codes["demerger_cost_split_missing"]["count"] == 1
 
 
 # --- D3 -----------------------------------------------------------------------------------------

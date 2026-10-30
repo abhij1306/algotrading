@@ -11,7 +11,7 @@ The checks (one module each; each `run(ctx)` returns an audit check, `audit.chec
 - D2 `adjustments`: every stored split, bonus, rights, demerger and dividend against NSE's
   corporate-action pulls (`--ca-data`); the price-basis series scanned for one-day moves over 20%
   that no action or results announcement explains; and a sample of NIFTY 500 stocks' yearly
-  total return against a second adjusted-price source (Yahoo Finance).
+  price return against a second adjusted-price source (Fyers' daily history).
 - D3 `membership`: NIFTY 500 members per session, every change against the parsed NSE notices
   (`--notices`), and the stored members on each archived constituent list's date against it.
 - D4 `bars5m`: the 5-minute reject days classified against the daily bar and the Kotak raw
