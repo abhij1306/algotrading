@@ -15,20 +15,24 @@ open, the pre-open auction's price (`open_off_auction`), it holds the 15:25 bar,
 no bucket the screen or the import refused, and its session volume reconciles with the
 bhavcopy's (`verify.bars5m.day_volume_fits`). The admitted days' bars go to the run folder
 (`bars5m_refetch/<name>` under the data root, `--run <name>`) with every target's outcome
-(`outcomes.csv`); nothing is written to the store. A stopped fetch continues with `--resume`,
-which also retries the instruments whose history failed (`kept_outcomes`).
+(`outcomes.csv`); nothing is written to the store. It counts its calls in the minute history's
+progress under its lock, so the token's budget is one across both. A stopped fetch continues
+with `--resume` over the same `--first` and `--last` (`period.json`), which also retries the
+instruments whose history failed (`kept_outcomes`).
 
 `apply --run <name>` writes the admitted days of a fetch: it first saves every stored row of
 those (instrument, day) to `before.parquet` in the run folder (synced), then replaces each day
-whole (`BarStore.write`, one rewrite per day file), skipping a day whose stored bars changed since
+whole (`BarStore.write`, one rewrite per day file), skipping a day whose stored rows changed since
 the fetch. It holds the minute-history and the data-update locks, so no other `bars_5m` writer
 runs with it. A day that is not admitted keeps its stored bars; the outcome says why. A run
 whose days were restored from `before.parquet` is marked by a `rolled_back` file in its folder:
 `apply` refuses it and D4 no longer reads its days as Fyers' (`bars5m_gaps.refetched_days`).
+`apply` also refuses a run it applied already: its `before.parquet` is the only copy.
 
 `gaps --run <name>` prints the `bars5m_gaps` rows the applied run leaves (`--write` writes them to
 `app.paths.BARS5M_GAPS`): a Kotak row whose short sessions were all admitted is dropped, the
-others keep only their spans of sessions still short, with the reason; and every day an applied
+others keep only their spans of sessions still short, with the reason (sessions outside the
+run's period keep the row as it was); and every day an applied
 run wrote whose 09:15 bar opens off NSE's daily open gets a `fyers` row (`open_gaps`), so the
 replay refuses it while its bars stay.
 """
@@ -37,13 +41,15 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
+import json
 import os
 import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextlib import ExitStack, closing
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
@@ -76,6 +82,7 @@ __all__ = [
     "remaining_gaps",
     "run_folder",
     "short_spans",
+    "stored_digest",
     "target_kind",
 ]
 
@@ -90,6 +97,7 @@ OUTCOMES = "outcomes.csv"
 BARS_DIR = "bars"
 BEFORE = "before.parquet"
 PROGRESS = "progress.json"
+PERIOD = "period.json"  # the fetch's --first and --last: a --resume keeps them
 _RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")
 OUTCOME_FIELDS = (
     "instrument_id",
@@ -100,6 +108,7 @@ OUTCOME_FIELDS = (
     "stored_bars",
     "stored_first",
     "stored_last",
+    "stored_digest",
     "outcome",
     "bars",
     "volume_ratio",
@@ -118,6 +127,7 @@ class Target:
     stored_bars: int
     stored_first: time | None
     stored_last: time | None
+    stored_digest: str = ""
 
 
 def target_kind(
@@ -174,6 +184,18 @@ def admit(
     return None
 
 
+def stored_digest(rows: Iterable[object]) -> str:
+    """A digest of a stored day's rows (start, OHLC, volume; any order): `apply` replaces a day
+    only while it is the day the fetch judged, interior bars included."""
+    keys = sorted(
+        "|".join(
+            str(getattr(r, f)) for f in ("bar_start", "open", "high", "low", "close", "volume")
+        )
+        for r in rows
+    )
+    return hashlib.sha256("\n".join(keys).encode()).hexdigest()
+
+
 def kept_outcomes(
     rows: Iterable[Mapping[str, str]], done: Collection[str]
 ) -> list[Mapping[str, str]]:
@@ -220,20 +242,29 @@ def remaining_gaps(
     short: Mapping[str, Collection[date]],
     sessions: Mapping[str, Sequence[date]],
     reason: str,
+    period: tuple[date, date] = (date.min, date.max),
 ) -> list[Gap]:
     """The gap rows left once the refetch made days whole: a Kotak row keeps only its spans of
     sessions still `short` (by ISIN; its `sessions`, ordered), each with `reason`, and is dropped
-    when none is; every other row stays as it is."""
+    when none is; its sessions outside the fetched `period` were never refetched and keep the
+    row's own reason. Every other row stays as it is."""
     out: list[Gap] = []
     for g in gaps:
         if g.vendor != KOTAK:
             out.append(g)
             continue
         inside = [d for d in sessions.get(g.isin, ()) if g.first <= d <= g.last]
+        before = [d for d in inside if d < period[0]]
+        after = [d for d in inside if d > period[1]]
+        fetched = [d for d in inside if period[0] <= d <= period[1]]
+        if before:
+            out.append(Gap(g.vendor, before[0], before[-1], g.isin, g.reason))
         out.extend(
             Gap(g.vendor, a, b, g.isin, reason)
-            for a, b in short_spans(set(short.get(g.isin, ())), inside)
+            for a, b in short_spans(set(short.get(g.isin, ())), fetched)
         )
+        if after:
+            out.append(Gap(g.vendor, after[0], after[-1], g.isin, g.reason))
     return out
 
 
@@ -301,6 +332,17 @@ def _targets(
         )
         if kind:
             out.append(Target(instrument_id, isin, symbol, day, kind, n, first_bar, last_bar))
+    by_day: dict[date, set[str]] = defaultdict(set)
+    for t in out:
+        by_day[t.day].add(t.instrument_id)
+    store = BarStore(root)
+    digests: dict[tuple[str, date], str] = {}
+    for day, ids in by_day.items():
+        stored: dict[str, list[object]] = defaultdict(list)
+        for r in store.read(day, ids):
+            stored[r.instrument_id].append(r)
+        digests |= {(i, day): stored_digest(rows) for i, rows in stored.items()}
+    out = [replace(t, stored_digest=digests[(t.instrument_id, t.day)]) for t in out]
     return sorted(out, key=lambda t: (t.instrument_id, t.day))
 
 
@@ -347,6 +389,7 @@ def _outcome(t: Target, outcome: str, bars: Sequence[Bar], volume: int | None) -
         "stored_bars": str(t.stored_bars),
         "stored_first": _hhmm(t.stored_first),
         "stored_last": _hhmm(t.stored_last),
+        "stored_digest": t.stored_digest,
         "outcome": outcome,
         "bars": str(len(bars)),
         "volume_ratio": f"{total / volume:.4f}" if volume and bars else "",
@@ -410,6 +453,25 @@ def _save_bars(path: Path, bars: Sequence[Bar], instrument_id: str) -> None:  # 
 
 
 def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no cover - real Fyers
+    from .minute_history import PROGRESS_FILE, run_lock
+
+    root = settings.data_root
+    out = run_folder(root, args.run)
+    (out / BARS_DIR).mkdir(parents=True, exist_ok=True)
+    period = {"first": args.first.isoformat(), "last": args.last.isoformat()}
+    if args.resume and (out / PERIOD).is_file():
+        if json.loads((out / PERIOD).read_text(encoding="utf-8")) != period:
+            sys.stderr.write("refused: --resume keeps the run's --first and --last\n")
+            return 2
+    (out / PERIOD).write_text(json.dumps(period), encoding="utf-8")
+    # the minute history's progress counts the calls: one budget per token, one run at a time
+    with run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
+        return _fetch_locked(args, settings, out, Progress.load(root / PROGRESS_FILE))
+
+
+def _fetch_locked(
+    args: argparse.Namespace, settings: HatSettings, out: Path, calls: Progress
+) -> int:  # pragma: no cover - real Fyers
     from app.paths import BARS5M_GAPS
 
     from .bars5m_gaps import read_gaps
@@ -422,8 +484,6 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
     )
 
     root = settings.data_root
-    out = run_folder(root, args.run)
-    (out / BARS_DIR).mkdir(parents=True, exist_ok=True)
     progress = Progress.load(out / PROGRESS)
     if not args.resume:
         progress.done.clear()
@@ -454,9 +514,9 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
     dl = Download(
         history,
         BarStore(root),
-        history_pacer(limits, progress),
+        history_pacer(limits, calls),
         limits,
-        progress,
+        calls,
         HistoryReport(args.first, args.last, symbols=len(by_instrument)),
         raw_basis(settings),
     )
@@ -524,6 +584,9 @@ def _apply(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
     if (run / ROLLED_BACK).exists():
         sys.stderr.write(f"refused: {run.name} was rolled back ({ROLLED_BACK} in its folder)\n")
         return 2
+    if (run / APPLIED).exists() or (run / BEFORE).exists():  # its backup is the only copy
+        sys.stderr.write(f"refused: {run.name} was applied already (fetch a new run)\n")
+        return 2
     admitted = [r for r in _read_outcomes(run) if r["outcome"] == ADMITTED]
     by_day: dict[date, dict[str, dict[str, str]]] = defaultdict(dict)
     for r in admitted:
@@ -551,7 +614,7 @@ def _apply(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
                     r["stored_bars"],
                     r["stored_first"],
                     r["stored_last"],
-                ):
+                ) or stored_digest(stored[iid]) != r.get("stored_digest"):
                     changed[r["kind"]] += 1
                     continue
                 ok.append(iid)
@@ -637,7 +700,11 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
         f"refetch of {run.name} could not make them whole"
     )
     left = remaining_gaps(
-        [g for g in gaps if not g.reason.startswith(OPEN_NOT_AUCTION)], short, sessions, reason
+        [g for g in gaps if not g.reason.startswith(OPEN_NOT_AUCTION)],
+        short,
+        sessions,
+        reason,
+        _period(run, outcomes),
     )
     left = [g if g.vendor != KOTAK else _with_causes(g, outcomes, done) for g in left]
     opened, symbols = _open_gaps(store, settings.data_root)
@@ -698,6 +765,17 @@ def _instrument_names(ids: Collection[str]) -> dict[str, tuple[str, str]]:  # pr
     return {str(i): (isin, symbol) for i, isin, symbol in rows if str(i) in ids}
 
 
+def _period(run: Path, outcomes: Sequence[Mapping[str, str]]) -> tuple[date, date]:
+    """The days the run fetched: its `period.json`, else (a run from before it) the span of its
+    outcomes, never wider than what it judged."""
+    path = run / PERIOD
+    if path.is_file():
+        period = json.loads(path.read_text(encoding="utf-8"))
+        return date.fromisoformat(period["first"]), date.fromisoformat(period["last"])
+    days = [date.fromisoformat(r["day"]) for r in outcomes]
+    return (min(days), max(days)) if days else (date.max, date.min)
+
+
 def _with_causes(
     gap: Gap, outcomes: Sequence[Mapping[str, str]], done: Collection[tuple[str, str]]
 ) -> Gap:
@@ -709,6 +787,8 @@ def _with_causes(
         and gap.first <= date.fromisoformat(r["day"]) <= gap.last
         and (r["instrument_id"], r["day"]) not in done
     )
+    if not codes:  # a span the run did not fetch keeps its own reason
+        return gap
     detail = ", ".join(f"{c} {n}" for c, n in sorted(codes.items()))
     return Gap(gap.vendor, gap.first, gap.last, gap.isin, f"{gap.reason} ({detail})")
 

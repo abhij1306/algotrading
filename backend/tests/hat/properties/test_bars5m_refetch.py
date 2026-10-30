@@ -4,6 +4,7 @@ refetched day may replace it, and which gap rows a refetch leaves."""
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,6 +19,7 @@ from app.hat.data.bars5m_refetch import (
     remaining_gaps,
     run_folder,
     short_spans,
+    stored_digest,
     target_kind,
 )
 from app.hat.data.bars_basis import DailyRange
@@ -164,3 +166,32 @@ def test_a_rolled_back_run_wrote_no_fyers_days(tmp_path: Path) -> None:
         (folder / APPLIED).write_text(f"instrument_id,day\n{name},2026-07-21\n", encoding="utf-8")
     (tmp_path / REFETCH_DIR / "run-b" / ROLLED_BACK).write_text("restored\n", encoding="utf-8")
     assert refetched_days(tmp_path) == {("run-a", date(2026, 7, 21))}
+
+
+def test_kotak_sessions_outside_the_fetched_period_keep_their_row() -> None:
+    days = [date(2026, 8, d) for d in (3, 4, 5, 6)]
+    row = Gap("kotak", days[0], days[-1], "INE000A01011", "cut at 15:10")
+    left = remaining_gaps([row], {}, {"INE000A01011": days}, "still short", (days[1], days[2]))
+    assert left == [
+        Gap("kotak", days[0], days[0], "INE000A01011", "cut at 15:10"),
+        Gap("kotak", days[3], days[3], "INE000A01011", "cut at 15:10"),
+    ]
+
+
+def test_a_stored_day_digest_sees_an_interior_change_in_any_order() -> None:
+    def rows(noon_close: Decimal) -> list[SimpleNamespace]:
+        return [
+            SimpleNamespace(
+                bar_start=b.start,
+                open=b.open,
+                high=b.high,
+                low=b.low,
+                close=noon_close if b.start.time() == time(12, 0) else b.close,
+                volume=b.volume,
+            )
+            for b in _session()
+        ]
+
+    stored = rows(Decimal(101))
+    assert stored_digest(stored) == stored_digest(list(reversed(stored)))
+    assert stored_digest(rows(Decimal("100.5"))) != stored_digest(stored)
