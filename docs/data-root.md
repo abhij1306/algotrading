@@ -15,6 +15,7 @@ rebuilt. "Snapshot" means it is in the data repo's releases (runbook, Snapshot a
 | `bars_5m_rejects/`, `bars_5m_explained/` | Refused 5-minute rows and their explanations | `bars_store`, `bars_basis` | With the import |
 | `bars5m_import/`, `bars5m_repair/`, `minute_history/` | Import and repair reports, download progress | those commands | Reports only |
 | `bars5m_volume/`, `index_reload/` | The old values each `--apply` replaced (`before-<UTC>.*`) | `bars5m_volume`, `index_history reload` | No: the only copy of the old values |
+| `bars5m_refetch/<run>/` | A Fyers refetch: outcomes, admitted bars, `before.parquet` (the stored rows `--apply` replaced) and `applied.csv` (read by D4) | `bars5m_refetch` | No: the only copy of the old rows |
 | `features_daily/date=*/` | Adjusted features per session, `_state.json` | `features` | From bars and the DB; manifest |
 | `index_daily/`, `breadth_daily/`, `market_breadth/` | Index levels and market breadth per session | ingest, `features` | From `raw/`; manifest |
 | `etf/` | ETF overlay data (`daily`, `indices`, `liquid_tr`, `bars_5m`, `manifest.json`) | `overlay_etf.py` | From the overlay's raw files; manifest |

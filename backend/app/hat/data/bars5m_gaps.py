@@ -20,6 +20,8 @@ from datetime import date
 from pathlib import Path
 
 EVERY = "*"
+REFETCH_DIR = "bars5m_refetch"  # under the data root: one folder per `bars5m_refetch` run
+APPLIED = "applied.csv"  # in a run folder: the (instrument id, day) its `apply` wrote
 
 
 @dataclass(frozen=True)
@@ -81,3 +83,16 @@ def in_gap(spans: Mapping[str, tuple[tuple[date, date], ...]], isin: str | None,
 
 
 __all__ = ["EVERY", "Gap", "gap_spans", "in_gap", "read_gaps", "spans_digest"]
+
+
+def refetched_days(root: Path) -> set[tuple[str, date]]:
+    """The (instrument id, day) every applied `bars5m_refetch` run under the data root `root`
+    wrote from Fyers' history (each run folder's `applied.csv`): days a vendor's short copy no
+    longer stands for."""
+    out: set[tuple[str, date]] = set()
+    for path in sorted((root / REFETCH_DIR).glob(f"*/{APPLIED}")):
+        with path.open(encoding="utf-8", newline="") as handle:
+            out |= {
+                (r["instrument_id"], date.fromisoformat(r["day"])) for r in csv.DictReader(handle)
+            }
+    return out

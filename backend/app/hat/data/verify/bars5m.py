@@ -54,11 +54,11 @@ raw file, a bar that differs, or a bar on one side only fails (dated), except (`
   (`vendor_bucket_boundary`, warn: the same bars, day volume, high and low, prices within
   `PRICE_BOUND`);
 - a day inside a Fyers window (the store's bars came from Fyers' minute history there,
-  `minute_history/progress.json`; Kotak is a second vendor, not their source): prices within
-  `PRICE_BOUND`, and bar volumes or bars Kotak lacks on a day whose volume reconciles with the
-  bhavcopy, warn as `second_vendor_differs`; a traded Kotak bar the store lacks still fails. A
-  Fyers window day of a symbol the export has no file for at all warns as
-  `second_vendor_missing`; a day missing from a file the export has fails;
+  `minute_history/progress.json`, or a day `bars5m_refetch` wrote; Kotak is a second vendor, not
+  their source): prices within `PRICE_BOUND`, and bar volumes or bars Kotak lacks on a day
+  whose volume reconciles with the bhavcopy, warn as `second_vendor_differs`; a traded Kotak bar
+  the store lacks still fails. A Fyers window day of a symbol the export has no file for at all
+  warns as `second_vendor_missing`; a day missing from a file the export has fails;
 - a failed day the reviewed list names (`VERIFY_EXCEPTIONS["d4"]`: code, ISIN, day, the item's
   values when reviewed, such as `bars` with `worst` or `scale`, and the reason with its evidence),
   warned as `excepted` (`exceptions.py`).
@@ -84,7 +84,7 @@ from app.paths import BARS5M_GAPS, VERIFY_EXCEPTIONS
 from ...money import require_exact
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
-from ..bars5m_gaps import gap_spans, in_gap, read_gaps
+from ..bars5m_gaps import gap_spans, in_gap, read_gaps, refetched_days
 from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
 from . import dated, seeded_sample
 from .context import Context
@@ -856,6 +856,7 @@ def _compare_sample(
     except (OSError, ValueError):
         progress = {}
     windows = fyers_windows(progress)
+    refetched = refetched_days(ctx.root)
     by_instrument: dict[str, list[date]] = defaultdict(list)
     for instrument, day in sample:
         by_instrument[instrument].append(day)
@@ -863,7 +864,7 @@ def _compare_sample(
     for instrument, days in sorted(by_instrument.items()):
         rows, has_file = _kotak_rows(ctx.kotak, names.get(instrument, ()), days)
         for day in days:
-            fyers = any(
+            fyers = (instrument, day) in refetched or any(
                 (w := windows.get(n)) is not None and w[0] <= day <= w[1]
                 for n in names.get(instrument, ())
             )

@@ -48,7 +48,7 @@ import pyarrow.parquet as pq
 from ..backtest.intraday import lacks_refused, on_basis
 from ..time import IST, trade_date_of
 from .bars import Bar
-from .bars5m_gaps import Gap
+from .bars5m_gaps import APPLIED, Gap
 from .bars_basis import DailyRange, check_day
 from .bars_store import SCHEMA, BarStore, row_from_bar
 from .minute_limits import HistoryLimits, MinuteHistoryError, Progress
@@ -402,7 +402,7 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
     if history is None:
         sys.stderr.write("history_no_session: log in to Fyers from the app first\n")
         return 2
-    limits = HistoryLimits.from_settings(settings)
+    limits = HistoryLimits.from_settings(settings, per_minute=args.per_minute)
     dl = Download(
         history,
         BarStore(root),
@@ -527,7 +527,7 @@ def _apply(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
                 bars, dict(zip(ids, ids, strict=True)), replace=dict.fromkeys(ids, (day, day))
             )
             applied.extend({"instrument_id": i, "day": day.isoformat()} for i in ids)
-        with (run / "applied.csv").open("w", encoding="utf-8", newline="") as handle:
+        with (run / APPLIED).open("w", encoding="utf-8", newline="") as handle:
             writer = csv.DictWriter(handle, fieldnames=("instrument_id", "day"))
             writer.writeheader()
             writer.writerows(applied)
@@ -545,7 +545,7 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
     with BARS5M_GAPS.open(encoding="utf-8", newline="") as handle:
         names = {r["isin"]: r["symbol"] for r in csv.DictReader(handle)}
     outcomes = [r for r in _read_outcomes(args.run) if r["kind"] == SHORT_CLOSE]
-    applied_path = args.run / "applied.csv"
+    applied_path = args.run / APPLIED
     if applied_path.is_file():
         with applied_path.open(encoding="utf-8", newline="") as handle:
             done = {(r["instrument_id"], r["day"]) for r in csv.DictReader(handle)}
@@ -579,19 +579,7 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
         f"refetch of {args.run.name} could not make them whole"
     )
     left = remaining_gaps(gaps, short, sessions, reason)
-    for isin in sorted({g.isin for g in left if g.vendor == KOTAK}):
-        codes = Counter(
-            r["outcome"]
-            for r in outcomes
-            if r["isin"] == isin and (r["instrument_id"], r["day"]) not in done
-        )
-        detail = ", ".join(f"{c} {n}" for c, n in sorted(codes.items()))
-        left = [
-            Gap(g.vendor, g.first, g.last, g.isin, f"{g.reason} ({detail})")
-            if g.isin == isin and g.vendor == KOTAK
-            else g
-            for g in left
-        ]
+    left = [g if g.vendor != KOTAK else _with_causes(g, outcomes, done) for g in left]
     target = args.write or Path("/dev/stdout")
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -606,6 +594,21 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
     return 0
 
 
+def _with_causes(
+    gap: Gap, outcomes: Sequence[Mapping[str, str]], done: Collection[tuple[str, str]]
+) -> Gap:
+    """`gap` with the outcomes of its sessions still short appended to its reason."""
+    codes = Counter(
+        r["outcome"]
+        for r in outcomes
+        if r["isin"] == gap.isin
+        and gap.first <= date.fromisoformat(r["day"]) <= gap.last
+        and (r["instrument_id"], r["day"]) not in done
+    )
+    detail = ", ".join(f"{c} {n}" for c, n in sorted(codes.items()))
+    return Gap(gap.vendor, gap.first, gap.last, gap.isin, f"{gap.reason} ({detail})")
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.bars5m_refetch", description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -614,6 +617,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     f.add_argument("--last", type=date.fromisoformat, required=True)
     f.add_argument("--out", type=Path, required=True, help="the run folder")
     f.add_argument("--resume", action="store_true", help="skip the instruments already judged")
+    f.add_argument(
+        "--per-minute", type=int, help="override HAT_HISTORY_PER_MINUTE (a shared token)"
+    )
     a = sub.add_parser("apply", help="write a fetch's admitted days (dry run without --apply)")
     a.add_argument("--run", type=Path, required=True)
     a.add_argument("--apply", action="store_true")
