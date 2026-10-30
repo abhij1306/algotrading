@@ -248,7 +248,7 @@ def test_both_sides_size_on_the_same_0920_prices() -> None:
     daily = {
         "a": DayBar(D(100), D(98), D(104), "INEA"),
         "b": DayBar(D(100), D(98), D(104), "INEB"),
-        "c": DayBar(D(50), D(49), D("50.02"), "INEC"),  # opened near its high
+        "c": DayBar(D(50), D(49), D(50), "INEC"),  # opened at its high
         "g": DayBar(D(100), D(98), D(104), "INEG"),
     }
     admission = Admission(refused={}, gaps={"INEG": ((DAY, DAY),)})
@@ -261,7 +261,7 @@ def test_both_sides_size_on_the_same_0920_prices() -> None:
     assert found["a"] == D(101)  # the 09:15 bar's close
     assert found["b"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # off basis: the estimate
     assert found["g"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # coverage gap: refused too
-    assert found["c"] == D("50.02")  # no bars: the estimate, at most the day's high
+    assert found["c"] == D(50)  # no bars: the estimate, at most the day's high
 
 
 def test_a_trade_date_not_stored_is_refused_not_sized_on_nothing() -> None:

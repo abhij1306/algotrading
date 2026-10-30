@@ -54,11 +54,12 @@ class OpenTo0920:
     sell: Decimal
 
 
-# PROVISIONAL until `scripts/research/open_to_0920.py` has run on the data (decisions.md
-# "Orders at 09:20"): a run that estimates any fill reports the known gap
-# `fill_0920_estimate_provisional` while it is (`spec.PROVISIONAL_0920`).
-OPEN_TO_0920 = OpenTo0920(buy=Decimal("0.0010"), sell=Decimal("0.0010"))
-OPEN_TO_0920_MEASURED = False
+# Measured 2026-10-30 (`scripts/research/open_to_0920.py`, decisions.md "Orders at 09:20"): per
+# side the larger of the all-member-days and rebalance-session medians, at least 0. Were it not
+# measured (`OPEN_TO_0920_MEASURED` False), runs estimating with it would report the known gap
+# `fill_0920_estimate_provisional` (`spec.PROVISIONAL_0920`).
+OPEN_TO_0920 = OpenTo0920(buy=Decimal("0.0002"), sell=Decimal("0.0003"))
+OPEN_TO_0920_MEASURED = True
 
 
 def price_0920(day: date, bars: Sequence[Bar]) -> tuple[Decimal, Bar] | None:

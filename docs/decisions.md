@@ -220,10 +220,18 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (`engine/fill_0920.py`), read by the backtest and the shadow-day replay; circuit, demerger and
   factor-pending refusals are judged at that price (the 09:15 bar, else the day as before). A
   run counts its rotation fills at real 09:20 prices and estimated ones (`rotation_fills_0920`,
-  `rotation_fills_estimated`). **Measured values pending:** until the script has run on the
-  data the estimate is a provisional 0.10% each side (`OPEN_TO_0920_MEASURED = False`; runs
-  report `fill_0920_estimate_provisional`, a rotation run or one with a gap-over entry). Hard-stop exits that gap through at the open
-  still fill at the open (`fills.stop_fill`), not part of this rule.
+  `rotation_fills_estimated`). **Measured 2026-10-30** on m3 (read-only, at 984e097):
+  `venv/bin/python scripts/research/open_to_0920.py` (NIFTY 500 point in time,
+  2021-10-26..2024-12-31, ADV20 >= Rs 10 cr, close >= 50, EQ/BE, sessions the backtest admits).
+  All member-days: n = 310,189, median move from the open to 09:20 -0.0307% (q1 -0.479%, q3
+  +0.429%, median |move| 0.455%), suggesting buy 0, sell 0.03%. Rebalance sessions (each
+  month's first): n = 14,777, median +0.0235% (q1 -0.449%, q3 +0.540%, median |move| 0.491%),
+  suggesting buy 0.02%, sell 0. Set conservatively per side, the larger of the two:
+  `OPEN_TO_0920` buy 0.02%, sell 0.03% (`OPEN_TO_0920_MEASURED = True`). The ~0.46% median
+  absolute move is noise around the open in either direction, which a constant cannot capture;
+  it is not added as extra cost (the run's slippage applies as on every fill). Hard-stop exits
+  that gap through at the open still fill at the open (`fills.stop_fill`), not part of this
+  rule.
 
 ## Data
 
