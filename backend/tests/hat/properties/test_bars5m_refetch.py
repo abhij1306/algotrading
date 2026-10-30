@@ -3,6 +3,9 @@ refetched day may replace it, and which gap rows a refetch leaves."""
 
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from app.hat.data.bars import Bar
 from app.hat.data.bars5m_gaps import Gap
@@ -11,6 +14,7 @@ from app.hat.data.bars5m_refetch import (
     SHORT_CLOSE,
     admit,
     remaining_gaps,
+    run_folder,
     short_spans,
     target_kind,
 )
@@ -99,3 +103,11 @@ def test_a_kotak_row_is_dropped_when_whole_and_narrowed_when_not() -> None:
         "still short",
     )
     assert left == [nse, Gap("kotak", days[1], days[1], "INE000B01011", "still short")]
+
+
+def test_a_run_is_named_by_a_bare_folder_name_under_the_refetch_folder() -> None:
+    root = Path("/data")
+    assert run_folder(root, "run-20261030") == root / "bars5m_refetch" / "run-20261030"
+    for name in ("", ".", "..", "../x", "a/b", "/abs", ".hidden", "a\\b"):
+        with pytest.raises(ValueError, match="refused"):
+            run_folder(root, name)

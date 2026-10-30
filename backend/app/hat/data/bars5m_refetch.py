@@ -13,18 +13,18 @@ aggregation and raw-basis conversion), then judges each target day (`admit`) by 
 09:15 bar, a clean grid, the open within 5% of the daily open), it holds the 15:25 bar, it lacks
 no bucket the screen or the import refused, and its session volume reconciles with the
 bhavcopy's (`verify.bars5m.day_volume_fits`). The admitted days' bars go to the run folder
-(`--out`) with every target's outcome (`outcomes.csv`); nothing is written to the store, and a
-stopped fetch continues with `--resume`.
+(`bars5m_refetch/<name>` under the data root, `--run <name>`) with every target's outcome
+(`outcomes.csv`); nothing is written to the store, and a stopped fetch continues with `--resume`.
 
-`apply --run <folder>` writes the admitted days of a fetch: it first saves every stored row of
-those (instrument, day) to `<folder>/before.parquet` (synced), then replaces each day whole
-(`BarStore.write`, one rewrite per day file), skipping a day whose stored bars changed since the
-fetch. It holds the minute-history and the data-update locks, so no other `bars_5m` writer runs
-with it. A day that is not admitted keeps its stored bars; the outcome says why.
+`apply --run <name>` writes the admitted days of a fetch: it first saves every stored row of
+those (instrument, day) to `before.parquet` in the run folder (synced), then replaces each day
+whole (`BarStore.write`, one rewrite per day file), skipping a day whose stored bars changed since
+the fetch. It holds the minute-history and the data-update locks, so no other `bars_5m` writer
+runs with it. A day that is not admitted keeps its stored bars; the outcome says why.
 
-`gaps --run <folder>` prints the `bars5m_gaps` rows the applied run leaves: a Kotak row whose
-short sessions were all admitted is dropped, the others keep only their spans of sessions still
-short, with the reason.
+`gaps --run <name>` prints the `bars5m_gaps` rows the applied run leaves (`--write` writes them to
+`app.paths.BARS5M_GAPS`): a Kotak row whose short sessions were all admitted is dropped, the
+others keep only their spans of sessions still short, with the reason.
 """
 
 from __future__ import annotations
@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import csv
 import os
+import re
 import sys
 from collections import Counter, defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
@@ -48,7 +49,7 @@ import pyarrow.parquet as pq
 from ..backtest.intraday import lacks_refused, on_basis
 from ..time import IST, trade_date_of
 from .bars import Bar
-from .bars5m_gaps import APPLIED, Gap
+from .bars5m_gaps import APPLIED, REFETCH_DIR, Gap
 from .bars_basis import DailyRange, check_day
 from .bars_store import SCHEMA, BarStore, row_from_bar
 from .minute_limits import HistoryLimits, MinuteHistoryError, Progress
@@ -64,6 +65,7 @@ __all__ = [
     "Target",
     "admit",
     "remaining_gaps",
+    "run_folder",
     "short_spans",
     "target_kind",
 ]
@@ -78,6 +80,7 @@ OUTCOMES = "outcomes.csv"
 BARS_DIR = "bars"
 BEFORE = "before.parquet"
 PROGRESS = "progress.json"
+_RUN_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}")
 OUTCOME_FIELDS = (
     "instrument_id",
     "isin",
@@ -155,6 +158,14 @@ def admit(
     if not daily_volume or not day_volume_fits(sum(b.volume for b in bars) / daily_volume):
         return "day_volume_differs"
     return None
+
+
+def run_folder(root: Path, name: str) -> Path:
+    """The folder of the run `name` under the data root `root` (`bars5m_refetch/<name>`); a name
+    that is not a bare folder name is refused, so no run reads or writes outside it."""
+    if not _RUN_NAME.fullmatch(name) or name in (".", ".."):
+        raise ValueError(f"refused: run name {name!r} is not a bare folder name")
+    return root / REFETCH_DIR / name
 
 
 def short_spans(short: Collection[date], sessions: Sequence[date]) -> list[tuple[date, date]]:
@@ -378,7 +389,8 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
         session_history,
     )
 
-    root, out = settings.data_root, args.out
+    root = settings.data_root
+    out = run_folder(root, args.run)
     (out / BARS_DIR).mkdir(parents=True, exist_ok=True)
     progress = Progress.load(out / PROGRESS)
     if not args.resume:
@@ -466,7 +478,8 @@ def _stored_state(rows: Sequence[object]) -> tuple[str, str, str]:
 def _apply(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no cover - real store
     from .minute_history import PROGRESS_FILE, run_lock
 
-    root, run = settings.data_root, args.run
+    root = settings.data_root
+    run = run_folder(root, args.run)
     admitted = [r for r in _read_outcomes(run) if r["outcome"] == ADMITTED]
     by_day: dict[date, dict[str, dict[str, str]]] = defaultdict(dict)
     for r in admitted:
@@ -544,8 +557,9 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
     gaps = read_gaps(BARS5M_GAPS)
     with BARS5M_GAPS.open(encoding="utf-8", newline="") as handle:
         names = {r["isin"]: r["symbol"] for r in csv.DictReader(handle)}
-    outcomes = [r for r in _read_outcomes(args.run) if r["kind"] == SHORT_CLOSE]
-    applied_path = args.run / APPLIED
+    run = run_folder(settings.data_root, args.run)
+    outcomes = [r for r in _read_outcomes(run) if r["kind"] == SHORT_CLOSE]
+    applied_path = run / APPLIED
     if applied_path.is_file():
         with applied_path.open(encoding="utf-8", newline="") as handle:
             done = {(r["instrument_id"], r["day"]) for r in csv.DictReader(handle)}
@@ -576,11 +590,11 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
         sessions[isin].append(day)
     reason = (
         f"The Kotak export of 2026-10-28 ends at the 15:10 bar on these sessions and the Fyers "
-        f"refetch of {args.run.name} could not make them whole"
+        f"refetch of {run.name} could not make them whole"
     )
     left = remaining_gaps(gaps, short, sessions, reason)
     left = [g if g.vendor != KOTAK else _with_causes(g, outcomes, done) for g in left]
-    target = args.write or Path("/dev/stdout")
+    target = BARS5M_GAPS if args.write else Path("/dev/stdout")
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
         writer.writerow(("vendor", "first", "last", "isin", "symbol", "reason"))
@@ -615,17 +629,17 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     f = sub.add_parser("fetch", help="fetch and judge the target days (writes only --out)")
     f.add_argument("--first", type=date.fromisoformat, required=True)
     f.add_argument("--last", type=date.fromisoformat, required=True)
-    f.add_argument("--out", type=Path, required=True, help="the run folder")
+    f.add_argument("--run", required=True, help=f"the run's name (folder {REFETCH_DIR}/<name>)")
     f.add_argument("--resume", action="store_true", help="skip the instruments already judged")
     f.add_argument(
         "--per-minute", type=int, help="override HAT_HISTORY_PER_MINUTE (a shared token)"
     )
     a = sub.add_parser("apply", help="write a fetch's admitted days (dry run without --apply)")
-    a.add_argument("--run", type=Path, required=True)
+    a.add_argument("--run", required=True, help=f"the run's name (folder {REFETCH_DIR}/<name>)")
     a.add_argument("--apply", action="store_true")
     g = sub.add_parser("gaps", help="the bars5m_gaps rows an applied run leaves")
-    g.add_argument("--run", type=Path, required=True)
-    g.add_argument("--write", type=Path, help="write the rows here (default: stdout)")
+    g.add_argument("--run", required=True, help=f"the run's name (folder {REFETCH_DIR}/<name>)")
+    g.add_argument("--write", action="store_true", help="write app.paths.BARS5M_GAPS (else stdout)")
     return p.parse_args(argv)
 
 
