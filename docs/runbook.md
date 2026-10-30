@@ -202,12 +202,12 @@ finishes and records its runs.
 
 ### Shadow-day replay
 
-`python -m app.hat.daily.replay --date YYYY-MM-DD [--bot <id> ...] [--out FILE]` (backend venv,
+`python -m app.hat.daily.replay --date YYYY-MM-DD [--bot <id> ...]` (backend venv,
 `HAT_DATA_ROOT` set) compares what the live daily path decides on session D's close with what the
 backtest engine decides for the same night on the same store and config: each bot's regime gate,
 watchlist rows and their planned entry (pivot and stop, as shares of D's close), a rotation's
 ranking and targets on a rebalance night, and the close-phase exits of the positions the live
-book held at D's close. It prints one JSON report: `compared` (sizes), `counts` by kind and cause,
+book held at D's close. It prints one JSON report to stdout (redirect it to keep it): `compared` (sizes), `counts` by kind and cause,
 and every difference with its cause (`membership`, `quality_excluded`, `factor_pending`,
 `no_bars`, `bars_differ`, `regime_inputs`, `passers_differ`, `ranking_differs`, or
 `same_inputs`: the code paths decide apart on the same inputs, a bug to chase). It reads nothing

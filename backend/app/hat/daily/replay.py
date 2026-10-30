@@ -1,4 +1,4 @@
-"""The shadow-day replay: `python -m app.hat.daily.replay --date D [--bot <id> ...] [--out FILE]`.
+"""The shadow-day replay: `python -m app.hat.daily.replay --date D [--bot <id> ...]`.
 
 For a past session D it builds, for each active bot (or each `--bot`), what the live daily path
 decides on D's close and what the backtest engine decides for the same night on the same store
@@ -698,7 +698,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser = argparse.ArgumentParser(prog="python -m app.hat.daily.replay")
     parser.add_argument("--date", required=True, type=date.fromisoformat)
     parser.add_argument("--bot", action="append", default=[], type=uuid.UUID)
-    parser.add_argument("--out", default=None, help="also write the JSON report to this file")
     args = parser.parse_args(argv)
     settings = operator_settings()
     with db_session_scope() as session:
@@ -710,11 +709,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         except HatError as refused:
             sys.stdout.write(json.dumps({"refused": str(refused)}) + "\n")
             return 2
-    document = json.dumps(report, indent=2)
-    sys.stdout.write(document + "\n")
-    if args.out:
-        with open(args.out, "w", encoding="utf-8") as out:
-            out.write(document + "\n")
+    sys.stdout.write(json.dumps(report, indent=2) + "\n")
     return 0
 
 
