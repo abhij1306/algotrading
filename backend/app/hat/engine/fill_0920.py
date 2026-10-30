@@ -98,12 +98,13 @@ def fill_0920(
     open_: Decimal,
     estimate: OpenTo0920 = OPEN_TO_0920,
     *,
-    low: Decimal | None = None,
-    high: Decimal | None = None,
+    low: Decimal,
+    high: Decimal,
 ) -> tuple[Decimal, str]:
     """(the price a rotation order fills at on `day`, `REAL` or `ESTIMATED`): the session's price
     at 09:20 from its five-minute `bars` (None: the caller has none it may read, or refused
-    them), else `estimated_0920` of the day's open, within the day's `low`..`high`."""
+    them), else `estimated_0920` of the day's open, within the day's `low`..`high` (required: a fill
+    outside what traded fails the ledger check)."""
     found = price_0920(day, bars) if bars else None
     if found is not None:
         return found[0], REAL
