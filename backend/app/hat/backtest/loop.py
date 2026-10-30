@@ -883,6 +883,17 @@ class _Run:
             if Decimal(position.current_stop) > before:
                 held.raised = (day, before)
 
+    def _top_signal(self, held: _Held, prev: date | None) -> bool:
+        """Whether the held stack's `top_signal` rule saw its signal on `prev`'s close
+        (`exits.top_signal_seen`, on the closes and volumes through it)."""
+        rules = self.legs[held.leg].config.exits_for(held.playbook)
+        count = exits.top_signal_sessions(rules)
+        if prev is None or count == 0:
+            return False
+        bars = self.view.bars_through(held.instrument_id, prev, count)
+        volumes = self.view.volumes_through(held.instrument_id, prev, count)
+        return exits.top_signal_seen(rules, [b.close for b in bars], volumes)
+
     def _morning(self, day: date, prev: date | None) -> None:
         regime_off = [
             prev is not None
@@ -911,7 +922,11 @@ class _Run:
                 # the next open that is not pinned and fills there at min(open, stop).
                 self.lower_circuit_days.add(day)
                 continue
-            nightly = exits.ExitView(bar.open, regime_off=regime_off[held.leg])
+            nightly = exits.ExitView(
+                bar.open,
+                regime_off=regime_off[held.leg],
+                top_signal=self._top_signal(held, prev),
+            )
             self._evaluate(position, nightly, "nightly", _at(day, _AT_OPEN))
             if position.closed_at is None:
                 self._evaluate(position, exits.ExitView(bar.open), "live", _at(day, _AT_OPEN, 1))
@@ -2078,7 +2093,7 @@ class _Run:
             held.instrument_id, day, exits.history_sessions(rules), inclusive=False
         )
         since = (
-            [b.high for b in self.view.bars_since(held.instrument_id, held.entry_day, day)]
+            self.view.bars_since(held.instrument_id, held.entry_day, day)
             if exits.reads_peak(rules)
             else None
         )
@@ -2089,7 +2104,8 @@ class _Run:
             [b.close for b in before],
             [b.low for b in before],
             [b.high for b in before],
-            since,
+            None if since is None else [b.high for b in since],
+            None if since is None else [b.close for b in since],
         )
 
     def _close_phase(self, day: date) -> None:

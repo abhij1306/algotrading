@@ -121,6 +121,15 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   plan's watchlist fields; `setup_type` and `valid_until` are columns. Slot order `leader_rs`:
   an early leader first, then `rs`. Entry trigger, chase and volume are the existing ones
   (`price_breaks_level`, `max_chase` 2% on the 09:20 price, `volume_pace` 1.5).
+- **S1 exits F and G (owner 2026-10-30, plan Addenda F and G).** Two exit rules no stack holds
+  unless added. `top_signal` (F) is a nightly full exit at the next open after a session whose
+  % decline is strictly the largest of the last `lookback` (252) sessions on strictly their
+  largest volume, or (with `stage4`) a close below an SMA200 lower than 21 sessions before; the
+  closes are the total-return series, so an ex-date drop is no decline. `tennis_ball` (G) is a
+  close-phase stop move to the entry once the peak since entry reached +`at_r` (1) R and
+  `sessions` (10) closes passed without a new closing high (a tie is none); a stop exit after it
+  is `tennis_ball_stop`. Live runs no nightly phase, so `top_signal` acts in the backtest only,
+  as `regime_exit` does; live's tennis ball needs the closes since entry in its daily window.
 - **Breadth regime rule (owner 2026-10-26).** A strategy's regime gate may read market breadth
   instead of an index (`breadth_above`: `min_pct` 50, optional `off_below_pct` hysteresis,
   `smooth_days` 1): S1's longest drawdown ran through the 2018-2020 midcap bear while NIFTY 500
@@ -660,9 +669,9 @@ chain rule); no secondary rows after a company's last traded day. ETF data verif
 D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
 adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
 follow-up: read a stock's series as of each day for `series_in`, not today's. S1 setups Phase 2:
-the R1-R5 runs, the top-signal exit (F) and tennis-ball stop (G) variants, the setup and tag
-columns in the run's result files, the daily stage of open positions, and the shadow-day replay
-of a playbook with a validity window (it scans without the stored windows).
+the R2-R5 runs, the setup and tag columns in the run's result files, the daily stage of open
+positions, and the shadow-day replay of a playbook with a validity window (it scans without the
+stored windows).
 
 ## Defaults awaiting owner confirmation
 

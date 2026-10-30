@@ -22,7 +22,9 @@ from app.hat.backtest.overrides import (
     set_path,
 )
 from app.hat.backtest.runs import check_paths, parse_variants
+from app.hat.backtest.signal_features import setup_tag_columns
 from app.hat.backtest.spec import BacktestError, RunConventions
+from app.hat.backtest.standard import exit_code
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS
 from app.hat.engine import exits
 from app.hat.engine.exits import ExitView, PositionState, evaluate
@@ -31,6 +33,8 @@ from app.hat.engine.strategy.config import (
     ExitCloseBelowSma,
     ExitEarlyFailure,
     ExitMaxHold,
+    ExitTennisBall,
+    ExitTopSignal,
     ExitTrailingAtr,
     ExitTrailingSwingLow,
     StopLowOfDay,
@@ -105,6 +109,108 @@ def test_view_from_bars_reads_peak_and_atr() -> None:
     assert view.peak == D(110)  # today's price above the highs since entry
     assert view.atr == {2: (D(3) + D(5)) / 2}  # true ranges 103-100 and 106-101
     assert exits.view_from_bars(D(110), [rule], 3, [], [], []).peak is None
+
+
+def _flat(n: int, close: str = "100") -> list[Decimal]:
+    return [D(close)] * n
+
+
+TOP = ExitTopSignal(rule="top_signal", lookback=5, stage4=False)
+
+
+def test_top_signal_needs_the_largest_decline_on_the_largest_volume() -> None:
+    closes = [D(100), D(99), D(100), D(98), D(100), D(95)]  # -5%: the largest of 5 changes
+    assert exits.top_signal_sessions([TOP]) == 6
+    assert exits.top_signal_seen([TOP], closes, [1.0, 2.0, 3.0, 2.0, 9.0])
+    assert not exits.top_signal_seen([TOP], closes, [1.0, 2.0, 9.0, 2.0, 9.0])  # a tie: no
+    assert not exits.top_signal_seen([TOP], closes, [1.0, 2.0, 3.0, 2.0, float("nan")])
+    milder = [*closes[:-1], D(99)]  # -1%: the -2% before it is larger
+    assert not exits.top_signal_seen([TOP], milder, [1.0, 2.0, 3.0, 2.0, 9.0])
+    assert not exits.top_signal_seen([TOP], closes[1:], [1.0, 2.0, 3.0, 2.0, 9.0])  # too short
+    off = TOP.model_copy(update={"enabled": False})
+    assert not exits.top_signal_seen([off], closes, [1.0, 2.0, 3.0, 2.0, 9.0])
+    assert exits.top_signal_sessions([off]) == 0
+
+
+def test_top_signal_stage4_is_a_close_under_a_falling_sma200() -> None:
+    rule = TOP.model_copy(update={"stage4": True})
+    assert exits.top_signal_sessions([rule]) == exits.STAGE4_SESSIONS
+    falling = [D(200 - n) / 2 for n in range(221)]  # each close lower: under a falling SMA200
+    volumes = [1.0] * 221  # no volume record: only stage 4 can signal
+    assert exits.top_signal_seen([rule], falling, volumes)
+    assert not exits.top_signal_seen([TOP], falling, volumes)  # stage4 off
+    assert not exits.top_signal_seen([rule], falling[1:], volumes)  # no SMA200 21 back
+    rising = list(reversed(falling))
+    assert not exits.top_signal_seen([rule], rising, volumes)
+
+
+def test_top_signal_sells_everything_at_the_nightly_evaluation_only() -> None:
+    view = ExitView(D(95), top_signal=True)
+    result = evaluate([TOP], POS, view, "nightly")
+    assert [(a.kind, a.qty) for a in result.actions] == [("full", 10)]
+    assert not evaluate([TOP], POS, view, "close").actions
+    assert not evaluate([TOP], POS, ExitView(D(95)), "nightly").actions
+
+
+BALL = ExitTennisBall(rule="tennis_ball")
+
+
+def test_tennis_ball_counts_sessions_since_the_highest_close() -> None:
+    assert exits.reads_peak([BALL])
+    closes = [D(100), D(112), *_flat(9, "108")]  # the high close 112, then 9 lower
+    view = exits.view_from_bars(D(109), [BALL], 11, [], [], [], [D(113)] * 11, closes)
+    assert view.since_close_high == 10
+    tie = exits.view_from_bars(D(112), [BALL], 11, [], [], [], [D(113)] * 11, closes)
+    assert tie.since_close_high == 10  # a tie is no new high (no reset to 0)
+    new = exits.view_from_bars(D(113), [BALL], 11, [], [], [], [D(113)] * 11, closes)
+    assert new.since_close_high == 0
+    assert exits.view_from_bars(D(109), [BALL], 11, [], [], []).since_close_high is None
+
+
+def test_tennis_ball_moves_the_stop_to_the_entry_after_one_r() -> None:
+    due = ExitView(D(104), peak=D(110), since_close_high=10)  # +1R reached, 10 sessions
+    result = evaluate([BALL], POS, due, "close")
+    assert (result.new_stop, result.fired, result.actions) == (D(100), ("0:tennis_ball",), ())
+    assert evaluate([BALL], POS, due, "live").new_stop is None  # a close-phase rule
+    assert evaluate([BALL], POS, replace(due, peak=D(109)), "close").new_stop is None  # 0.9R
+    assert evaluate([BALL], POS, replace(due, since_close_high=9), "close").new_stop is None
+    above = replace(POS, current_stop=D(101))
+    kept = evaluate([BALL], above, due, "close")
+    assert kept.new_stop is None
+    assert kept.ignored == (("0:tennis_ball", "would_not_raise_stop"),)
+    fired = exits.apply(POS, result)
+    assert evaluate([BALL], fired, due, "close").fired == ()  # fires once
+
+
+def test_a_stop_exit_after_the_tennis_ball_is_its_own() -> None:
+    assert exit_code("hard_stop", D(90), D(100), ["2:tennis_ball"]) == "tennis_ball_stop"
+    assert exit_code("top_signal", D(90), D(100), ["3:top_signal"]) == "top_signal"
+
+
+def test_setup_tag_columns_read_the_setup_summary() -> None:
+    results = {
+        "setup": {
+            "setup_type": "cheat_3c",
+            "setup_tags": ["cheat_3c", "cup_handle"],
+            "shakeout": True,
+            "shakeout_undercut_pct": 2.345678,
+            "ath_pivot": False,
+            "early_leader": None,
+            "stage": "stage_2",
+        }
+    }
+    assert setup_tag_columns(results) == {
+        "setup_type": "cheat_3c",
+        "setup_tags": "cheat_3c/cup_handle",
+        "tag_shakeout": True,
+        "tag_undercut_pct": 2.3457,
+        "tag_ath_pivot": False,
+        "tag_early_leader": None,
+        "tag_stage": "stage_2",
+    }
+    alone = setup_tag_columns({"setup": {"setup_type": "power_play"}})
+    assert alone["setup_tags"] == "power_play"
+    assert set(setup_tag_columns({}).values()) == {None}
 
 
 def test_canonical_form_unchanged_without_the_new_fields() -> None:

@@ -257,7 +257,8 @@ class DailyData:
         """The view of a position opened on `opened_on` at the live `price` under its pinned exit
         `rules`, from the sessions before the trade date (`view_from_bars`, as the backtest builds
         it): the peak from the highs of the sessions from `opened_on` on, those before the
-        `DAILY_SESSIONS` window read from the store, so a long hold sees its whole peak."""
+        `DAILY_SESSIONS` window read from the store, so a long hold sees its whole peak; the
+        closes since `opened_on` (the tennis ball's) only when the window holds them all."""
         bars = self.bars(instrument_id)
         frame = bars.tail(history_sessions(rules))
 
@@ -265,10 +266,13 @@ class DailyData:
             values = part[name].to_list() if part.height else []
             return [require_exact(v, name, floats=True) for v in values]
 
-        held = column(bars.filter(pl.col("date") >= opened_on), "high") if bars.height else []
+        since = bars.filter(pl.col("date") >= opened_on) if bars.height else bars
+        held = column(since, "high")
+        closes: list[Decimal] | None = column(since, "close")
         if self.first_session is not None and opened_on < self.first_session and reads_peak(rules):
             older = self._high_before(instrument_id, opened_on)
             held = held if older is None else [older, *held]
+            closes = None
         return view_from_bars(
             price,
             rules,
@@ -277,6 +281,7 @@ class DailyData:
             column(frame, "low"),
             column(frame, "high"),
             held,
+            closes,
         )
 
     def _high_before(self, instrument_id: uuid.UUID, opened_on: date) -> Decimal | None:

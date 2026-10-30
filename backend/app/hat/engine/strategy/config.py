@@ -451,6 +451,29 @@ class ExitRegime(Model):
     enabled: bool = False
 
 
+class ExitTopSignal(Model):
+    """S1 plan Addendum F: a nightly full exit at the next open after a session whose decline is
+    the largest daily % decline of the last `lookback` sessions on the largest volume of them,
+    or, with `stage4`, a session that closed in stage 4 (the close below a falling SMA200,
+    against 21 sessions before). In no stack unless added."""
+
+    rule: Literal["top_signal"]
+    lookback: int = Field(default=252, ge=2, le=500)
+    stage4: bool = True
+    enabled: bool = True
+
+
+class ExitTennisBall(Model):
+    """S1 plan Addendum G: once the best price since entry reached +`at_r` R, `sessions` sessions
+    without a new closing high (from the entry session on) move the stop up to breakeven
+    (never down); evaluated at the close. In no stack unless added."""
+
+    rule: Literal["tennis_ball"]
+    at_r: float = Field(default=1.0, gt=0, le=100)
+    sessions: int = Field(default=10, ge=1, le=252)
+    enabled: bool = True
+
+
 ExitRuleModel = (
     ExitHardStop
     | ExitBreakeven
@@ -467,6 +490,8 @@ ExitRuleModel = (
     | ExitEarlyFailure
     | ExitMaxHold
     | ExitRegime
+    | ExitTopSignal
+    | ExitTennisBall
 )
 ExitRule = Annotated[
     ExitRuleModel,

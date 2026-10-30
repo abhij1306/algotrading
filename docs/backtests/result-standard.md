@@ -294,9 +294,9 @@ before entry). `by_cap_bucket` is keyed `null` while cap is null (below).
   remainder, so a trade's legs sum to its net P&L, fees and R exactly. Entry, risk, features,
   `mfe_r` and `mae_r` are the trade's on every leg. Metrics, breakdowns, `stocks.csv` and
   `binding` count trades by `trade_id` (a trade's exit date is its last leg's).
-- `exit_reason` adds `trailing_atr`, `breakeven_stop`, `raised_stop` (a hard stop above the
-  initial one that no trail is credited with) and the engine's other exits as it names them
-  (`early_failure`, `demerger`, `delisted`, ...): `max_hold` is `time_stop`, `pct_gain_target`
+- `exit_reason` adds `trailing_atr`, `breakeven_stop`, `tennis_ball_stop`, `raised_stop` (a hard
+  stop above the initial one that no trail is credited with) and the engine's other exits as it
+  names them (`early_failure`, `top_signal`, `demerger`, `delisted`, ...): `max_hold` is `time_stop`, `pct_gain_target`
   a `partial_target`, a close below the SMA `sma<n>_close` with the strategy's own SMA length
   (`sma20_close`, `sma50_close`; `sma_close` when the length is unknown).
 - `refusals.csv`: `fwd_r_20d_gross`, `fwd_r_60d_gross` are the R at the close 20 and 60 sessions
