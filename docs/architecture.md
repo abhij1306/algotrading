@@ -38,7 +38,7 @@ Nightly (jobs chained with `after`, keyed `(job, trade_date)`):
 ```text
 ingest.nightly (NSE MCP from 18:00, bhavcopy 22:00) -> raw bars + index/breadth, then each after it:
   quality.gate ─┐
-  ca.adjust ────┴> features -> regime -> allocate -> scan -> watchlist digest
+  ca.adjust ────┴> features -> regime -> allocate -> scan (+ rotation ranking) -> watchlist digest
   (ca.adjust: corporate actions, the day's dividends and demerger notices, lineage, trade dividends,
   the version-ledger projection check)
   coverage.check, exits.close_gaps
@@ -64,7 +64,13 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   passes the scan a cache (`ScanInputs.memo`) that holds only values computed from bars up to
   their own date, and reads back `ScanResult.funnel`, the stock-days passing each setup gate.
 - **Rotation strategies** (a config's `rotation` block) skip the scan and the exit stack: the
-  pure ranking and order rules are `engine/rotation.py`, the backtest's book `backtest/rotation.py`.
+  pure ranking, selection and order rules are `engine/rotation.py`, the backtest's book
+  `backtest/rotation.py` and the live (paper) book `engine/rotation_live.py`, both calling them.
+  Live ranks in the nightly scan on a rebalance close (`rotation.planned`) and trades at
+  `rotation.rebalance` (`daily/rotation.py`); a rotation holding takes no slot or open risk.
+- **Shadow-day replay** (`daily/replay.py`, runbook): for a past session D, the live path's
+  watchlist, planned entries, rotation night and close-phase exits beside the backtest engine's
+  on the same store and config, each difference with its cause; reads nothing after D.
 - **One strategy registry:** `engine/strategy/registry.py:STRATEGIES`, read from the seed files
   `engine/strategy/seeds/<name>.yaml` (a header with `sleeve`, `persona` and `regime`, then the
   config). `regime` names the strategy's row in the regime model's multiplier table; a strategy
@@ -177,7 +183,7 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 | 07:00-07:45 | calendar.refresh, bands.nightly (Saturday 09:00 reference.weekly) |
 | 08:30, 09:05 | Telegram login prompts |
 | 08:40-08:45 | ca.rescale, gtt.check, live.prepare |
-| 09:15-09:20 | modes.apply, gapscan |
+| 09:15-09:20 | modes.apply, gapscan; 09:20 rotation.rebalance (paper) |
 | 09:20-15:05 | triggers, routing, stops on fill |
 | 15:05-15:10 | exits.close; 15:10 gtt.swap; 15:15 sales cut-off (continuous trading ends, closing auction) |
 | 15:30-15:45 | watchlist.expire, trade.end_session, reports and digests |

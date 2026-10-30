@@ -9,6 +9,12 @@ decision session, forward-filled over at most `FFILL_SESSIONS` sessions without 
 so a name's score depends on the others'. `select` keeps a holding while it ranks within the
 buffer and fills the rest best first; `order_diff` turns the target list into sells, trims, buys
 and top-ups at whole shares, skipping a change under the threshold.
+
+`ranking`, `targets` and `plan` compose them as both books decide: the backtest's
+(`backtest/rotation.py`) on the decision close, and live's (`engine/rotation_live.py`), which
+ranks on that close and selects at the next open, where it knows what it can buy. `orders`,
+`sale_reason` and `buy_share` are the rebalance's own rules, shared the same way, and
+`lot_sales` splits a sale over a live holding's lots (a top-up is a lot of its own).
 """
 
 from __future__ import annotations
@@ -18,23 +24,38 @@ from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
+from typing import TypeVar
 
 import numpy as np
 
+from ..money import require_exact
 from .strategy.config import Rotation
 
 __all__ = [
     "BUY",
+    "MARKET_FILTER",
+    "NOT_ELIGIBLE",
+    "OUT_OF_BUFFER",
+    "PLAYBOOK",
     "SELL",
     "TOP_UP",
     "TRIM",
+    "TRIMMED",
     "Order",
+    "Plan",
+    "buy_share",
     "is_rebalance",
+    "lot_sales",
     "order_diff",
+    "orders",
+    "plan",
     "ranked",
+    "ranking",
     "riskadj_parts",
+    "sale_reason",
     "scores",
     "select",
+    "targets",
     "window_rows",
     "zscores",
 ]
@@ -42,7 +63,13 @@ __all__ = [
 FFILL_SESSIONS = 10  # a close carries over at most this many sessions without a bar
 SESSIONS_PER_YEAR = 252  # annualises the volatility
 SELL, TRIM, BUY, TOP_UP = "sell", "trim", "buy", "top_up"
+PLAYBOOK = "rotation"  # a rotation trade's playbook: its signals live, its trades in a run
+OUT_OF_BUFFER = "rotation_out"  # a sale: ranked below the buffer
+NOT_ELIGIBLE = "rotation_not_eligible"  # a sale: failed the universe stage, or not scored
+MARKET_FILTER = "rotation_market_filter"  # a sale: the regime gate off on the rebalance close
+TRIMMED = "rotation_trim"
 _HUNDRED = Decimal(100)
+K = TypeVar("K")  # a lot's key
 
 
 def is_rebalance(night: date, next_session: date, cadence: str) -> bool:
@@ -235,3 +262,120 @@ def order_diff(
         elif reweight and change > floor and (shares := _shares(change, price)) > 0:
             buys.append(Order(name, TOP_UP, shares))
     return [*sells, *trims, *buys]
+
+
+@dataclass(frozen=True)
+class Plan:
+    """A rebalance decided on `night`: the eligible names best first with their scores, the
+    target list, and whether the market filter emptied it."""
+
+    night: date
+    ranking: tuple[tuple[str, float], ...]
+    target: tuple[str, ...]
+    filtered: bool = False
+
+
+def ranking(
+    passers: Sequence[str], closes: np.ndarray, rules: Rotation, pending: Collection[str] = ()
+) -> tuple[tuple[str, float], ...]:
+    """`passers` (the members passing the universe stage on the decision close; `closes` their
+    total-return window, a column each) less the factor-pending names, scored and ranked."""
+    columns = [n for n, name in enumerate(passers) if name not in pending]
+    names = [passers[n] for n in columns]
+    values = scores(closes[:, columns], rules) if names else np.empty(0)
+    return tuple(ranked(names, values))
+
+
+def targets(
+    ranked_names: Sequence[tuple[str, float]],
+    held: Collection[str],
+    rules: Rotation,
+    *,
+    pending: Collection[str] = (),
+    gate_on: bool,
+    can_buy: Callable[[str], bool],
+) -> tuple[tuple[str, ...], bool]:
+    """(the target list, whether the market filter emptied it): empty under the market filter
+    with the gate off, else `select` with the hold buffer, a held factor-pending name kept
+    without a rank."""
+    if rules.market_filter and not gate_on:
+        return (), True
+    found = select(
+        [name for name, _ in ranked_names],
+        held,
+        rules.top_n,
+        rules.buffer_rank,
+        can_buy,
+        kept=[h for h in held if h in pending],
+    )
+    return tuple(found), False
+
+
+def plan(
+    night: date,
+    passers: Sequence[str],
+    closes: np.ndarray,
+    rules: Rotation,
+    held: Collection[str],
+    *,
+    pending: Collection[str] = (),
+    gate_on: bool,
+    can_buy: Callable[[str], bool],
+) -> Plan:
+    """The rebalance decided on `night`'s close (`ranking`, then `targets`)."""
+    ranks = ranking(passers, closes, rules, pending)
+    target, filtered = targets(
+        ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy
+    )
+    return Plan(night, ranks, target, filtered=filtered)
+
+
+def orders(
+    chosen: Plan,
+    held: Mapping[str, int],
+    prices: Mapping[str, Decimal],
+    capital: Decimal,
+    rules: Rotation,
+) -> list[Order]:
+    """`order_diff` of `chosen`'s target under `rules`, on `capital`, the sleeve's."""
+    return order_diff(
+        chosen.target,
+        held,
+        prices,
+        capital,
+        rules.top_n,
+        require_exact(rules.min_change_pct, "min_change_pct", floats=True),
+        reweight=rules.reweight,
+    )
+
+
+def sale_reason(chosen: Plan, name: str) -> str:
+    """Why a holding not in the target is sold: the market filter, out of the buffer (ranked),
+    or not eligible (not ranked)."""
+    if chosen.filtered:
+        return MARKET_FILTER
+    return OUT_OF_BUFFER if any(n == name for n, _ in chosen.ranking) else NOT_ELIGIBLE
+
+
+def buy_share(outlay: Decimal, cash: Decimal) -> Decimal:
+    """The share of each buy the cash pays when it cannot pay all of them (`outlay`, their cost
+    with charges): 1 when it can, 0 without cash or outlay."""
+    if outlay <= 0 or cash <= 0:
+        return Decimal(0)
+    return min(Decimal(1), cash / outlay)
+
+
+def lot_sales(qty: int, lots: Sequence[tuple[K, int]]) -> list[tuple[K, int]]:
+    """Split a sale of `qty` shares over a holding's `lots` (key, open shares), oldest first:
+    the newest lot sells first, so a trim undoes the latest top-up; never more than a lot
+    holds or `qty` in all."""
+    out: list[tuple[K, int]] = []
+    left = qty
+    for key, open_qty in reversed(lots):
+        if left <= 0:
+            break
+        take = min(left, open_qty)
+        if take > 0:
+            out.append((key, take))
+            left -= take
+    return out

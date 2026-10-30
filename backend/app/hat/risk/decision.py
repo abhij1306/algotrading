@@ -7,8 +7,11 @@ raises: a missing, non-finite or float input, or any arithmetic failure, is a RE
 default (fail closed).
 
 An exit or a protective-stop move is always accepted: no cap, kill, pause or exposure level can
-trap a position (HAT-RISK-035). Anything that is not exactly one of those actions is an entry
-and is checked in full, so an action name cannot be used to skip a check.
+trap a position (HAT-RISK-035). A rotation buy (`ROTATION_BUY`, decisions.md "Momentum rotation")
+has no stop, so no per-trade risk, slot or open-risk cap applies to it: it is refused by the
+kills, a pause, a closed market, a stale feed and a failed quality gate as an entry is, and its
+requested shares are cut to the free cash. Anything that is not exactly one of those actions is
+an entry and is checked in full, so an action name cannot be used to skip a check.
 
 The order of the entry checks is fixed, and the first failing one names the reason.
 """
@@ -30,12 +33,20 @@ from .exposure import LadderState, risk_multiplier
 from .kill import KillState
 from .policy import PolicyError, PolicyVersion, RiskPolicy, effective_version
 from .sessions import SessionCalendar, SessionState
-from .sizing import MissingInputError, SizingInputError, SizingInputs, exact_input, size_position
+from .sizing import (
+    MissingInputError,
+    SizingInputError,
+    SizingInputs,
+    exact_input,
+    rotation_quantity,
+    size_position,
+)
 
 logger = logging.getLogger(__name__)
 
 ENTRY = "entry"
 EXIT_ACTIONS = frozenset({"exit", "stop_move"})
+ROTATION_BUY = "rotation_buy"  # a rotation's buy or top-up of a set number of shares
 
 
 class Reason(StrEnum):
@@ -113,6 +124,8 @@ class SignalContext:
     quality_failed: bool | None = None
     kill: KillState | None = None
     calendar: SessionCalendar | None = None
+    # A rotation buy's shares (`ROTATION_BUY`, from `engine.rotation.orders`); unread otherwise.
+    quantity: int | None = None
 
 
 @dataclass(frozen=True)
@@ -422,11 +435,62 @@ def _entry_decision(ctx: SignalContext) -> RiskDecision:
     )
 
 
+def _rotation_decision(ctx: SignalContext) -> RiskDecision:
+    """A rotation buy: the kill, pause, market and data checks of an entry, then its requested
+    shares cut to the free cash. No stop (recorded as 0) and no risk amount."""
+    at = _require(ctx.at, "at")
+    if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
+        raise MissingInputError("at: needs an aware instant")
+    version = effective_version(_require(ctx.policy_versions, "policy_versions"), at)
+    if version is None:
+        raise MissingInputError("policy: no version in force")
+    keep = version.version_id
+    entry = exact_input(ctx.entry_price, "entry_price")
+    cash = exact_input(ctx.free_cash, "free_cash", cash=True)
+    kill, calendar = _require(ctx.kill, "kill"), _require(ctx.calendar, "calendar")
+    if not isinstance(kill, KillState) or not isinstance(calendar, SessionCalendar):
+        raise MissingInputError("kill or calendar: wrong type")
+    stale, failed = _flag(ctx.feed_stale, "feed_stale"), _flag(ctx.quality_failed, "quality")
+    requested = _count(ctx.quantity, "quantity")
+    session = calendar.state(at)
+    if session is SessionState.UNKNOWN:
+        raise MissingInputError("calendar: no row for the trade date")
+    checks = (
+        (kill.account_tripped, Reason.KILL_ACCOUNT),
+        (kill.bot_tripped, Reason.KILL_BOT),
+        (kill.health_tripped, Reason.KILL_HEALTH),
+        (kill.paused, Reason.BOT_PAUSED),
+        (session is not SessionState.OPEN, Reason.MARKET_CLOSED),
+        (stale, Reason.STALE_FEED),
+        (failed, Reason.QUALITY_FAILED),
+        (requested < 1, Reason.SIZE_ZERO_POSITION),
+    )
+    for refused, reason in checks:
+        if refused:
+            return _reject(reason, version=keep)
+    quantity, binding = rotation_quantity(requested, entry, cash)
+    if quantity < 1:
+        return _reject(Reason.SIZE_ZERO_CASH, version=keep)
+    return RiskDecision(
+        accepted=True,
+        quantity=quantity,
+        stop=Decimal(0),
+        risk_amount=Decimal(0),
+        warnings=() if binding == "rotation" else (f"size_bound_by_{binding}",),
+        policy_version_id=keep,
+        binding=binding,
+        regime_mult=ctx.regime_mult,
+        health_mult=ctx.health_mult,
+    )
+
+
 def decide(ctx: SignalContext) -> RiskDecision:
     """ACCEPT or REJECT for one signal; total, never raises (HAT-RISK-101)."""
     try:
         if ctx.action in EXIT_ACTIONS:
             return _exit_decision(ctx)
+        if ctx.action == ROTATION_BUY:
+            return _rotation_decision(ctx)
         return _entry_decision(ctx)
     except (MissingInputError, PolicyError):
         return _reject(Reason.MISSING_INPUT)

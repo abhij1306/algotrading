@@ -44,6 +44,7 @@ import polars as pl
 from ..costs import BacktestFills
 from ..engine import rotation
 from ..engine.positions import trade_r
+from ..engine.rotation import Plan
 from ..engine.strategy.config import Rotation, StrategyConfig
 from ..money import dividend_credit, require_exact
 from .report import END_OF_PERIOD, FillRow, LegRow, SignalRow, TradeRow
@@ -56,11 +57,7 @@ __all__ = [
     "TrCloses",
 ]
 
-PLAYBOOK = "rotation"  # a rotation trade's playbook in the result files
-OUT_OF_BUFFER = "rotation_out"  # ranked below the buffer
-NOT_ELIGIBLE = "rotation_not_eligible"  # failed the universe stage, or not scored
-MARKET_FILTER = "rotation_market_filter"  # the regime gate off on the rebalance close
-TRIMMED = "rotation_trim"
+PLAYBOOK = rotation.PLAYBOOK  # a rotation trade's playbook in the result files
 HOLD = "hold"
 CASH = "cash"  # a buy the cash cut down or out
 _ZERO = Decimal(0)
@@ -129,17 +126,6 @@ class _Holding:
     def avg(self) -> Decimal:
         """The mean price its shares were bought at, to the store's 4 places."""
         return (self.cost / self.bought).quantize(_PRICE) if self.bought else _ZERO
-
-
-@dataclass(frozen=True)
-class Plan:
-    """A rebalance decided on `night`: the eligible names best first with their scores, the
-    target list, and whether the market filter emptied it."""
-
-    night: date
-    ranking: tuple[tuple[str, float], ...]
-    target: tuple[str, ...]
-    filtered: bool = False
 
 
 @dataclass(frozen=True)
@@ -213,21 +199,10 @@ class RotationBook:
         factor-pending names, scored and ranked, and the target list (`rotation.select`), a
         held factor-pending name kept without a rank. Under the market filter with the gate off
         the target is empty."""
-        columns = [n for n, name in enumerate(passers) if name not in pending]
-        names = [passers[n] for n in columns]
-        values = rotation.scores(closes[:, columns], self.rules) if names else np.empty(0)
-        ranking = tuple(rotation.ranked(names, values))
-        if self.rules.market_filter and not gate_on:
-            return Plan(night, ranking, (), filtered=True)
-        target = rotation.select(
-            [name for name, _ in ranking],
-            self.holdings,
-            self.rules.top_n,
-            self.rules.buffer_rank,
-            can_buy,
-            kept=[h for h in self.holdings if h in pending],
-        )
-        return Plan(night, ranking, tuple(target))
+        return rotation.plan(
+            night, passers, closes, self.rules, self.holdings,
+            pending=pending, gate_on=gate_on, can_buy=can_buy,
+        )  # fmt: skip
 
     # --- the session -----------------------------------------------------------------------
 
@@ -273,15 +248,10 @@ class RotationBook:
             name: require_exact(value, "score", floats=True).quantize(_SCORE)
             for name, value in plan.ranking
         }
-        orders = rotation.order_diff(
-            plan.target,
-            {name: h.qty for name, h in self.holdings.items()},
-            market.opens,
-            capital,
-            self.rules.top_n,
-            require_exact(self.rules.min_change_pct, "min_change_pct", floats=True),
-            reweight=self.rules.reweight,
-        )
+        orders = rotation.orders(
+            plan, {name: h.qty for name, h in self.holdings.items()}, market.opens, capital,
+            self.rules,
+        )  # fmt: skip
         each = (capital / self.rules.top_n).quantize(Decimal("0.01"))
         for name in plan.target:
             if name in self.holdings:
@@ -297,13 +267,7 @@ class RotationBook:
         for order in orders:
             name = order.instrument_id
             if order.action == rotation.SELL:
-                why = (
-                    MARKET_FILTER
-                    if plan.filtered
-                    else OUT_OF_BUFFER
-                    if name in rank
-                    else NOT_ELIGIBLE
-                )
+                why = rotation.sale_reason(plan, name)
                 holding = self.holdings[name]
                 price, blocked = market.sell(name)
                 if price is None:  # waits for the next open it can sell at
@@ -317,7 +281,7 @@ class RotationBook:
                 if price is None:
                     row(name, "trim", blocked, 0, None)
                     continue
-                self._sell(self.holdings[name], order.qty, price, day, TRIMMED, None, None)
+                self._sell(self.holdings[name], order.qty, price, day, rotation.TRIMMED, None, None)
                 row(name, "trim", None, order.qty, price)
             else:
                 buys.append(order)
@@ -347,8 +311,7 @@ class RotationBook:
             else:
                 priced.append((order, price))
         total = sum((self.fills.outlay(o.qty, p, day) for o, p in priced), _ZERO)
-        available = market.cash()
-        share = min(Decimal(1), available / total) if total > 0 and available > 0 else _ZERO
+        share = rotation.buy_share(total, market.cash())
         for order, price in priced:
             name = order.instrument_id
             qty = int((order.qty * share).to_integral_value(ROUND_FLOOR))

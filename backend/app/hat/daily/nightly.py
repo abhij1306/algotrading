@@ -56,6 +56,7 @@ from ..engine.rescale import (
     held_and_watchlisted,
     rescale_open_positions,
 )
+from ..engine.rotation_live import plan_night
 from ..engine.scan import ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
@@ -365,7 +366,8 @@ class Nightly:
 
     def scan(self, day: date) -> JobResult:
         """Each active bot's watchlist for the next session from the bars of `day`, without the
-        instruments the quality gate excluded (HAT-DATA-064). Then the next session's actions of
+        instruments the quality gate excluded (HAT-DATA-064), and a rotation bot's ranking on a
+        rebalance night (`rotation_live.plan_night`). Then the next session's actions of
         the names new to it are looked up and stored (`_new_names_actions`): `ca.adjust` ran
         before the scan and knew only tonight's held and watchlisted names."""
         rows = 0
@@ -385,6 +387,8 @@ class Nightly:
                         found = _without(found, excluded)
                     inputs[index] = found
                 published = scan_and_publish(session, bot.id, inputs[index], target, self._now())
+                # a rotation ranks on the same inputs on its rebalance nights (`rotation_live`)
+                plan_night(session, bot.id, inputs[index], target, self._now())
                 session.commit()
                 rows += published.rows
         self._new_names_actions(day, target)

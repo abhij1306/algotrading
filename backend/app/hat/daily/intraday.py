@@ -9,6 +9,9 @@
   pre-open playbooks (`Playbook.preopen`, such as the episodic pivot) and are subscribed; the
   gappers and their opens are recorded (`gapscan.completed`) for a restart; the scan alerts when
   it finished at or after 09:20.
+- `rotation.rebalance` (09:20, with the first bar): the rotation bots' rebalances recorded the
+  night before, on paper (`daily/rotation.py`); `live.prepare` subscribes and prices the first
+  `PLANNED_DEPTH` names of each ranking.
 - `exits.close_shadow` (15:05-15:10): the close-phase exits of the virtual positions no broker
   account's `TradeManager` handles.
 - `watchlist.expire` (15:30, the session close): today's Watchlisted rows that never triggered end
@@ -62,6 +65,7 @@ from ..engine.live_entry import (
     watchlist_candidates,
 )
 from ..engine.portfolio.allocation_service import policy_at
+from ..engine.rotation_live import planned_instruments
 from ..engine.shadow import expire_watchlist
 from ..engine.trigger import TriggerMonitor
 from ..engine.watchlist import bot_universe_members
@@ -87,6 +91,7 @@ from .exits import ShadowExits
 from .gates import CalendarSource
 from .market import DailyBook
 from .prices import PriceBook
+from .rotation import REBALANCE_AT, ROTATION_REBALANCE, Rotations
 
 __all__ = [
     "EXITS_CLOSE_SHADOW",
@@ -112,6 +117,9 @@ GAPSCAN_UNTIL = time(9, 20)  # a scan that cannot start before the first bar is 
 WATCHLIST_EXPIRE_AT = time(15, 30)  # the session close: a Watchlisted row ends with its day
 ONE_MINUTE = timedelta(minutes=1)
 GAPPERS_RECORDED = "gapscan.completed"
+# How deep into a rotation's ranking the day's subscriptions reach: its buys fill the top `top_n`
+# best first, passing over a name without a usable price (a seed's buffer is 40).
+PLANNED_DEPTH = 60
 
 Gappers = tuple[Mapping[str, uuid.UUID], Mapping[str, Decimal]]  # symbol -> id, symbol -> open
 
@@ -133,6 +141,7 @@ class Intraday:
         notifier: Notifier,
         gap_client: Callable[[], McpClient | None],
         calendar: CalendarSource,
+        rotations: Rotations | None = None,
     ) -> None:
         self._session_factory = session_factory
         self._clock = clock
@@ -145,6 +154,7 @@ class Intraday:
         self._notifier = notifier
         self._gap_client = gap_client
         self._calendar = calendar
+        self.rotations = rotations
 
     def _now(self) -> datetime:
         return utc_now(self._clock)
@@ -215,8 +225,10 @@ class Intraday:
                 monitor.add(candidate)
             for key in _signal_keys(session, day):
                 monitor.mark_fired(key)
+            planned = _planned_symbols(session, day)
             inputs = load_inputs(session, day)
-            self._prices.track_session(session, _day_instruments(session, day))
+            inputs = replace(inputs, watchlist=inputs.watchlist | frozenset(planned.values()))
+            self._prices.track_session(session, _day_instruments(session, day) | set(planned))
             gappers = _recorded_gappers(session, day)
         self._service.monitor = monitor
         if self._subs is not None:
@@ -485,6 +497,18 @@ def _day_instruments(session: Session, day: date) -> set[uuid.UUID]:
     return {*watched, *held}
 
 
+def _planned_symbols(session: Session, day: date) -> dict[uuid.UUID, str]:
+    """The instruments the day's rotation rebalances may buy (`planned_instruments`, the first
+    `PLANNED_DEPTH` of each ranking) with their symbols: subscribed and priced as the watchlist."""
+    wanted = planned_instruments(session, day, PLANNED_DEPTH)
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.symbol).where(HatInstrument.id.in_(wanted))
+    )
+    return dict(rows.tuples().all())
+
+
 def _open_position_symbols(session: Session) -> dict[uuid.UUID, str]:
     """Each open position's instrument with its symbol (virtual ones too, as `load_inputs`)."""
     held = set(
@@ -523,6 +547,20 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
             retry_after=ONE_MINUTE,
             after=(LIVE_PREPARE,),
             shift=intraday.open_shift,
+        ),
+        *(
+            ()
+            if intraday.rotations is None
+            else (
+                ScheduledJob(
+                    ROTATION_REBALANCE,
+                    REBALANCE_AT,
+                    intraday.rotations.rebalance,
+                    retry_after=ONE_MINUTE,
+                    after=(MODES_APPLY,),
+                    shift=intraday.open_shift,
+                ),
+            )
         ),
         ScheduledJob(
             EXITS_CLOSE_SHADOW,

@@ -98,6 +98,7 @@ from .nightly import (
 )
 from .periodic import Heartbeats
 from .prices import LivePrices, PriceBook, SaleBands, stale_feed
+from .rotation import ROTATION_REBALANCE, Rotations
 
 __all__ = [
     "ALERT_POOL",
@@ -205,6 +206,7 @@ JOB_DEADLINES: Mapping[str, timedelta] = {
     LIVE_PREPARE: timedelta(minutes=15),  # 08:45: armed by the pre-open
     MODES_APPLY: timedelta(minutes=10),
     GAPSCAN: timedelta(minutes=10),  # window 09:16-09:20
+    ROTATION_REBALANCE: timedelta(minutes=10),  # 09:20: the rotations' open
     EXITS_CLOSE: timedelta(minutes=10),  # window 15:05-15:10
     EXITS_CLOSE_SHADOW: timedelta(minutes=10),
     GTT_SWAP: timedelta(minutes=15),  # 15:10: the overnight stops are GTTs
@@ -432,6 +434,14 @@ def build(
     subscriptions = LiveSubscriptions(
         registry, subscribe, unsubscribe, subscription_alert(notifier, clock)
     )
+    rotations = Rotations(
+        session_factory=sf,
+        clock=clock,
+        contexts=contexts,
+        prices=live_prices,
+        calendar=calendar,
+        notifier=notifier,
+    )
     intraday = Intraday(
         session_factory=sf,
         clock=clock,
@@ -444,6 +454,7 @@ def build(
         notifier=notifier,
         gap_client=parts.mcp,
         calendar=calendar,
+        rotations=rotations,
     )
     reports = Reports(client, sf, links=parts.links, clock=clock)
     telegram = TelegramService(

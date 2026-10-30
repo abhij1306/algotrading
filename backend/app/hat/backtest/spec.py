@@ -431,8 +431,6 @@ class RunSpec:
         for every state: a spec that exists is a valid run."""
         if self.for_promotion:
             self.conventions.check_promotion(self.fills.slippage_bps)
-            if self.config.rotation is not None:  # no live rotation sleeve yet
-                raise BacktestError("backtest_promotion_rotation")
         weight = sleeve_weight(self)
         if self.co_sleeves:
             if self.for_promotion:  # evidence is of one sleeve

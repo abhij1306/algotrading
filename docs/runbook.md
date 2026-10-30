@@ -200,6 +200,21 @@ job's files are under `HAT_DATA_ROOT/backtests/jobs/<job id>/` (`err.log` holds 
 stderr). The job list is in memory: after a restart it is empty, and a child still running
 finishes and records its runs.
 
+### Shadow-day replay
+
+`python -m app.hat.daily.replay --date YYYY-MM-DD [--bot <id> ...] [--out FILE]` (backend venv,
+`HAT_DATA_ROOT` set) compares what the live daily path decides on session D's close with what the
+backtest engine decides for the same night on the same store and config: each bot's regime gate,
+watchlist rows and their planned entry (pivot and stop, as shares of D's close), a rotation's
+ranking and targets on a rebalance night, and the close-phase exits of the positions the live
+book held at D's close. It prints one JSON report: `compared` (sizes), `counts` by kind and cause,
+and every difference with its cause (`membership`, `quality_excluded`, `factor_pending`,
+`no_bars`, `bars_differ`, `regime_inputs`, `passers_differ`, `ranking_differs`, or
+`same_inputs`: the code paths decide apart on the same inputs, a bug to chase). It reads nothing
+after D (`replay_lookahead`), writes nothing (read-only transaction) and needs D's next session
+stored (`replay_no_next_session`, or the backtest loader's `backtest_no_data`). Without `--bot`
+it replays every active bot with a live version. The intraday 5-minute trigger is not replayed.
+
 ### Daily data update
 
 `python -m app.hat.data.update` (or `scripts/hat_data_update.sh`, from any directory) brings

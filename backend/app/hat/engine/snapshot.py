@@ -35,6 +35,7 @@ from ..money import require_exact
 from ..risk.caps import OpenPosition
 from ..time import as_utc, day_bounds, trade_date_of
 from . import journal, lifecycle
+from .rotation import PLAYBOOK as ROTATION_PLAYBOOK
 
 __all__ = [
     "HARD_STOP",
@@ -73,6 +74,9 @@ def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
 
 # A veto trade is a virtual position of a confirm or auto signal (`positions.is_veto`).
 _NOT_VETO = or_(HatPosition.is_virtual.is_(False), HatSignal.mode == Mode.SHADOW)
+# A rotation holding has no stop and takes no slot, open risk or per-trade risk (decisions.md
+# "Momentum rotation"), as in the backtest's book.
+_NOT_ROTATION = HatSignal.playbook != ROTATION_PLAYBOOK
 
 
 def _slots(
@@ -85,7 +89,8 @@ def _slots(
 
     A slot is an open position, or a signal whose entry is triggered, placed or awaiting
     approval and has no position yet. A veto trade (the virtual trade of a skipped or expired
-    confirm signal, HAT-EXEC-032) is scored only and holds no slot. A position with no price in
+    confirm signal, HAT-EXEC-032) is scored only and holds no slot, nor does a rotation holding
+    (`_NOT_ROTATION`). A position with no price in
     `last_prices` is valued at its entry. A real position counts, besides its open shares, the
     unfilled remainder of its entry while that still works (`_remainders`).
 
@@ -95,14 +100,21 @@ def _slots(
     prices = last_prices or {}
     pending = session.scalars(
         select(HatSignal).where(
-            HatSignal.bot_id.in_(bot_ids), HatSignal.state.in_(_SLOT_PENDING_STATES)
+            HatSignal.bot_id.in_(bot_ids),
+            HatSignal.state.in_(_SLOT_PENDING_STATES),
+            _NOT_ROTATION,
         )
     ).all()
     slots: list[OpenPosition] = []
     positions = session.scalars(
         select(HatPosition)
         .outerjoin(HatSignal, HatSignal.id == HatPosition.signal_id)
-        .where(HatPosition.bot_id.in_(bot_ids), HatPosition.closed_at.is_(None), _NOT_VETO)
+        .where(
+            HatPosition.bot_id.in_(bot_ids),
+            HatPosition.closed_at.is_(None),
+            _NOT_VETO,
+            _NOT_ROTATION,
+        )
     ).all()
     remainders = _remainders(
         session, [p.signal_id for p in positions if not p.is_virtual], trade_date
