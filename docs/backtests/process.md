@@ -145,7 +145,7 @@ whose audit warns or fails):
 - The S1 setups diagnosis: `python scripts/research/s1_setups_diag.py sweeps --out DIR` writes
   the setups, NSE-stocks and leave-one-out variants files; `... loo --log <the leave-one-out
   sweep's log>` prints each rule's extra entries (shadow trades: no cash or slot limit, the
-  normal exits) against the shadow run.
+  normal exits) against the shadow run. Both paths stay inside the working directory.
 - A run with a pre-open playbook also writes `ep_candidates.csv` and the
   `breakdowns.episodic_pivot` tables (result-standard.md). Its audit: `python
   scripts/research/s2_ep_audit.py --run-id <id> [--seed N]` samples 20 EP entries and 10 near

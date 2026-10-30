@@ -57,6 +57,7 @@ TT = [  # the trend template's eight price checks (RS rank added per playbook)
     {"type": "pct_from_52w_low", "params": {"min_pct": 30}},
     {"type": "pct_from_52w_high", "params": {"max_pct_below": 25}},
 ]
+ONE_SETUP = "one_setup_per_instrument=true"
 STAGE_GATES = frozenset({"sma_above", "sma_rising", "pct_from_52w_low", "pct_from_52w_high"})
 
 
@@ -311,7 +312,7 @@ RULES: tuple[Rule, ...] = (
             }
         ),
     ),
-    Rule("dry_up", "volume dry-up", _params(dict.fromkeys(DETECTORS, DRY_OFF))),
+    Rule("dry_up", "volume dry-up", _params({d: dict(DRY_OFF) for d in DETECTORS})),
     Rule(
         "time_compression",
         "time compression (VCP)",
@@ -360,7 +361,7 @@ def rule_sets(rule: Rule, names: Sequence[str] = SETUPS) -> list[str]:
     books = [playbook(n) for n in names]
     if rule.books is not None:
         books = rule.books(books)
-    return [books_set(books), "one_setup_per_instrument=true", *rule.sets, *EXITS]
+    return [books_set(books), ONE_SETUP, *rule.sets, *EXITS]
 
 
 # --- the sweeps -------------------------------------------------------------------------------
@@ -386,7 +387,7 @@ def setups_sweep() -> dict[str, Any]:
     combined = _variant(
         "r3",
         "setups 1-5 together, one setup per instrument, leader_rs",
-        [books_set([playbook(n) for n in SETUPS]), "one_setup_per_instrument=true"],
+        [books_set([playbook(n) for n in SETUPS]), ONE_SETUP],
         ACCOUNT,
     )
     return {
@@ -402,7 +403,7 @@ def universe_sweep() -> dict[str, Any]:
         "setups 1-5 together on every NSE stock, turnover >= 5 crore",
         [
             books_set([playbook(n) for n in SETUPS]),
-            "one_setup_per_instrument=true",
+            ONE_SETUP,
             "universe[min_turnover].params.inr_cr=5",
         ],
         ACCOUNT,
@@ -436,7 +437,17 @@ def loo_sweep(rules: Iterable[Rule] = RULES) -> dict[str, Any]:
     }
 
 
+def inside_cwd(path: Path) -> Path:
+    """`path` resolved, refused unless it stays inside the working directory."""
+    base = Path.cwd().resolve()
+    target = (base / path).resolve()
+    if not target.is_relative_to(base):
+        raise SystemExit(f"{path} is outside the working directory")
+    return target
+
+
 def write_sweeps(out: Path) -> list[Path]:
+    out = inside_cwd(out)
     out.mkdir(parents=True, exist_ok=True)
     paths = []
     for doc in (setups_sweep(), universe_sweep(), loo_sweep()):
@@ -589,13 +600,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(path)
         return 0
     root = Path(os.environ.get("HAT_DATA_ROOT", "data_system/hat")) / "backtests" / "runs"
-    runs = logged_runs(args.log.read_text().splitlines())
+    runs = logged_runs(inside_cwd(args.log).read_text().splitlines())
     if "shadow" not in runs:
         print("no complete shadow run in the log", file=sys.stderr)
         return 1
     text = loo_report(runs, root)
     if args.out is not None:
-        args.out.write_text(text)
+        inside_cwd(args.out).write_text(text)
     print(text)
     return 0
 
