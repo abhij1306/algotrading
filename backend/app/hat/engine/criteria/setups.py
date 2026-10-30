@@ -511,6 +511,18 @@ def book_cup_handle(ctx: EvalContext, params: BookCupHandleParams) -> CriterionR
     return _with_base_number(ctx, series, threshold, cup.h0, log)
 
 
+# --- contractions inside a base (Setups 4 and 5) --------------------------------------------
+
+
+def base_contractions(
+    series: Series, threshold: Sequence[float], start: int, end: int
+) -> tuple[Contraction, ...]:
+    """The contractions of the zigzag from bar `start` (a swing high) through `end`, without the
+    tight pullback after them (`book.with_window`, which the detectors add)."""
+    swings = zigzag(series.high, series.low, threshold, start, end)
+    return tuple(contractions_of(series.high, series.low, swings))
+
+
 # --- Setup 4: power play --------------------------------------------------------------------
 
 
