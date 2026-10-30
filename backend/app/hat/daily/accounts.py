@@ -174,6 +174,7 @@ class AccountDesk:
     reconciled_at: datetime | None = None  # the last successful reconciliation
     budget_alerted_on: date | None = None  # the trade date `broker.budget_spent` was raised for
     unreachable_alerted: bool = False  # this outage's `broker.unreachable` went out
+    unreachable_seen: timedelta = timedelta(0)  # the outage the last session check read
     synced_at: datetime | None = None  # the last fill sync that read the broker's books
     fills_read_at: datetime | None = None  # the last fill sync that succeeded (ca.rescale's gate)
 
@@ -210,7 +211,10 @@ class AccountDesk:
         """The one URGENT `broker.unreachable` of an outage; told again at the next check when
         it could not be delivered."""
         down_for = timedelta(seconds=self.broker.unreachable_for())
-        due, self.unreachable_alerted = unreachable_step(down_for, self.unreachable_alerted)
+        previous, self.unreachable_seen = self.unreachable_seen, down_for
+        due, self.unreachable_alerted = unreachable_step(
+            down_for, self.unreachable_alerted, previous
+        )
         if not due:
             return
         logger.error("account %s: broker calls failing for %s", self.account_id, down_for)

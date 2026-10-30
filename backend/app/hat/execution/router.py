@@ -638,15 +638,18 @@ class ExecutionRouter:
 
     def _alert_unconfirmed(self, signal: HatSignal, tag: str) -> None:
         """`order.unconfirmed` for an entry whose outcome is unknown, once per tag: a resumed
-        entry that reads the same tag back unconfirmed is not told again."""
+        entry that reads the same tag back unconfirmed is not told again, unless the first
+        could not be delivered."""
         with self._stranded_lock:
             if tag in self._unconfirmed:
                 return
             self._unconfirmed.add(tag)
-        self._alert(ALERT_ORDER_UNCONFIRMED, signal, {"tag": tag})
+        if not self._alert(ALERT_ORDER_UNCONFIRMED, signal, {"tag": tag}):
+            with self._stranded_lock:
+                self._unconfirmed.discard(tag)
 
-    def _alert(self, code: str, signal: HatSignal, detail: dict[str, str]) -> None:
+    def _alert(self, code: str, signal: HatSignal, detail: dict[str, str]) -> bool:
         day: date = signal.trade_date or trade_date_of(signal.triggered_at)
-        self._notifier.alert(
+        return self._notifier.alert(
             code, day, {"bot_id": str(signal.bot_id), "signal_id": str(signal.id), **detail}
         )

@@ -6,8 +6,9 @@ data_root="$(realpath "${1:?usage: $0 HAT_DATA_ROOT}")"
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$units"
-# a path as a literal sed replacement: its \, & and | escaped
-lit() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+# a path as a literal sed replacement (its \, & and | escaped) and a literal in a unit (its %
+# doubled, its " and \ escaped for the quoted values)
+lit() { printf '%s' "$1" | sed -e 's/[\\"]/\\&/g' -e 's/%/%%/g' -e 's/[\\&|]/\\&/g'; }
 for unit in hat-watch.service hat-watch.timer; do
   sed -e "s|@REPO@|$(lit "$repo")|g" -e "s|@DATA_ROOT@|$(lit "$data_root")|g" \
     "$repo/deploy/systemd/$unit" >"$units/$unit"

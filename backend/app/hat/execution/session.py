@@ -130,11 +130,17 @@ def broker_health_failing(now: datetime, live: bool) -> bool:
     return not live and BROKER_HEALTH_FROM <= at < BROKER_HEALTH_UNTIL
 
 
-def unreachable_step(down_for: timedelta, alerted: bool) -> tuple[bool, bool]:
+def unreachable_step(
+    down_for: timedelta, alerted: bool, previous: timedelta = timedelta(0)
+) -> tuple[bool, bool]:
     """(alert now, alerted) for one check of the broker's outage `down_for` (0 while its calls
-    succeed): one alert per outage, once it has lasted `UNREACHABLE_AFTER`; a success ends it."""
+    succeed), `previous` being the last check's: one alert per outage, once it has lasted
+    `UNREACHABLE_AFTER`. A success ends an outage, seen as no outage now or as one shorter than
+    the last check's (a success and a new outage between two checks)."""
     if down_for <= timedelta(0):
         return False, False
+    if down_for < previous:
+        alerted = False
     if alerted or down_for < UNREACHABLE_AFTER:
         return False, alerted
     return True, True

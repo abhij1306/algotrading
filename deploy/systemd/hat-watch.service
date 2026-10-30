@@ -4,11 +4,12 @@
 [Unit]
 Description=HAT health watch
 Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=oneshot
-Environment=HAT_DATA_ROOT=@DATA_ROOT@
-ExecStart=@REPO@/scripts/hat_watch.sh
+Environment="HAT_DATA_ROOT=@DATA_ROOT@"
+ExecStart="@REPO@/scripts/hat_watch.sh"
 Nice=5
 MemoryMax=512M
 TimeoutStartSec=2min

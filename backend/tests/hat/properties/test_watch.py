@@ -163,6 +163,9 @@ def test_unreachable_is_one_alert_per_outage() -> None:
     assert unreachable_step(UNREACHABLE_AFTER * 3, True) == (False, True)
     assert unreachable_step(timedelta(0), True) == (False, False)  # a success ends it
     assert unreachable_step(UNREACHABLE_AFTER, False) == (True, True)  # the next outage
+    # a success and a new outage between two checks: the shorter outage is a new one
+    assert unreachable_step(UNREACHABLE_AFTER, True, UNREACHABLE_AFTER * 3) == (True, True)
+    assert unreachable_step(UNREACHABLE_AFTER * 2, True, UNREACHABLE_AFTER) == (False, True)
 
 
 # --- the text --------------------------------------------------------------------------------
@@ -180,13 +183,23 @@ def test_alert_text_ends_with_what_to_do() -> None:
 
 
 def test_fill_text_says_when_its_order_is_part_filled() -> None:
-    def view(filled: int | None, ordered: int | None) -> render.PositionEventView:
+    def view(
+        filled: int | None, ordered: int | None, working: bool = True
+    ) -> render.PositionEventView:
         return render.PositionEventView(
-            "ABC", 40, Decimal("100"), Decimal("0.1"), filled=filled, ordered=ordered
+            "ABC",
+            40,
+            Decimal("100"),
+            Decimal("0.1"),
+            filled=filled,
+            ordered=ordered,
+            working=working,
         )
 
     part = render.position_event_text("order.filled", view(40, 100))
     assert part.splitlines()[-1] == "Partial: 40 of 100 filled; the rest still works"
+    ended = render.position_event_text("order.filled", view(40, 100, working=False))
+    assert ended.splitlines()[-1] == "Partial: 40 of 100 filled; the rest will not fill"
     whole = render.position_event_text("order.filled", view(100, 100))
     assert "Partial" not in whole
     assert "Partial" not in render.position_event_text("stop.moved", view(None, None))

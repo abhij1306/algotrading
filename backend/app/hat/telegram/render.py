@@ -291,9 +291,11 @@ class PositionEventView:
     price: Decimal | None
     r_so_far: Decimal | None
     dividends: Decimal | None = None  # a closed trade's, already in its R (R-DIV)
-    # a fill's order: the shares filled so far and the shares ordered (None: not a fill)
+    # a fill's order: the shares filled by this fill and the shares ordered (None: not a fill),
+    # and whether the order still works at the broker
     filled: int | None = None
     ordered: int | None = None
+    working: bool = False
 
 
 _EVENT_TITLES = {
@@ -316,7 +318,8 @@ def position_event_text(event_type: str, view: PositionEventView) -> str:
     if view.dividends:
         text += f"  incl. dividends {money(view.dividends)}"
     if view.filled is not None and view.ordered is not None and view.filled < view.ordered:
-        text += f"\nPartial: {view.filled} of {view.ordered} filled; the rest still works"
+        rest = "the rest still works" if view.working else "the rest will not fill"
+        text += f"\nPartial: {view.filled} of {view.ordered} filled; {rest}"
     return text
 
 

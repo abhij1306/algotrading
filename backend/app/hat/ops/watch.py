@@ -65,6 +65,8 @@ DISK_MIN_FREE_SHARE = 0.10
 # The scheduler beats every 30 s (`ops/scheduler.TICK_SECONDS`): six missed beats is down.
 HEARTBEAT_STALE = timedelta(minutes=3)
 STATE_FILE = Path("ops") / "watch.json"  # under the data root
+# A server that takes the connection and then stops answering fails the check, not the run.
+_TIMEOUT = "-c statement_timeout=5000"
 STATUS_FILE = Path("update") / "status.json"
 VERIFY_GLOB = "audits/verify-*/verify.json"
 _FAIL = "fail"
@@ -247,7 +249,7 @@ def _answers(name: str | None) -> bool:
 
     from app.database import create_engine_from_env
 
-    engine = create_engine_from_env(name, pool_size=1)
+    engine = create_engine_from_env(name, options=_TIMEOUT, pool_size=1)
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))
@@ -269,7 +271,7 @@ def _last_beat() -> datetime | None:
     from ..models import HatHeartbeat
     from .scheduler import HEARTBEAT
 
-    engine = create_engine_from_env(state_database_name(), pool_size=1)
+    engine = create_engine_from_env(state_database_name(), options=_TIMEOUT, pool_size=1)
     try:
         with engine.connect() as connection:
             return connection.execute(
