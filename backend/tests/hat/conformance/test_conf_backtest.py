@@ -270,21 +270,29 @@ def test_gates_read_the_session_before() -> None:
         assert [a.id for a in call.args if isinstance(a, ast.Name)] == ["prev"], ast.unparse(call)
 
 
+def _doc_names(node: ast.AST) -> set[str]:
+    """The doc names one node of `runs.py` hands `folder.publish`: the string keys of a dict
+    assigned to `docs` or passed as `docs=`, or the key of a `docs["name"] = ...` assignment."""
+    if isinstance(node, ast.keyword) and node.arg == "docs" and isinstance(node.value, ast.Dict):
+        keys = node.value.keys
+    elif isinstance(node, ast.Assign | ast.AnnAssign) and node.value is not None:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        keys = []
+        for t in targets:
+            if isinstance(t, ast.Name) and t.id == "docs" and isinstance(node.value, ast.Dict):
+                keys += node.value.keys
+            elif isinstance(t, ast.Subscript) and isinstance(t.value, ast.Name):
+                keys += [t.slice] if t.value.id == "docs" else []
+    else:
+        return set()
+    return {k.value for k in keys if isinstance(k, ast.Constant) and isinstance(k.value, str)}
+
+
 def test_run_writer_docs_are_publishable() -> None:
-    """Every JSON file the run writer hands `folder.publish` (a string key of a dict assigned to
-    `docs` in `runs.py`) is one of `JSON_DOCS`, which `publish` alone accepts: a name missing
-    there fails every run at publish (`backtest_bad_run_file`)."""
-    names = set()
-    for node in ast.walk(ast.parse((HAT / "backtest" / "runs.py").read_text(encoding="utf-8"))):
-        if isinstance(node, ast.Assign):
-            targets, value = node.targets, node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
-        else:
-            continue
-        if any(isinstance(t, ast.Name) and t.id == "docs" for t in targets) and isinstance(
-            value, ast.Dict
-        ):
-            names |= {k.value for k in value.keys if isinstance(k, ast.Constant)}
+    """Every JSON file the run writer hands `folder.publish` (`_doc_names` over `runs.py`) is
+    one of `JSON_DOCS`, which `publish` alone accepts: a name missing there fails every run at
+    publish (`backtest_bad_run_file`)."""
+    tree = ast.parse((HAT / "backtest" / "runs.py").read_text(encoding="utf-8"))
+    names = set().union(*(_doc_names(node) for node in ast.walk(tree)))
     assert names  # not vacuous: the data audit, the run audit, the evidence and the ledger
     assert names <= set(JSON_DOCS), sorted(names - set(JSON_DOCS))
