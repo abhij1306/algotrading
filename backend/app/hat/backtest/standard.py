@@ -409,6 +409,7 @@ _TRAILS = (
     ("trailing_swing_low", "trail_swing_low"),
     ("trailing_atr", "trailing_atr"),
     ("move_stop_to_breakeven", "breakeven_stop"),
+    ("tennis_ball", "tennis_ball_stop"),
 )
 
 

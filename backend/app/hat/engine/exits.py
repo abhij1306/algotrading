@@ -18,6 +18,7 @@ Evaluation rules, as written in the spec:
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_FLOOR, Decimal
@@ -41,7 +42,9 @@ from .strategy.config import (
     ExitRegime,
     ExitRule,
     ExitStepTrail,
+    ExitTennisBall,
     ExitTimeStop,
+    ExitTopSignal,
     ExitTrailingAtr,
     ExitTrailingSwingLow,
     ExitVsSma,
@@ -63,6 +66,8 @@ __all__ = [
     "rule_id",
     "step_stop",
     "history_sessions",
+    "top_signal_seen",
+    "top_signal_sessions",
     "reads_peak",
     "view_from_bars",
 ]
@@ -91,7 +96,9 @@ _RULE_PHASE = {
     "time_stop": "close",
     "early_failure": "close",
     "max_hold": "close",
+    "tennis_ball": "close",
     "regime_exit": "nightly",
+    "top_signal": "nightly",
 }
 # The rules the close phase runs: an exit by one of them is priced at the close-phase price.
 CLOSE_PHASE_RULES = frozenset(rule for rule, phase in _RULE_PHASE.items() if phase == "close")
@@ -125,6 +132,11 @@ class ExitView:
     regime_off: bool = False
     peak: Decimal | None = None
     atr: Mapping[int, Decimal] = field(default_factory=dict)
+    # Addendum F's top signal on the session before a nightly evaluation (`top_signal_seen`).
+    top_signal: bool = False
+    # The sessions since the highest close from the entry session on (0: `price` is it; a tie is
+    # no new high); None without the closes since entry.
+    since_close_high: int | None = None
 
 
 @dataclass(frozen=True)
@@ -154,10 +166,10 @@ def history_sessions(rules: Sequence[ExitRule]) -> int:
 
 
 def reads_peak(rules: Sequence[ExitRule]) -> bool:
-    """Whether a rule of the stack reads `ExitView.peak`: a trail with a start, the ATR trail or
-    the early-failure exit."""
+    """Whether a rule of the stack reads `ExitView.peak`: a trail with a start, the ATR trail,
+    the early-failure exit or the tennis ball."""
     return any(
-        isinstance(rule, ExitTrailingAtr | ExitEarlyFailure)
+        isinstance(rule, ExitTrailingAtr | ExitEarlyFailure | ExitTennisBall)
         or getattr(rule, "start_r", None) is not None
         for rule in rules
     )
@@ -171,6 +183,7 @@ def view_from_bars(
     lows: Sequence[Decimal],
     highs: Sequence[Decimal] = (),
     entry_highs: Sequence[Decimal] | None = None,
+    entry_closes: Sequence[Decimal] | None = None,
 ) -> ExitView:
     """The view of a position at `price` with the SMA, EMA, swing-low and ATR levels its `rules`
     read,
@@ -182,8 +195,10 @@ def view_from_bars(
     the last `lookback_days` lows before it. A level without enough sessions is left out, and its
     rule does not fire. `entry_highs`, the highs of the sessions from the entry session on before
     the decision session, give the view's `peak` with `price` (None: no peak, and the rules that
-    read it do not fire). The live close phase and the backtest both build their views here, so
-    the rules read the same inputs in both."""
+    read it do not fire). `entry_closes`, the closes of those sessions, give `since_close_high`
+    with `price` as the decision session's close (None: the tennis ball does not fire). The live
+    close phase and the backtest both build their views here, so the rules read the same inputs
+    in both."""
     sma_levels: dict[int, Decimal] = {}
     ema_levels: dict[int, Decimal] = {}
     swing: dict[int, Decimal] = {}
@@ -209,6 +224,10 @@ def view_from_bars(
     peak = None
     if entry_highs is not None and price is not None:
         peak = max([*entry_highs, price])
+    since = None
+    if entry_closes is not None and price is not None:
+        series = [*entry_closes, price]
+        since = len(series) - 1 - series.index(max(series))
     return ExitView(
         price,
         days_held=days_held,
@@ -217,6 +236,67 @@ def view_from_bars(
         swing_low=swing,
         peak=peak,
         atr=atr,
+        since_close_high=since,
+    )
+
+
+STAGE4_SESSIONS = 221  # an SMA200 now and 21 sessions before
+
+
+def _largest_decline_on_volume(
+    closes: Sequence[Decimal], volumes: Sequence[float], lookback: int
+) -> bool:
+    """The last session's % change is a decline below every other of the last `lookback`
+    sessions' and its volume above every other's (strictly; a missing volume never wins)."""
+    if len(closes) < lookback + 1 or len(volumes) < lookback:
+        return False
+    window = closes[-(lookback + 1) :]
+    if any(c <= 0 for c in window[:-1]):
+        return False
+    changes = [(now - before) / before for before, now in zip(window, window[1:], strict=False)]
+    last = volumes[-1]
+    others = [v for v in volumes[-lookback:-1] if not math.isnan(v)]
+    return (
+        changes[-1] < 0
+        and all(changes[-1] < c for c in changes[:-1])
+        and not math.isnan(last)
+        and all(last > v for v in others)
+    )
+
+
+def _stage4(closes: Sequence[Decimal]) -> bool:
+    """Addendum E's stage 4 on the last close: below an SMA200 lower than 21 sessions before."""
+    if len(closes) < STAGE4_SESSIONS:
+        return False
+    now = sma(closes, 200)
+    before = sma(closes[:-21], 200)
+    return now is not None and before is not None and closes[-1] < now < before
+
+
+def top_signal_seen(
+    rules: Sequence[ExitRule], closes: Sequence[Decimal], volumes: Sequence[float]
+) -> bool:
+    """Whether an enabled `top_signal` rule of `rules` sees its signal on the last of `closes`
+    (the instrument's closes through the session before the decision, oldest first, at least
+    `top_signal_sessions(rules)` of them) and `volumes` (its volumes, the last on that same
+    session). Too short a history never signals."""
+    return any(
+        _largest_decline_on_volume(closes, volumes, rule.lookback)
+        or (rule.stage4 and _stage4(closes))
+        for rule in rules
+        if isinstance(rule, ExitTopSignal) and rule.enabled
+    )
+
+
+def top_signal_sessions(rules: Sequence[ExitRule]) -> int:
+    """How many closes `top_signal_seen` reads for `rules`; 0 without an enabled top signal."""
+    return max(
+        (
+            max(rule.lookback + 1, STAGE4_SESSIONS if rule.stage4 else 0)
+            for rule in rules
+            if isinstance(rule, ExitTopSignal) and rule.enabled
+        ),
+        default=0,
     )
 
 
@@ -378,6 +458,10 @@ def _regime_off(rule: ExitRegime, pos: PositionState, view: ExitView) -> bool:
     return view.regime_off
 
 
+def _top_signal(rule: ExitTopSignal, pos: PositionState, view: ExitView) -> bool:
+    return view.price is not None and view.top_signal
+
+
 # The firing test of each rule that sells. Missing data never fires a rule.
 _SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
     ExitHardStop: _price_at_or_below_stop,
@@ -393,6 +477,7 @@ _SELL_TESTS: dict[type, Callable[[Any, PositionState, ExitView], bool]] = {
     ExitEarlyFailure: _early_failure,
     ExitMaxHold: _max_hold,
     ExitRegime: _regime_off,
+    ExitTopSignal: _top_signal,
 }
 
 
@@ -403,9 +488,11 @@ def _sells(rule: ExitRule, pos: PositionState, view: ExitView) -> bool:
 
 
 def _is_full(rule: ExitRule) -> bool:
-    """hard_stop, time_stop, early_failure and max_hold always sell everything; the others when
-    their fraction is 1."""
-    if isinstance(rule, ExitHardStop | ExitTimeStop | ExitEarlyFailure | ExitMaxHold):
+    """hard_stop, time_stop, early_failure, max_hold and top_signal always sell everything; the
+    others when their fraction is 1."""
+    if isinstance(
+        rule, ExitHardStop | ExitTimeStop | ExitEarlyFailure | ExitMaxHold | ExitTopSignal
+    ):
         return True
     fraction = _fraction_of(rule)
     return fraction is not None and fraction >= 1.0
@@ -417,6 +504,22 @@ def _breakeven_due(
     if rule.after == "partial":
         return partial_done
     return rule.at_r is not None and _reached_r(view, pos, rule.at_r)
+
+
+def _tennis_ball_due(rule: ExitTennisBall, pos: PositionState, view: ExitView) -> bool:
+    """The peak reached +`at_r` R and `sessions` sessions passed without a new closing high."""
+    return (
+        view.since_close_high is not None
+        and view.since_close_high >= rule.sessions
+        and _peak_reached(view, pos, rule.at_r)
+    )
+
+
+def _stop_move_due(rule: ExitRule, pos: PositionState, view: ExitView, partial_done: bool) -> bool:
+    """A breakeven move or the tennis ball is due (both move the stop to the entry)."""
+    if isinstance(rule, ExitBreakeven):
+        return _breakeven_due(rule, pos, view, partial_done)
+    return isinstance(rule, ExitTennisBall) and _tennis_ball_due(rule, pos, view)
 
 
 def step_stop(rule: ExitStepTrail, pos: PositionState, price: Decimal) -> Decimal | None:
@@ -477,7 +580,8 @@ def _breakevens(
     view: ExitView,
     ids: tuple[str, ...],
 ) -> tuple[list[str], Decimal | None, list[tuple[str, str]]]:
-    """The breakeven moves that are due: their ids, the stop they and the step trails raise to
+    """The breakeven moves that are due (the tennis ball's too): their ids, the stop they and the
+    step trails raise to
     (only ever up) and the breakeven moves ignored because they would not raise it
     (HAT-RISK-070). A step trail is never fired: it acts whenever its step raises the stop."""
     done = any(is_partial_rule(rules[int(rid.split(":", 1)[0])]) for rid in (*pos.fired, *ids))
@@ -485,7 +589,7 @@ def _breakevens(
     ignored: list[tuple[str, str]] = []
     new_stop: Decimal | None = None
     for _, rid, rule in live:
-        if not (isinstance(rule, ExitBreakeven) and _breakeven_due(rule, pos, view, done)):
+        if not _stop_move_due(rule, pos, view, done):
             continue
         fired.append(rid)
         if pos.avg_entry > pos.current_stop and (new_stop is None or pos.avg_entry > new_stop):

@@ -606,6 +606,7 @@ def exit_check(
         prices(before, "low"),
         prices(before, "high"),
         prices(held, "high") if exits.reads_peak(rules) else None,
+        prices(held, "close") if exits.reads_peak(rules) else None,
     )
     scaled = replace(
         state,

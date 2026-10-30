@@ -42,7 +42,14 @@ from .data import (
 )
 from .standard import quintile
 
-__all__ = ["FEATURE_COLUMNS", "STOCK_COLUMNS", "SETUP_COLUMNS", "SignalFeatures", "vcp_extras"]
+__all__ = [
+    "FEATURE_COLUMNS",
+    "STOCK_COLUMNS",
+    "SETUP_COLUMNS",
+    "SignalFeatures",
+    "setup_tag_columns",
+    "vcp_extras",
+]
 
 CRORE = Decimal(10_000_000)
 SLOPE_SESSIONS = 20
@@ -62,6 +69,25 @@ BOOK_EXTRAS = (
 )
 BOOK_COLUMNS = ("footprint", "contraction_depths", *BOOK_EXTRAS[1:])
 PATTERN_TYPES = ("vcp", "book_vcp")
+# The scan's setup summary (`criteria_results.setup`, `scan.setup_summary`): its type, every
+# setup tag of the instrument that night, and plan Addenda A, C, D and E as `tag_<name>`.
+TAG_COLUMNS = (
+    "setup_type",
+    "setup_tags",
+    "tag_shakeout",
+    "tag_undercut_pct",
+    "tag_ath_pivot",
+    "tag_early_leader",
+    "tag_stage",
+)
+_TAG_SOURCES = {
+    "setup_type": "setup_type",
+    "tag_shakeout": "shakeout",
+    "tag_undercut_pct": "shakeout_undercut_pct",
+    "tag_ath_pivot": "ath_pivot",
+    "tag_early_leader": "early_leader",
+    "tag_stage": "stage",
+}
 # The stock and setup columns, in the order the result files write them.
 STOCK_COLUMNS = (
     "mcap_cr",
@@ -87,6 +113,7 @@ SETUP_COLUMNS = (
     "sma50_slope_20d_pct",
     "setup_score",
     *BOOK_COLUMNS,
+    *TAG_COLUMNS,
 )
 FEATURE_COLUMNS = ("symbol", "industry", *STOCK_COLUMNS, *SETUP_COLUMNS)
 _PLACES = 4
@@ -135,6 +162,20 @@ def vcp_extras(criteria_results: object) -> Mapping[str, Any] | None:
         if item.get("type") in PATTERN_TYPES and isinstance(extras, Mapping):
             return extras
     return None
+
+
+def setup_tag_columns(criteria_results: object) -> dict[str, Any]:
+    """The `TAG_COLUMNS` of a watchlist row's `criteria_results` (None where its setup summary
+    has no value); `setup_tags` joined with "/"."""
+    setup = criteria_results.get("setup") if isinstance(criteria_results, Mapping) else None
+    if not isinstance(setup, Mapping):
+        return dict.fromkeys(TAG_COLUMNS)
+    out = {column: _plain(setup.get(key)) for column, key in _TAG_SOURCES.items()}
+    tags = setup.get("setup_tags")
+    out["setup_tags"] = (
+        "/".join(str(t) for t in tags) if isinstance(tags, list) else out["setup_type"]
+    )
+    return out
 
 
 def rs_value(criteria_results: object) -> float | None:
@@ -217,6 +258,7 @@ class SignalFeatures:
             None if earlier is None else feature(earlier, instrument_id, "sma50"),
         )
         out.update(self._vcp(instrument_id, prev, pivot, vcp_extras(criteria_results)))
+        out.update(setup_tag_columns(criteria_results))
         return {name: out.get(name) for name in FEATURE_COLUMNS}
 
     def _volume_ratio(self, instrument_id: str, day: date) -> float | None:
