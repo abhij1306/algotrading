@@ -19,6 +19,7 @@ from app.hat.ops.watch import (
     run_watch,
     save_state,
     transition,
+    unwritable_exit,
     update_due,
     update_findings,
     verify_findings,
@@ -168,13 +169,15 @@ def test_transition_tells_each_event_once_and_its_clearing() -> None:
 
 
 class _Marks:
-    def __init__(self, answer: bool | None = None) -> None:
+    def __init__(self, *, broken: bool = False) -> None:
         self.claimed: set[str] = set()
-        self.answer = answer  # None: the store answers; else what every claim reads
+        self.broken = broken  # the store cannot be read (hat_state down): every claim is None
 
     def claim(self, name: str) -> bool | None:
-        if self.answer is not None or name in self.claimed:
-            return self.answer if self.answer is not None else False
+        if self.broken:
+            return None
+        if name in self.claimed:
+            return False
         self.claimed.add(name)
         return True
 
@@ -200,8 +203,9 @@ def test_state_is_saved_before_anything_is_sent() -> None:
         assert sent == []  # nothing told before the state that follows is on disk
         return True
 
-    after = run_watch({}, [disk], NIGHT, _sender(sent), save, _Marks())
-    assert list(after) == ["disk.low:root"]
+    outcome = run_watch({}, [disk], NIGHT, _sender(sent), save, _Marks())
+    assert list(outcome.open) == ["disk.low:root"]
+    assert outcome.exit_code == 0
     assert list(saved[0]) == ["disk.low:root"]
     assert sent[0].startswith("Alert: disk.low (2026-10-29)")
     assert sent[0].splitlines()[-1] == f"Do: {render.ACTIONS['disk.low']}"
@@ -215,8 +219,7 @@ def test_an_unsent_alert_is_tried_again_next_run() -> None:
         saved.append(dict(doc))
         return True
 
-    after = run_watch({}, [disk], NIGHT, _sender([], ok=False), save, _Marks())
-    assert after == {}
+    assert run_watch({}, [disk], NIGHT, _sender([], ok=False), save, _Marks()).open == {}
     assert saved[-1] == {}  # saved again without it, so the next run tells it
 
 
@@ -225,22 +228,34 @@ def test_unwritable_state_tells_one_alert_and_nothing_else() -> None:
     db = Finding("db.down", "db.down:state", {"database": "state"})
     marks, sent = _Marks(), []
     for _ in range(3):  # three runs on a full disk
-        assert run_watch({}, [disk, db], NIGHT, _sender(sent), lambda d: False, marks) is None
+        outcome = run_watch({}, [disk, db], NIGHT, _sender(sent), lambda d: False, marks)
+        assert (outcome.open, outcome.exit_code) == (None, 0)
     assert [t.splitlines()[0] for t in sent] == ["URGENT: watch.state_unwritable (2026-10-29)"]
     # a save that works again clears the claim; the findings are then told once
-    after = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, marks)
-    assert list(after) == ["disk.low:root"]
+    outcome = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, marks)
+    assert list(outcome.open) == ["disk.low:root"]
     assert marks.claimed == set()
-    # the claim store unreadable as well: nothing is sent at all
-    sent.clear()
-    assert run_watch({}, [disk], NIGHT, _sender(sent), lambda d: False, _Marks(False)) is None
-    assert sent == []
+
+
+def test_unwritable_state_and_hat_state_down_exits_non_zero() -> None:
+    """Both stores down: nothing can be told or recorded, so the run fails and the unit's
+    OnFailure= (at most once a day) tells the owner, instead of silence."""
+    disk = Finding("disk.low", "disk.low:root", {"disk": "root"})
+    sent: list[str] = []
+    outcome = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: False, _Marks(broken=True))
+    assert (outcome.open, outcome.exit_code, sent) == (None, 1, [])
+
+
+def test_unwritable_exit_decision() -> None:
+    assert unwritable_exit(None) == 1  # the claim unreadable: hat_state down as well
+    assert unwritable_exit(True) == 0  # the one alert was claimed and sent now
+    assert unwritable_exit(False) == 0  # it went out on an earlier run
 
 
 def test_resolved_names_its_subject() -> None:
     disk = Finding("disk.low", "disk.low:root", {"disk": "root", "free_gb": 3})
     sent: list[str] = []
-    after = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, _Marks())
+    after = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, _Marks()).open
     run_watch(after, [], NIGHT, _sender(sent), lambda d: True, _Marks())
     assert sent[-1].splitlines() == ["Resolved: disk.low (2026-10-29)", "disk: root", "free_gb: 3"]
 

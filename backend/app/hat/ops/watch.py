@@ -19,7 +19,9 @@ finding has a key naming its event; it is alerted once while it stands, through 
 `render.alert_text` as the runtime's alerts (with what to do), and told resolved, with its
 subject, when it clears. The open keys live in `HAT_DATA_ROOT/ops/watch.json`, written
 atomically before anything is sent (`run_watch`): a state that cannot be written sends nothing
-but one `watch.state_unwritable` alert, so a full disk never repeats the open alerts every run.
+but one `watch.state_unwritable` alert, so a full disk never repeats the open alerts every run;
+when hat_state cannot record that alert either, the run exits 1 so the `OnFailure=` unit tells
+it (`unwritable_exit`).
 A run that fails outright sends one `watch.failed` and exits 1, so the unit's `OnFailure=` unit
 (`hat-watch-failed`, started at most once a day) tells it when even that could not. The
 once-a-time alerts are claimed as `hat_heartbeat` rows (`Marks`), so they hold across runs
@@ -54,12 +56,14 @@ __all__ = [
     "Finding",
     "Marks",
     "Transition",
+    "WatchRun",
     "checked",
     "disk_findings",
     "heartbeat_findings",
     "run_watch",
     "save_state",
     "transition",
+    "unwritable_exit",
     "update_due",
     "update_findings",
     "verify_findings",
@@ -259,6 +263,23 @@ def _entry(f: Finding, now: datetime) -> dict[str, Any]:
     return {"code": f.code, "detail": dict(f.detail), "since": now.isoformat(timespec="seconds")}
 
 
+def unwritable_exit(claimed: bool | None) -> int:
+    """The run's exit code when its state could not be written, by the `watch.state_unwritable`
+    claim: 1 when the claim could not be read either (hat_state down too), so nothing could be
+    told or recorded and the unit's `OnFailure=` (`hat-watch-failed`, at most once a day) tells
+    the owner; else 0 (the one alert went out, or already had)."""
+    return 1 if claimed is None else 0
+
+
+@dataclass(frozen=True)
+class WatchRun:
+    """A run's outcome: the open keys after it (None: the state could not be written) and the
+    process's exit code."""
+
+    open: dict[str, dict[str, Any]] | None
+    exit_code: int = 0
+
+
 def run_watch(
     open_: Mapping[str, Mapping[str, Any]],
     found: Sequence[Finding],
@@ -266,14 +287,14 @@ def run_watch(
     send: Send,
     save: Save,
     marks: Marks,
-) -> dict[str, dict[str, Any]] | None:
-    """Tell this run's findings against the open keys and return the open keys after it, or
-    None when the state could not be written. The state that would follow (the cleared keys
-    gone, the new ones open) is saved before anything is sent: when that fails, no finding is
-    told and one `watch.state_unwritable` goes out, claimed in `marks` until a save works
-    again, so no run repeats alerts it cannot record. A new alert that was not delivered is
-    taken out again by a second save, so the next run tries it; should that save fail, it waits
-    as told. A resolved note that was not sent is not tried again."""
+) -> WatchRun:
+    """Tell this run's findings against the open keys and return the open keys after it (None
+    when the state could not be written, with `unwritable_exit`'s code). The state that would
+    follow (the cleared keys gone, the new ones open) is saved before anything is sent: when
+    that fails, no finding is told and one `watch.state_unwritable` goes out, claimed in `marks`
+    until a save works again, so no run repeats alerts it cannot record. A new alert that was
+    not delivered is taken out again by a second save, so the next run tries it; should that
+    save fail, it waits as told. A resolved note that was not sent is not tried again."""
     from ..telegram import render
 
     day = now.astimezone(IST).date()
@@ -282,11 +303,12 @@ def run_watch(
     after = {k: dict(v) for k, v in open_.items() if k not in cleared}
     after.update({f.key: _entry(f, now) for f in step.new})
     if not save(after):
-        if marks.claim(STATE_UNWRITABLE):
+        claimed = marks.claim(STATE_UNWRITABLE)
+        if claimed:
             text = render.alert_text(STATE_UNWRITABLE, day, {"file": STATE_FILE.as_posix()})
             if not send(text):
                 marks.clear(STATE_UNWRITABLE)
-        return None
+        return WatchRun(None, unwritable_exit(claimed))
     marks.clear(STATE_UNWRITABLE)
     for _, entry in step.cleared:
         detail = entry.get("detail")
@@ -297,7 +319,7 @@ def run_watch(
         for key in unsent:
             after.pop(key, None)
         save(after)
-    return after
+    return WatchRun(after)
 
 
 def save_state(path: Path, open_: Mapping[str, Mapping[str, Any]]) -> bool:
@@ -551,7 +573,7 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real files, DB,
     state = _read_json(path)
     open_ = state.get("open") if isinstance(state, Mapping) else None
     marks = HeartbeatMarks()
-    after = run_watch(
+    outcome = run_watch(
         open_ if isinstance(open_, Mapping) else {},
         found,
         now,
@@ -559,12 +581,12 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real files, DB,
         lambda doc: save_state(path, doc),
         marks,
     )
-    marks.clear(WATCH_FAILED)
-    if after is None:
+    if outcome.open is None:
         sys.stdout.write(f"{len(found)} finding(s); state unwritable: nothing told\n")
-    else:
-        sys.stdout.write(f"{len(found)} finding(s), {len(after)} open\n")
-    return 0
+        return outcome.exit_code  # 1: the OnFailure= unit tells it (`unwritable_exit`)
+    marks.clear(WATCH_FAILED)
+    sys.stdout.write(f"{len(found)} finding(s), {len(outcome.open)} open\n")
+    return outcome.exit_code
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real files, DB, chat

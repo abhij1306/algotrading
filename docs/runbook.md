@@ -679,7 +679,8 @@ list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
   (Data verification).
 - **`watch.check_error`**: one check raised (its name and error type); the others ran.
 - **`watch.state_unwritable`** (URGENT, once until a save works): `ops/watch.json` cannot be
-  written, so the watch tells nothing else; free the disk or fix `ops/`.
+  written, so the watch tells nothing else; free the disk or fix `ops/`. With hat_state down
+  too, the run exits 1 and `hat-watch-failed` sends `watch.failed` (at most once a day).
 - **`watch.failed`** (URGENT, once per failure spell): a run failed outright; when it could not
   send that itself, the `OnFailure=` unit `hat-watch-failed` does, at most once a day.
 
