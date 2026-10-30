@@ -92,14 +92,15 @@ def test_first_failed_rule_is_the_criterion_fault(
 
 
 def test_geometry_check_on_a_series() -> None:
-    # H0 100, a 20% fall, back to 96, a 9% fall, then a rise under 3%: two contractions
+    # H0 100, a 20% fall, back to 96, a 9% fall, then a rise under 3%: two zigzag contractions
+    # and the final one, the window of the last 5 bars
     high = [100.0, 90.0, 80.0, 88.0, 96.0, 92.0, 87.36, 92.0, 95.0, 95.5, 95.0, 95.5]
     low = [h - 0.1 for h in high]
     closes = high
     threshold = swing_thresholds(high, low, closes, BookVcpParams(swing_atr_multiple=0))
     check = geometry_check(high, low, threshold, len(high) - 1, P)
     assert check is not None
-    assert [c.end for c in check.contractions] == [2, 6]
+    assert [(c.start, c.end) for c in check.contractions] == [(0, 2), (4, 6), (7, 11)]
     assert check.failed == ("base_length",)  # 12 sessions, under 15
     # no 10% fall from the highest high: no base
     flat = [100.0, 95.0, 97.0, 96.0]

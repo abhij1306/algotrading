@@ -182,7 +182,10 @@ session, through lineage (Index membership). Backtests run from 2016-01-01 onwar
 2011-2015 membership is resolved (decisions.md "Backtests from 2016-01-01"): a `--from` before the
 loaded history's first day is refused `backtest_starts_before_membership@2016-01-01`, a `--to`
 after its last day `backtest_ends_after_membership@<day>`, and a universe whose index has no
-history loaded `backtest_no_index_membership`. Bars before 2016 still warm the indicators up. A
+history loaded `backtest_no_index_membership`. Bars before 2016 still warm the indicators up.
+`--universe NSE_STOCKS` (research only, no stored row) is every NSE stock (ISIN `INE...`, no ETF
+or fund) the instrument table holds, delisted ones included, a member throughout: a stock is
+scanned only on the nights it has bars, and the version's universe criteria filter it. A
 sleeve the policy gives base weight 0 sizes at 0.5 in a research run (recorded in the run's
 conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`, and takes no
 overrides. A version that enables `volume_pace` or `daily_close` cannot be promoted on a run

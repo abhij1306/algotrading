@@ -88,7 +88,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   keeps each instrument's earlier-date geometry across its nights (`EvalContext.memo`), so the
   count is not recomputed nightly; a live scan computes it afresh.
 - **S1 setups (owner 2026-10-30, Phase 1 of `docs/plans/s1-minervini-setups.md`).** Beside
-  `book_vcp` (Setup 1, unchanged) the hard criteria `book_cheat` (cheat_3c / low_cheat),
+  `book_vcp` (Setup 1) the hard criteria `book_cheat` (cheat_3c / low_cheat),
   `book_cup_handle`, `book_power_play` and `book_primary_base` (`engine/criteria/setups.py`), each
   rule its own parameter and failure reason and its own funnel gates, on `book`'s zigzag,
   contractions, geometry rules, template and base count. Their tight area dries up on vr, the
@@ -100,11 +100,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   (shakeout, ath_pivot over the window, early_leader, stage; never fails; stage 3 and the cheat's
   H0 uptrend read the template's price checks, no earlier RS rank being in the history). Power
   play T is the highest high of the last 60 sessions; the detectors count the base number on the
-  book's default params (Setup 1 is dropped, so no S1 `book_vcp` to follow); the primary base's
-  age is the scan calendar's sessions since the instrument's first bar, gaps included, and a
-  first bar on the window's first session or before is no recent listing. A tight final
-  contraction confirms only once price leaves it, as in `book_vcp`. The plan's [mine] values are
-  parameter defaults, logged per signal (`mine` in each criterion's extras).
+  book's default params; the primary base's age is the scan calendar's sessions since the
+  instrument's first bar, gaps included, and a first bar on the window's first session or before
+  is no recent listing. The plan's [mine] values are parameter defaults, logged per signal
+  (`mine` in each criterion's extras).
+- **S1 final contraction is a window (owner 2026-10-30).** The zigzag's reversal threshold
+  (max(3%, 1.5 x ATR14 / close)) cannot confirm a contraction shallower than itself, so a tight
+  final one merged into the one before. The contractions before the final one stay the zigzag's
+  confirmed ones; the final one is the longest run of the last 5-15 sessions after the last
+  confirmed swing high, its range over its high at most the final depth cap (10%; power play 8%)
+  and at most 0.75 x the last confirmed contraction (`book.tight_window`). Pivot its high, stop
+  its low less the buffer. `book_vcp`, the power play's flag, the primary base and the cup with
+  handle's final tightening (inside the handle, at most 10%) use it; the cheat's pause already is
+  a window. Setup 1 (`book_vcp`) is back in the S1 runs.
 - **S1 validity window (owner 2026-10-30).** A setup of a playbook with `valid_sessions` N,
   named by (playbook, instrument, `pivot_date`), is valid D+1..D+N from the night D it was first
   found (`hat_setup_window`, one row per setup and strategy version). Re-detection never extends

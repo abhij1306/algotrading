@@ -9,7 +9,8 @@ scan's window, the SMA, swing low and ATR) is the total-return series rescaled t
 for (`MarketView`), as live reads it that day, so an ex-date drop is no signal and a held position
 earns the cash (`MarketData.dividends`). Features come from the `features_daily` partitions the
 nightly job wrote, the regime index from `index_daily`, and membership is the universe's index
-members as of each session (`point_in_time_members`, from `hat_index_member`). Nothing else is
+members as of each session (`point_in_time_members`, from `hat_index_member`), or for the
+built-in research universe `NSE_STOCKS` every NSE stock (`nse_stock_members`). Nothing else is
 filtered by what happened later: the day loop reads each input only up to the date it decides for
 (`MarketView`). The features must be the ones the nightly job wrote for the corporate actions the
 bars are adjusted with: the job's stored inputs digest must equal the digest of the stored actions
@@ -773,6 +774,48 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 """
 
 
+# The built-in research universe (no stored row, `--universe NSE_STOCKS`): every stock the
+# instrument table holds, its ISIN `INE...` (an ETF's or a fund's is `INF...`, a partly paid
+# share's `IN9...`), a member throughout. A stock is only scanned on the nights it has bars, so a
+# delisted one is in the universe until its last trade and a listing from its first; the bot's
+# universe criteria (series, turnover, price) filter it point in time.
+NSE_STOCKS = "NSE_STOCKS"
+NSE_STOCKS_VERSION_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000001")
+NSE_STOCKS_UNIVERSE_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000002")
+STOCK_ISIN_PREFIX = "INE"
+
+
+def is_stock_isin(isin: str | None) -> bool:
+    """Whether an ISIN is an Indian company's equity share (`INE...`), not an ETF or fund unit
+    (`INF...`), a partly paid share (`IN9...`) or another security."""
+    return isin is not None and isin.startswith(STOCK_ISIN_PREFIX)
+
+
+def nse_stock_members(
+    session: Session, lineage: Mapping[str, str], since: date, until: date
+) -> tuple[tuple[Interval, ...], dict[str, Any]]:
+    """`NSE_STOCKS`'s members over `since..until` by chain id (`point_in_time_members` with
+    every stock as an include) and what they were read from (the snapshot's `membership`)."""
+    rows = session.execute(select(HatInstrument.id, HatInstrument.isin)).all()
+    stocks = sorted(i for i, isin in rows if is_stock_isin(isin))
+    members = point_in_time_members(
+        (), include=stocks, exclude=(), lineage=lineage, since=since, until=until
+    )
+    digest = hashlib.sha256("\n".join(str(i) for i in stocks).encode()).hexdigest()
+    source = {
+        "index": None,
+        "source": "nse_stocks",
+        "digest": digest,
+        "rows": len(stocks),
+        "covered_from": since.isoformat(),
+        "covered_to": until.isoformat(),
+        "off_size_dates": 0,
+        "universe_version_id": str(NSE_STOCKS_VERSION_ID),
+        "universe_key": NSE_STOCKS,
+    }
+    return members, source
+
+
 def _members(
     session: Session,
     universe_version_id: uuid.UUID,
@@ -785,7 +828,10 @@ def _members(
     first session), point in time (`point_in_time_members`), and what they were read from (the
     snapshot's `membership`). The universe version names its index; `backtest_universe_no_index`
     when it names none, and the index's loaded history must cover `start..until`
-    (`membership_cover_refusal`): never today's list in its place."""
+    (`membership_cover_refusal`): never today's list in its place. `NSE_STOCKS` reads every
+    stock (`nse_stock_members`)."""
+    if universe_version_id == NSE_STOCKS_VERSION_ID:
+        return nse_stock_members(session, lineage, since, until)
     version = session.get(HatUniverseVersion, universe_version_id)
     definition = {} if version is None else version.definition
     index_name = definition.get("index")

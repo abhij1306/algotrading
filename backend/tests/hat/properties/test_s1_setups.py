@@ -242,7 +242,7 @@ def test_book_power_play_passes() -> None:
     assert (found.passed, found.extras["setup"], found.extras["contraction_count"]) == (
         True,
         s.POWER_PLAY,
-        2,
+        3,
     )
     assert found.extras["thrust_multiple"] == pytest.approx(2.222, abs=1e-3)
 
@@ -253,9 +253,9 @@ def test_book_power_play_passes() -> None:
         (POWER, {"thrust_multiple": 2.5}, "no_thrust"),
         (POWER, {"flag_sessions": [25, 30]}, "base_too_short"),
         (POWER, {"flag_depth_max_pct": 10.0}, "flag_too_deep"),
-        (POWER, {"min_contractions": 3}, "too_few_contractions"),
-        (POWER, {"final_depth_max_pct": 7.0}, "final_depth_too_deep"),
-        (POWER, {"depth_ratio_max": 0.5}, "depth_ratio_too_wide"),
+        (POWER, {"min_contractions": 4}, "too_few_contractions"),
+        (POWER, {"final_depth_max_pct": 1.0}, "no_tight_window"),
+        (POWER, {"depth_ratio_max": 0.05}, "no_tight_window"),
     ],
 )
 def test_power_play_rules(closes: list[float], params: dict[str, Any], reason: str) -> None:
@@ -329,9 +329,9 @@ def test_a_skip_after_the_break_ends_the_window() -> None:
         ([50.0] * 600 + PRIMARY, {}, "not_a_recent_listing"),
         (PRIMARY, {"base_depth_max_pct": 15.0}, "base_too_deep"),
         (PRIMARY, {"base_min_sessions": 40}, "base_too_short"),
-        (PRIMARY, {"contractions": [3, 6]}, "too_few_contractions"),
-        (PRIMARY, {"final_depth_max_pct": 8.0}, "final_depth_too_deep"),
-        (PRIMARY, {"depth_ratio_max": 0.4}, "depth_ratio_too_wide"),
+        (PRIMARY, {"contractions": [4, 6]}, "too_few_contractions"),
+        (PRIMARY, {"final_depth_max_pct": 1.0}, "no_tight_window"),
+        (PRIMARY, {"depth_ratio_max": 0.05}, "no_tight_window"),
     ],
 )
 def test_primary_base_rules(closes: list[float], params: dict[str, Any], reason: str) -> None:

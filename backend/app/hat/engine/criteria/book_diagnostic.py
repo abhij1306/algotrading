@@ -1,4 +1,5 @@
-"""A diagnostic view of `book_vcp` for audits: every rule of the base (spec C) and of the later
+"""A diagnostic view of `book_vcp` for audits: every rule of the base (spec C, the final
+contraction the window `book.tight_window`, `tight_window` failing without one) and of the later
 gates (D, E, F) evaluated on its own, without the criterion's short-circuit, from the same
 helpers (`book`). The criterion itself is `book.book_vcp`; nothing here decides a signal.
 
@@ -21,12 +22,14 @@ from .book import (
     dryup_ratios,
     h0_index,
     relative_fault,
+    tight_window,
     time_compression,
     zigzag,
 )
 
 # The rules of C in the order `book.geometry_fault` checks them (base length both ways is one).
 GEOMETRY_RULES = (
+    "tight_window",
     "base_length",
     "swing_high_above_h0",
     "contraction_count",
@@ -64,13 +67,17 @@ def geometry_rules(
     swing_highs_above_h0: int,
     end: int,
     params: BookVcpParams,
+    *,
+    tight: bool = True,
 ) -> dict[str, bool]:
-    """Each rule of C for a base from bar `h0` to the signal bar `end`, independently."""
+    """Each rule of C for a base from bar `h0` to the signal bar `end`, independently; `tight`
+    whether the final contraction is the window (`book.tight_window`)."""
     length = end - h0 + 1
     depths = [c.depth_pct for c in contractions]
     low, high = (dec(v) for v in params.first_depth_pct)
     ratio = dec(params.depth_ratio_max)
     return {
+        "tight_window": tight,
         "base_length": params.base_sessions[0] <= length <= params.base_sessions[1],
         "swing_high_above_h0": swing_highs_above_h0 == 0,
         "contraction_count": params.contractions[0] <= len(depths) <= params.contractions[1],
@@ -97,8 +104,20 @@ def geometry_check(
     top = high[h0]
     above = sum(1 for s in swings[1:] if s.high and s.price > top)
     contractions = contractions_of(high, low, swings)
-    rules = geometry_rules(h0, contractions, above, end, params)
-    return GeometryCheck(h0, tuple(swings), tuple(contractions), rules)
+    found = tight_window(
+        high,
+        low,
+        contractions,
+        h0 + 1,
+        end,
+        params.window_sessions,
+        params.final_depth_max_pct,
+        params.depth_ratio_max,
+    )
+    # without a window the zigzag's own contractions are judged, so the other rules still read
+    chain = contractions if found is None else [*found[0], found[1]]
+    rules = geometry_rules(h0, chain, above, end, params, tight=found is not None)
+    return GeometryCheck(h0, tuple(swings), tuple(chain), rules)
 
 
 @dataclass(frozen=True)

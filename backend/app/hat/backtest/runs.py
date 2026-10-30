@@ -61,7 +61,13 @@ from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_vers
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
 from . import etf_data, folder, trials
-from .data import MarketData, load_market
+from .data import (
+    NSE_STOCKS,
+    NSE_STOCKS_UNIVERSE_ID,
+    NSE_STOCKS_VERSION_ID,
+    MarketData,
+    load_market,
+)
 from .discipline import HOLD_OUT, changed_knobs, check_hold_out, knobs_of, resolve_knobs
 from .dsr import MIN_TRIALS, PBO_BLOCKS, family_deflated_sharpe, pbo, trial_variance
 from .ep_log import uses_results
@@ -221,11 +227,25 @@ def _sleeve_of(
     strategy = None if version is None else configs.get(Strategy, version.strategy_id)
     if version is None or strategy is None:
         raise BacktestError("backtest_unknown_version")
+    if request.universe == NSE_STOCKS:
+        return version, nse_stocks_version(), strategy.user_id
     universe = _universe_named(session, request.universe or "", strategy.user_id)
     live = universe_live_version(session, None if universe is None else universe.id)
     if live is None:
         raise BacktestError("backtest_no_universe")
     return version, live, strategy.user_id
+
+
+def nse_stocks_version() -> HatUniverseVersion:
+    """The built-in `NSE_STOCKS` universe's version (`data.nse_stock_members`), never stored."""
+    return HatUniverseVersion(
+        id=NSE_STOCKS_VERSION_ID,
+        universe_id=NSE_STOCKS_UNIVERSE_ID,
+        version=1,
+        status="live",
+        definition={},
+        config_hash=NSE_STOCKS,
+    )
 
 
 def _universe_named(session: Session, text: str, user_id: uuid.UUID) -> HatUniverse | None:
@@ -289,7 +309,9 @@ def _strategy_label(name: str) -> str:
 
 def _universe_label(version: HatUniverseVersion, name: str) -> str:
     """`<index without spaces>_PIT` for a universe read from its index point in time (e.g.
-    `NIFTY500_PIT`), else the universe's name."""
+    `NIFTY500_PIT`), `NSE_STOCKS` for the built-in one, else the universe's name."""
+    if version.id == NSE_STOCKS_VERSION_ID:
+        return NSE_STOCKS
     index = (version.definition or {}).get("index")
     return f"{str(index).replace(' ', '').upper()}_PIT" if index else name
 

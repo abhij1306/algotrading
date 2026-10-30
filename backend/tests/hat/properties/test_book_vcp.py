@@ -32,6 +32,7 @@ from app.hat.engine.criteria.book import (
     relative_fault,
     shakeout,
     template_checks,
+    tight_window,
     time_fault,
     zigzag,
 )
@@ -74,8 +75,10 @@ def _ctx(frame: pl.DataFrame, benchmark: list[tuple[date, float]]) -> EvalContex
 
 
 # A base after a 300-bar advance: H0 100, contractions of ~21%, ~11% and ~5%, then a rise
-# towards the pivot that confirms the last swing low.
+# towards the pivot that confirms the last swing low. The final contraction is the window of
+# that rise's 12 bars (`tight_window`), ~4% deep, after the zigzag's three.
 BASE = [(10, 80.0), (10, 96.0), (8, 86.4), (8, 94.0), (5, 90.24), (12, 93.0)]
+WINDOW = 12
 
 
 def _base_series(scale: float = 1.0) -> list[float]:
@@ -88,8 +91,8 @@ def _volumes(closes: list[float], quiet: tuple[int, int]) -> list[float]:
 
 def _one_base() -> tuple[pl.DataFrame, int]:
     closes = _path([(300, 100.0)], 50.0) + _base_series()
-    final_high = 300 + 10 + 10 + 8 + 8 - 1  # the bar of the 94.0 swing high
-    return _frame(closes, _volumes(closes, (final_high, final_high + 5))), final_high
+    window = len(closes) - WINDOW  # the final contraction's first bar
+    return _frame(closes, _volumes(closes, (window, len(closes) - 1))), window
 
 
 def _benchmark(frame: pl.DataFrame, dip: float) -> list[tuple[date, float]]:
@@ -286,19 +289,19 @@ def test_earlier_bases_count_broken_pivots_only() -> None:
 
 
 def test_book_vcp_passes_a_book_base() -> None:
-    frame, final_high = _one_base()
+    frame, window = _one_base()
     result = book_vcp(_ctx(frame, _benchmark(frame, 10)), P)
     assert result.passed, result.reason
     extras = result.extras
-    assert extras["contraction_count"] == 3
-    assert extras["pivot"] == pytest.approx(94.0 * 1.005)
-    assert extras["final_contraction_low"] == pytest.approx(90.24 * 0.995)
-    assert extras["footprint"] == "11W 21/5 3T"
+    assert extras["contraction_count"] == 4
+    assert extras["pivot"] == pytest.approx(93.0 * 1.005)
+    assert extras["final_contraction_low"] == pytest.approx(frame["low"][window])
+    assert extras["footprint"] == "11W 21/4 4T"
     assert extras["base_number"] == 1
     assert extras["stage2_start_unknown"] is True
     assert extras["shakeout"] is False
     assert extras["dryup_min_ratio"] < 0.5
-    assert frame["date"][final_high].isoformat() == extras["contractions"][-1]["start"]
+    assert frame["date"][window].isoformat() == extras["contractions"][-1]["start"]
 
 
 def test_book_vcp_fails_against_a_flat_index() -> None:
@@ -311,8 +314,7 @@ def test_book_vcp_fails_against_a_flat_index() -> None:
 def test_book_vcp_counts_an_earlier_broken_base() -> None:
     closes = _path([(300, 100.0)], 50.0) + _base_series()
     closes += _path([(20, 130.0)], closes[-1]) + _base_series(1.3)
-    final_high = len(closes) - 6 - 12
-    frame = _frame(closes, _volumes(closes, (final_high, final_high + 5)))
+    frame = _frame(closes, _volumes(closes, (len(closes) - WINDOW, len(closes) - 1)))
     ctx = _ctx(frame, _benchmark(frame, 10))
     memo: dict = {}
     ctx.memo = memo
@@ -331,3 +333,46 @@ def test_book_vcp_switched_off_rules_need_no_data() -> None:
     assert result.passed, result.reason
     assert "dryup_mean_ratio" not in result.extras
     assert "index_depth_pct" not in result.extras
+
+
+# --- the final contraction as a window (owner 2026-10-30) -------------------------------------
+
+# Contractions of ~20% and ~9%, then a ~3% tight area of 19 bars: too shallow for the zigzag's
+# 3% reversal to confirm, so the zigzag alone merges it into the 9% one (whose volume is not
+# dry); the window finds it. Regression: fails with the zigzag's final contraction (main before
+# the fix: `no_volume_dryup` on the 9% one).
+TIGHT = [(10, 80.6), (10, 98.0), (8, 89.9), (8, 96.0), (5, 92.8), (5, 94.6), (5, 93.4), (4, 94.4)]
+
+
+def test_book_vcp_finds_a_final_contraction_under_the_swing_threshold() -> None:
+    closes = _path([(300, 100.0)], 50.0) + _path(TIGHT, 100.0)
+    frame = _frame(closes, _volumes(closes, (len(closes) - 19, len(closes) - 1)))
+    high, low = frame["high"].to_list(), frame["low"].to_list()
+    swings = zigzag(high, low, [0.03] * len(high), 299, len(high) - 1)
+    assert [s.high for s in swings] == [True, False, True, False, True]  # no third contraction
+    result = book_vcp(_ctx(frame, _benchmark(frame, 10)), P)
+    assert result.passed, result.reason
+    depths = [round(c["depth_pct"]) for c in result.extras["contractions"]]
+    assert depths == [20, 9, 3]
+    assert result.extras["pivot"] == pytest.approx(94.6 * 1.005)
+    assert result.extras["final_contraction_low"] == pytest.approx(92.8 * 0.995)
+
+
+def test_tight_window_is_the_longest_run_within_both_limits() -> None:
+    # bars 0-9 a 20% contraction (0..4) and a rally to 120; bars 10-19 within 2.9%
+    high = [100.0, 95, 90, 85, 82, 90, 100, 110, 115, 120] + [103.0] * 10
+    low = [98.0, 92, 87, 82, 80, 88, 98, 108, 113, 118] + [100.0] * 10
+    first = Contraction(0, 4, D(100), D(80))
+    earlier, window = tight_window(high, low, [first], 1, 19, (5, 15), 10.0, 0.75)
+    assert earlier == (first,)
+    assert (window.start, window.end, window.high, window.low) == (10, 19, D(103), D(100))
+    # the ratio rule: at most 0.75 x the last zigzag contraction before it
+    shallow = Contraction(0, 4, D(100), D(96))  # 4% deep: a window must be <= 3%
+    assert tight_window(high, low, [shallow], 1, 19, (5, 15), 10.0, 0.75)[1].start == 10
+    shallower = Contraction(0, 4, D(100), D(97))  # 3%: <= 2.25%, the 2.9% window fails
+    assert tight_window(high, low, [shallower], 1, 19, (5, 15), 10.0, 0.75) is None
+    # the depth cap, and no window without a zigzag contraction before it
+    assert tight_window(high, low, [first], 1, 19, (5, 15), 2.0, 0.75) is None
+    assert tight_window(high, low, [], 1, 19, (5, 15), 10.0, 0.75) is None
+    # a window never starts before `first`
+    assert tight_window(high, low, [first], 16, 19, (5, 15), 10.0, 0.75) is None

@@ -142,6 +142,10 @@ whose audit warns or fails):
   [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
   `run.json`) and writes its entries, seeded near-misses of the base geometry with charts, and
   the Depth_1 gate table to `reports/<variant>/audit/` (gitignored; needs matplotlib).
+- The S1 setups diagnosis: `python scripts/research/s1_setups_diag.py sweeps --out DIR` writes
+  the setups, NSE-stocks and leave-one-out variants files; `... loo --log <the leave-one-out
+  sweep's log>` prints each rule's extra entries (shadow trades: no cash or slot limit, the
+  normal exits) against the shadow run.
 - A run with a pre-open playbook also writes `ep_candidates.csv` and the
   `breakdowns.episodic_pivot` tables (result-standard.md). Its audit: `python
   scripts/research/s2_ep_audit.py --run-id <id> [--seed N]` samples 20 EP entries and 10 near
@@ -326,7 +330,7 @@ line flag sets the same for one run or every variant.
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
 | `volume_pace` on the full day's volume on 5-minute sessions too (the daily estimate always uses it; a look-ahead, known gap `volume_pace_on_full_day_volume`) | `volume_pace: full_day` | `--volume-pace` |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
-| Universe, window | one sweep per value (a sweep reads one market) | `--universe`, `--from`, `--to` |
+| Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook) | `--universe`, `--from`, `--to` |
 
 Not knobs without a code change (strategy or engine changes, shared with live): the live regime
 engine's thresholds and multiplier table (`engine/portfolio/regime.py`, under `regime_mult:
