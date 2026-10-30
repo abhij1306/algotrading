@@ -6,17 +6,18 @@ backtest uses for an order at 09:20 on a day without five-minute bars (`engine/f
         [--from 2021-10-26] [--to 2024-12-31] [--min-adv-cr 10] [--min-price 50]
 
 For every session in the window with a stored `bars_5m` day, every point-in-time member of the
-universe that is liquid as a rotation buys it (the seed's universe stage: series EQ or BE, the 20
-sessions before the day averaging at least `--min-adv-cr` crore traded, close times volume where
-no traded value is stored, and the previous close at least `--min-price`) and whose five-minute session a backtest admits (`intraday.session_admitted`: it fits
-its daily bar, lacks no refused bucket, lies in no known coverage gap) gives one move:
-the price at 09:20 (`fill_0920.price_0920`, the 09:15 bar's close) over the day's raw open, less
-1. It prints one JSON report: the count, the median, quartiles and mean of the move, the
-buy-side median (the move: a buy pays it) and the sell-side median (minus the move: a sale loses
-it), over all member-days and over rebalance sessions only (the first session of each month, when
-a monthly rotation trades), and the constants to set (`suggested`: each side's median, never
-favourable, so at least 0). Read only: the database in a read-only transaction, the store's
-files. Membership is by the ids the universe stores (a chain's older ISIN is not joined).
+universe that is liquid as a rotation buys it (the seed's universe stage: series EQ or BE, the
+20 sessions before the day averaging at least `--min-adv-cr` crore traded, close times volume
+where no traded value is stored, and the previous close at least `--min-price`) and whose five-
+minute session a backtest admits (`intraday.session_admitted`: it fits its daily bar, lacks no
+refused bucket, lies in no known coverage gap) gives one move: the price at 09:20
+(`fill_0920.price_0920`, the 09:15 bar's close) over the day's raw open, less 1. It prints one
+JSON report: the count, the median, quartiles and mean of the move, the buy-side median (the
+move: a buy pays it) and the sell-side median (minus the move: a sale loses it), over all
+member-days and over rebalance sessions only (the first session of each month, when a monthly
+rotation trades), and the constants to set (`suggested`: each side's median, never favourable,
+so at least 0). Read only: the database in a read-only transaction, the store's files.
+Membership is by the ids the universe stores (a chain's older ISIN is not joined).
 """
 
 from __future__ import annotations
