@@ -255,7 +255,7 @@ code, and a reason with no code fails the run (`backtest_unmapped_refusal`):
 | `industry_cap` | `industry_cap` |
 | `stopout_cap` | `stopout_cap`, `cooldown` |
 | `size_zero_cash` | `size_zero_cash` |
-| `size_zero_risk` | `size_zero_risk`, `size_zero_position`, `size_zero_liquidity`, `allocation_exceeds_policy`, `stop_not_below_entry`, `missing_input`, `invalid_input` |
+| `size_zero_risk` | `size_zero_risk`, `size_zero_position`, `size_zero_liquidity`, `allocation_exceeds_policy`, `stop_not_below_entry`, `missing_input`, `invalid_input`, `rotation_not_paper` |
 | `size_below_min` | `size_below_min` (the size's value under the policy's `min_position_pct` of the sleeve's equity) |
 | `max_chase` | `max_chase` (the risk check's and the entry filter's) |
 | `open_risk_cap` | `global_open_risk` |

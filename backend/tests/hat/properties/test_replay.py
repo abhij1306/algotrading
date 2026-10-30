@@ -10,20 +10,26 @@ import polars as pl
 import pytest
 
 from app.hat.daily.replay import (
+    Book,
     ExitCheck,
     Facts,
     ReplayError,
     RotationNight,
     Side,
     Watch,
+    backtest_sizing,
     cause_of,
     compare,
     exit_check,
     facts_of,
+    merged,
     no_later,
+    prices_on,
     rotation_night,
 )
 from app.hat.engine.exits import PositionState
+from app.hat.engine.rotation import orders
+from app.hat.engine.rotation_live import rebalance_orders
 from app.hat.engine.strategy.config import ExitCloseBelowSma, ExitHardStop
 from app.hat.engine.strategy.versions import seed_config
 
@@ -174,9 +180,62 @@ def test_rotation_night_targets_the_best_from_an_empty_book() -> None:
     config = seed_config("momentum-rotation")
     assert config.rotation is not None
     ranks = [(f"n{k:02}", float(100 - k)) for k in range(30)]
-    night = rotation_night(config, ranks, gate_on=True)
+    night = rotation_night(config, ranks, True, Book(), {}, backtest_sizing)
     assert night.target == tuple(f"n{k:02}" for k in range(config.rotation.top_n))
     assert night.ranking[0] == ("n00", D("100.000000"))
+    assert night.capital is None  # no allocation: not sized
+    assert night.orders == ()
+
+
+def test_both_sizings_agree_on_a_book_marked_at_its_prices() -> None:
+    config = seed_config("momentum-rotation")
+    ranks = [(f"n{k:02}", float(100 - k)) for k in range(30)]
+    # held: n00 bought at 50, now 100; n35 (unranked) bought at 20, now 10
+    book = Book(D(1_000_000), {"n00": [(1000, D(50))], "n35": [(500, D(20))]})
+    prices = {f"n{k:02}": D(100) for k in range(36)}
+    prices["n35"] = D(10)
+    live = rotation_night(config, ranks, True, book, prices, rebalance_orders)
+    backtest = rotation_night(config, ranks, True, book, prices, backtest_sizing)
+    assert live == backtest
+    assert live.capital == D("1045000.00")  # 1,000,000 + 50,000 - 5,000
+    assert live.orders[0] == ("n35", "sell", 500)
+    # a sizing on the cost basis (the reviewed defect) shows as a capital difference
+    at_cost = rotation_night(config, ranks, True, book, prices, _cost_sizing)
+    found = compare(_with_night(live), _with_night(at_cost))
+    assert ("rotation_size", "bot", "capital", "sizing_basis") in {
+        (d.kind, d.key, d.field, d.cause) for d in found
+    }
+    assert any(d.kind == "rotation_order" and d.cause == "capital_differs" for d in found)
+
+
+def _cost_sizing(chosen, lots, prices, at_cost, rules):  # noqa: ANN001, ANN202
+    held = {name: sum(q for q, _ in parts) for name, parts in lots.items()}
+    return at_cost, orders(chosen, held, prices, at_cost, rules)
+
+
+def _with_night(night: RotationNight) -> Side:
+    return Side(rotation={"bot": night})
+
+
+def test_order_differences_name_a_price_difference_first() -> None:
+    a = RotationNight(True, (), ("x",), D(100), (("x", "buy", 10),), (("x", D(5)),))
+    b = RotationNight(True, (), ("x",), D(100), (("x", "buy", 9),), (("x", D("5.5")),))
+    found = compare(_with_night(a), _with_night(b))
+    assert [(d.kind, d.cause) for d in found] == [("rotation_order", "prices_differ")]
+
+
+def test_merged_keeps_one_row_per_instrument_and_session() -> None:
+    first = _bars([1.0, 2.0], name="i")
+    second = pl.concat([_bars([1.0, 2.0], name="i"), _bars([5.0], name="j")])
+    found = merged(merged(pl.DataFrame(), first), second)
+    assert sorted(found["instrument_id"].to_list()) == ["i", "i", "j"]
+    assert merged(first, pl.DataFrame()) is first
+
+
+def test_prices_on_reads_the_price_basis_close() -> None:
+    assert prices_on(_bars([10.0, 11.0], raw=5.5), DAY) == {"i": D("5.5")}
+    assert prices_on(_bars([10.0, 11.0]), DAY) == {"i": D(11)}
+    assert prices_on(pl.DataFrame(), DAY) == {}
 
 
 def test_no_later_refuses_a_frame_past_the_day() -> None:

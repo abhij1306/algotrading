@@ -8,8 +8,12 @@ equity and free cash, the kills, the feed and the quality gate. A bot that asks 
 auto does not trade at all (real rotation orders are not built, and its entry context would be the
 real book's): its job is recorded `real_orders_not_built`, its waiting sales wait on, and the
 owner is told (`rotation.shadow_only`); a rebalance that could not size (no allocation for the
-night) is told too (`rotation.skipped`). Each bot is its own transaction, and a bot whose job
-already ran today (`rotation.rebalanced`) is not run again.
+night) is told too (`rotation.skipped`), and so is every buy not made (`rotation.buy_refused`).
+A rebalance that reaches a name it may buy with no tick yet, or a stale one, or runs on a stale
+feed, writes nothing for its bot (no lower-ranked name takes its place); the job fails
+`rotation_unpriced` and runs again each minute until `REBALANCE_UNTIL` (`rotation.unpriced`, told
+once). Each bot is its own transaction, and a bot whose job already ran today
+(`rotation.rebalanced`) is not run again.
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from ..configs.unit import configs_of
 from ..engine.rotation_live import (
     Planned,
     Rebalanced,
+    RotationUnpricedError,
     pending_sales,
     planned,
     rebalance,
@@ -37,19 +42,33 @@ from ..engine.rotation_live import (
 from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..notify import Notifier
-from ..ops.jobs import JobResult, SessionFactory
+from ..ops.jobs import JobError, JobResult, SessionFactory
 from ..time import utc_now
 from .entries import LiveContexts
 from .gates import CalendarSource
 from .prices import LivePrices
 
-__all__ = ["ALERT_SHADOW_ONLY", "ALERT_SKIPPED", "REBALANCE_AT", "ROTATION_REBALANCE", "Rotations"]
+__all__ = [
+    "ALERT_BUY_REFUSED",
+    "ALERT_SHADOW_ONLY",
+    "ALERT_SKIPPED",
+    "ALERT_UNPRICED",
+    "REBALANCE_AT",
+    "REBALANCE_UNTIL",
+    "ROTATION_REBALANCE",
+    "Rotations",
+]
 
 ROTATION_REBALANCE = "rotation.rebalance"
 # The first final 5-minute bar and the regime gate (`GateBoard`): the open's prices are in.
 REBALANCE_AT = time(9, 20)
 ALERT_SHADOW_ONLY = "rotation.shadow_only"
 ALERT_SKIPPED = "rotation.skipped"
+ALERT_UNPRICED = "rotation.unpriced"
+ALERT_BUY_REFUSED = "rotation.buy_refused"
+UNPRICED = "rotation_unpriced"
+# The job retries an unpriced rebalance until then; past it the job fails (`job.failed`).
+REBALANCE_UNTIL = time(12, 0)
 REAL_NOT_BUILT = "real_orders_not_built"
 
 
@@ -72,8 +91,13 @@ class Rotations:
         self._prices = prices
         self._calendar = calendar
         self._notifier = notifier
+        self._told: set[tuple[uuid.UUID, date]] = set()  # `rotation.unpriced` told
 
     def rebalance(self, day: date) -> JobResult:
+        """Every rotation bot's job for `day`. A bot whose rebalance found a name it may buy
+        without a live price yet wrote nothing; once the others ran the job fails
+        (`rotation_unpriced`) and the scheduler runs it again until its window ends, the owner
+        told once a day per bot (`rotation.unpriced`)."""
         with self._session_factory() as session:
             bots = [
                 b.id
@@ -83,8 +107,21 @@ class Rotations:
                 if rotation_config(session, b) is not None
             ]
         rows = 0
+        waiting: list[uuid.UUID] = []
         for bot_id in bots:
-            rows += self._one(bot_id, day)
+            try:
+                rows += self._one(bot_id, day)
+            except RotationUnpricedError as unpriced:
+                waiting.append(bot_id)
+                if (bot_id, day) not in self._told:
+                    self._told.add((bot_id, day))
+                    self._notifier.alert(
+                        ALERT_UNPRICED,
+                        day,
+                        {"bot_id": str(bot_id), "names": ",".join(unpriced.names)[:200]},
+                    )
+        if waiting:
+            raise JobError(UNPRICED)
         return JobResult(rows=rows)
 
     def _one(self, bot_id: uuid.UUID, day: date) -> int:
@@ -105,6 +142,7 @@ class Rotations:
                 done.skipped = REAL_NOT_BUILT
                 done.waiting.update(waiting)
             else:
+                # an unpriced name raises before the commit: this bot's writes roll back
                 self._trade(session, bot_id, night, waiting, now, done)
             record_rebalanced(session, bot_id, done, now, asked=asked)
             session.commit()
@@ -120,29 +158,35 @@ class Rotations:
         now: datetime,
         done: Rebalanced,
     ) -> None:
-        def price(name: str) -> Decimal | None:
-            return self._prices.checked(session, uuid.UUID(name), now)[0]
+        def price(name: str) -> tuple[Decimal | None, str | None]:
+            return self._prices.checked(session, uuid.UUID(name), now)
 
         if waiting:
             pending_sales(session, bot_id, waiting, price, now, done)
         if night is None:
             return
-        traded = rebalance(
-            session,
-            bot_id,
-            night,
-            price=price,
-            context=lambda: self._contexts.entry_context(session, bot_id, now),
-            now=now,
+        done.absorb(
+            rebalance(
+                session,
+                bot_id,
+                night,
+                price=price,
+                context=lambda: self._contexts.entry_context(session, bot_id, now),
+                now=now,
+            )
         )
-        done.rows.extend(traded.rows)
-        done.waiting.update(traded.waiting)
-        done.skipped = traded.skipped
 
     def _tell(self, bot_id: uuid.UUID, day: date, asked: str, done: Rebalanced) -> None:
+        bot = str(bot_id)
         if asked != Mode.SHADOW:
-            self._notifier.alert(ALERT_SHADOW_ONLY, day, {"bot_id": str(bot_id), "asked": asked})
-        elif done.skipped is not None:
+            self._notifier.alert(ALERT_SHADOW_ONLY, day, {"bot_id": bot, "asked": asked})
+            return
+        if done.skipped is not None:
+            self._notifier.alert(ALERT_SKIPPED, day, {"bot_id": bot, "reason": done.skipped})
+        if done.refused:
+            refused = ",".join(f"{name}:{why}" for name, why in sorted(done.refused.items()))
             self._notifier.alert(
-                ALERT_SKIPPED, day, {"bot_id": str(bot_id), "reason": done.skipped}
+                ALERT_BUY_REFUSED,
+                day,
+                {"bot_id": bot, "count": len(done.refused), "buys": refused[:200]},
             )

@@ -7,11 +7,13 @@ raises: a missing, non-finite or float input, or any arithmetic failure, is a RE
 default (fail closed).
 
 An exit or a protective-stop move is always accepted: no cap, kill, pause or exposure level can
-trap a position (HAT-RISK-035). A rotation buy (`ROTATION_BUY`, decisions.md "Momentum rotation")
-has no stop, so no per-trade risk, slot or open-risk cap applies to it: it is refused by the
-kills, a pause, a closed market, a stale feed and a failed quality gate as an entry is, and its
-requested shares are cut to the free cash. Anything that is not exactly one of those actions is
-an entry and is checked in full, so an action name cannot be used to skip a check.
+trap a position (HAT-RISK-035). A rotation buy (`ROTATION_BUY`, decisions.md "Momentum
+rotation") has no stop, so no per-trade risk, slot or open-risk cap applies to it; for that it is
+refused outright unless it is the rotation playbook's and virtual (`rotation_not_paper`). It is
+refused by the kills, a pause, a closed market, a stale feed and a failed quality gate as an
+entry is, and its requested shares are cut to the free cash. Anything that is not exactly one of
+those actions is an entry and is checked in full, so an action name cannot be used to skip a
+check.
 
 The order of the entry checks is fixed, and the first failing one names the reason.
 """
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 ENTRY = "entry"
 EXIT_ACTIONS = frozenset({"exit", "stop_move"})
 ROTATION_BUY = "rotation_buy"  # a rotation's buy or top-up of a set number of shares
+ROTATION_PLAYBOOK = "rotation"  # the one playbook a `ROTATION_BUY` may come from
 
 
 class Reason(StrEnum):
@@ -79,6 +82,7 @@ class Reason(StrEnum):
     SIZE_ZERO_CASH = "size_zero_cash"
     SIZE_BELOW_MIN = "size_below_min"
     GLOBAL_OPEN_RISK = "global_open_risk"
+    ROTATION_NOT_PAPER = "rotation_not_paper"
 
 
 REASON_CODES = frozenset(reason.value for reason in Reason)
@@ -126,6 +130,8 @@ class SignalContext:
     calendar: SessionCalendar | None = None
     # A rotation buy's shares (`ROTATION_BUY`, from `engine.rotation.orders`); unread otherwise.
     quantity: int | None = None
+    # The signal's playbook (`open_entry` sets it): a `ROTATION_BUY` needs `ROTATION_PLAYBOOK`.
+    playbook: str | None = None
 
 
 @dataclass(frozen=True)
@@ -436,8 +442,12 @@ def _entry_decision(ctx: SignalContext) -> RiskDecision:
 
 
 def _rotation_decision(ctx: SignalContext) -> RiskDecision:
-    """A rotation buy: the kill, pause, market and data checks of an entry, then its requested
-    shares cut to the free cash. No stop (recorded as 0) and no risk amount."""
+    """A rotation buy: refused unless it is the rotation playbook's and virtual (paper only:
+    without a stop it may skip the stop, slot and open-risk checks only there); then the kill,
+    pause, market and data checks of an entry, and its requested shares cut to the free cash.
+    No stop (recorded as 0) and no risk amount."""
+    if ctx.playbook != ROTATION_PLAYBOOK or ctx.is_virtual is not True:
+        return _reject(Reason.ROTATION_NOT_PAPER)
     at = _require(ctx.at, "at")
     if not isinstance(at, datetime) or at.tzinfo is None or at.utcoffset() is None:
         raise MissingInputError("at: needs an aware instant")

@@ -91,7 +91,7 @@ from .exits import ShadowExits
 from .gates import CalendarSource
 from .market import DailyBook
 from .prices import PriceBook
-from .rotation import REBALANCE_AT, ROTATION_REBALANCE, Rotations
+from .rotation import REBALANCE_AT, REBALANCE_UNTIL, ROTATION_REBALANCE, Rotations
 
 __all__ = [
     "EXITS_CLOSE_SHADOW",
@@ -556,6 +556,7 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
                     ROTATION_REBALANCE,
                     REBALANCE_AT,
                     intraday.rotations.rebalance,
+                    until=REBALANCE_UNTIL,
                     retry_after=ONE_MINUTE,
                     after=(MODES_APPLY,),
                     shift=intraday.open_shift,

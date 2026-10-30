@@ -194,6 +194,8 @@ REFUSALS = {
     # 100 shares at 100 is 1% of the 1,000,000 equity, under the seed's 2% floor
     Reason.SIZE_BELOW_MIN: {"free_cash": D(10_000)},
     Reason.GLOBAL_OPEN_RISK: {"open_positions": [position(qty=5501)]},
+    # a rotation buy of a real (not virtual) entry
+    Reason.ROTATION_NOT_PAPER: {"action": "rotation_buy", "quantity": 100, "playbook": "rotation"},
 }
 
 

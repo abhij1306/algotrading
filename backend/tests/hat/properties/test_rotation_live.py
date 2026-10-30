@@ -12,7 +12,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-from app.hat.engine.rotation_live import closes_window
+from app.hat.daily.entries import sold_gain
+from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE, PRICE_UNKNOWN
+from app.hat.engine.rotation import SELL, TOP_UP, TRIM, Order, Plan, book_equity
+from app.hat.engine.rotation_live import Rebalanced, closes_window, priced_targets, rebalance_orders
+from app.hat.engine.strategy.config import Rotation
 from app.hat.risk.decision import ROTATION_BUY, decide
 from app.hat.risk.kill import KillState
 from app.hat.risk.sizing import UNBOUNDED_CASH, SizingInputError, rotation_quantity
@@ -31,6 +35,8 @@ def _buy(**changes: object) -> object:
                 "quantity": 100,
                 "stop_price": None,
                 "adv20": None,
+                "playbook": "rotation",
+                "is_virtual": True,
                 **changes,
             }
         )
@@ -128,3 +134,96 @@ def test_closes_window_lays_out_the_last_sessions_through_the_night() -> None:
 def test_closes_window_has_no_column_without_names() -> None:
     bars = _bars([("a", date(2024, 1, 1), 1.0)])
     assert closes_window(bars, [], date(2024, 1, 1), 3).shape == (3, 0)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"playbook": "s1-vcp"},  # another playbook's entry cannot skip the stop and caps
+        {"playbook": None},
+        {"is_virtual": False},  # a real order
+        {"is_virtual": None},
+    ],
+)
+def test_a_rotation_buy_is_refused_unless_it_is_the_rotation_playbooks_on_paper(
+    changes: dict[str, object],
+) -> None:
+    found = _buy(**changes)
+    assert not found.accepted
+    assert found.reason == "rotation_not_paper"
+
+
+RULES = Rotation.model_construct(
+    short_sessions=2, long_sessions=4, skip_sessions=1, vol_sessions=4, min_bars=3,
+    top_n=2, buffer_rank=2, reweight=True, min_change_pct=2.0, market_filter=False,
+)  # fmt: skip
+
+
+def test_the_capital_counts_the_holdings_at_their_prices() -> None:
+    # the review's case: capital 100 in two names at 50; A doubles. At cost the book is 100
+    # (sizing 50 each would trim the winner to 50 and idle cash); marked it is 150: 75 each
+    lots = {"A": [(1, D(50))], "B": [(1, D(50))]}
+    prices = {"A": D(100), "B": D(50)}
+    assert book_equity(D(100), lots, prices) == D(150)
+    assert book_equity(D(100), lots, {"B": D(40)}) == D(90)  # A unpriced: at its cost
+    chosen = Plan(date(2024, 1, 31), (), ("A", "B"))
+    lots = {"A": [(10, D(50))], "B": [(10, D(50))]}  # 1000 at cost: A worth 1000, B 500
+    equity, orders = rebalance_orders(chosen, lots, prices, D(1000), RULES)
+    assert equity == D(1500)
+    assert orders == [
+        Order("A", TRIM, 2),  # 1000 -> 750: 2.5 shares, floored
+        Order("B", TOP_UP, 5),
+    ]
+
+
+def test_a_top_up_and_a_trim_reach_the_same_target_from_lots() -> None:
+    chosen = Plan(date(2024, 1, 31), (), ("A",))
+    lots = {"A": [(4, D(100)), (2, D(120))], "X": [(3, D(10))]}
+    equity, orders = rebalance_orders(chosen, lots, {"A": D(100), "X": D(10)}, D(1000), RULES)
+    assert equity == D(1000) - D(40)  # the top-up lot at 120 now at 100
+    assert orders[0] == Order("X", SELL, 3)
+    assert orders[1] == Order("A", TRIM, 1)  # 600 held, 480 the target, floor(1.2)
+
+
+def test_a_partial_sale_books_its_gain_or_loss() -> None:
+    assert sold_gain(D(100), 10, D(150), D(3)) == D(497)
+    assert sold_gain(D(100), 10, D(90), D(3)) == D(-103)
+
+
+def test_a_waiting_sale_of_a_name_back_in_the_target_is_off() -> None:
+    done = Rebalanced(date(2024, 2, 1))
+    done.waiting = {"X": "rotation_out", "Y": "rotation_out"}
+    later = Rebalanced(date(2024, 2, 1), waiting={"Z": "rotation_not_eligible"}, target=("X", "W"))
+    later.refused = {"W": "kill_bot"}
+    done.absorb(later)
+    assert done.waiting == {"Y": "rotation_out", "Z": "rotation_not_eligible"}
+    assert done.refused == {"W": "kill_bot"}
+    assert done.target == ("X", "W")
+
+
+def _quotes(table: dict[str, tuple[Decimal | None, str | None]]):  # noqa: ANN202
+    return lambda name: table.get(name, (D(10), None))
+
+
+def test_a_name_without_a_tick_is_not_passed_over_for_a_lower_one() -> None:
+    ranking = [("a", 3.0), ("b", 2.0), ("c", 1.0)]
+    # b has no tick yet: the selection fills with c, and says so, so the caller trades nothing
+    target, _, _, unpriced = priced_targets(
+        ranking, {}, RULES, gate_on=True, price=_quotes({"b": (None, PRICE_UNKNOWN)})
+    )
+    assert target == ("a", "c")
+    assert unpriced == ["b"]
+    stale = priced_targets(
+        ranking, {}, RULES, gate_on=True, price=_quotes({"a": (None, PRICE_STALE)})
+    )
+    assert stale[3] == ["a"]
+
+
+def test_a_name_outside_its_band_is_passed_over_as_unbuyable() -> None:
+    ranking = [("a", 3.0), ("b", 2.0), ("c", 1.0)]
+    target, _, quote, unpriced = priced_targets(
+        ranking, {}, RULES, gate_on=True, price=_quotes({"b": (None, PRICE_OUT_OF_BAND)})
+    )
+    assert target == ("a", "c")
+    assert unpriced == []
+    assert quote("a") == D(10)

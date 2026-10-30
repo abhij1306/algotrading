@@ -93,6 +93,8 @@ REFUSAL_OF: Mapping[str, str] = {
     Reason.INVALID_INPUT: "size_zero_risk",
     Reason.STOP_NOT_BELOW_ENTRY: "size_zero_risk",
     Reason.GLOBAL_OPEN_RISK: "open_risk_cap",
+    # a stopless buy outside a paper rotation: no backtest signal is one; counted as a bad input
+    Reason.ROTATION_NOT_PAPER: "size_zero_risk",
     # an overlay run's cash refusal while the sleeve held units (`overlay.refusal_reason`)
     INSUFFICIENT_CREDIT: INSUFFICIENT_CREDIT,
 }

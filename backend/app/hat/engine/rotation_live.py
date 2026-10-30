@@ -45,12 +45,13 @@ from sqlalchemy.orm import Session
 from ..configs.records import Bot, StrategyVersion
 from ..configs.unit import configs_of
 from ..costs import DEFAULT_COST_MODEL, DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
+from ..data.live import PRICE_STALE, PRICE_UNKNOWN
+from ..errors import HatError
 from ..events import record, recorded_for
 from ..governance import Mode
 from ..models import HatEvent, HatPosition, HatSignal
 from ..money import require_exact
 from ..risk.decision import ROTATION_BUY, SignalContext
-from ..time import trade_date_of
 from . import rotation
 from .botlock import lock_bot
 from .confidence import Confidence
@@ -67,14 +68,18 @@ __all__ = [
     "EVENT_REBALANCED",
     "FILLS",
     "Planned",
+    "Lot",
     "Rebalanced",
+    "RotationUnpricedError",
     "closes_window",
     "plan_night",
     "planned",
     "planned_instruments",
     "pending_sales",
     "night_ranking",
+    "priced_targets",
     "rebalance",
+    "rebalance_orders",
     "rebalanced_on",
     "record_rebalanced",
     "rotation_config",
@@ -94,6 +99,10 @@ CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 # affordable shares the buys are scaled with.
 FILLS = BacktestFills(load_cost_schedule(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS)
 _SCORE = Decimal("0.000001")
+# An instrument's usable live price, or None and the refusal's code (`LivePrices.checked`).
+Price = Callable[[str], tuple[Decimal | None, str | None]]
+# The refusals a rebalance waits out (a tick will come) rather than pass the name over.
+WAIT_FOR_PRICE = frozenset({PRICE_UNKNOWN, PRICE_STALE})
 
 
 def rotation_config(session: Session, bot: Bot) -> StrategyConfig | None:
@@ -256,6 +265,24 @@ def planned_instruments(session: Session, trade_date: date, depth: int) -> set[u
 # --- the open -----------------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class Lot:
+    """One position of a rotation holding (a first buy or a top-up)."""
+
+    position_id: uuid.UUID
+    qty: int
+    entry: Decimal
+
+
+class RotationUnpricedError(HatError):
+    """A rebalance found a name it may buy without a live price yet (no tick, or a stale one):
+    it trades nothing rather than pass over that name, and the job tries again."""
+
+    def __init__(self, names: Sequence[str]) -> None:
+        super().__init__("rotation_unpriced")
+        self.names = tuple(names)
+
+
 @dataclass
 class Rebalanced:
     """What a rebalance did: one row per order planned (traded or not) and per target held
@@ -266,6 +293,20 @@ class Rebalanced:
     skipped: str | None = None
     # the holdings whose sale found no price, with the reason they are sold: the next job's
     waiting: dict[str, str] = field(default_factory=dict)
+    target: tuple[str, ...] = ()  # the plan's target list (a waiting sale of one is off)
+    refused: dict[str, str] = field(default_factory=dict)  # buys not made, and why
+
+    def absorb(self, rebalanced: Rebalanced) -> None:
+        """Take in the rebalance that ran after this job's waiting sales: its rows, sales left
+        waiting, refusals, target and skip. A waiting sale of a name back in the target is off,
+        as the backtest's (`RotationBook.rebalance`): the holding stays."""
+        self.rows.extend(rebalanced.rows)
+        self.waiting.update(rebalanced.waiting)
+        self.refused.update(rebalanced.refused)
+        self.target = rebalanced.target
+        self.skipped = rebalanced.skipped
+        for name in self.target:
+            self.waiting.pop(name, None)
 
     def row(
         self, name: str, action: str, reason: str | None, qty: int, price: Decimal | None
@@ -281,11 +322,13 @@ class Rebalanced:
         )
 
 
-def _lots(session: Session, bot_id: uuid.UUID) -> dict[str, list[tuple[uuid.UUID, int]]]:
+def _lots(session: Session, bot_id: uuid.UUID) -> dict[str, list[Lot]]:
     """The bot's open rotation holdings: per instrument (text id), its lots (position id, open
-    shares), oldest first. Only the shadow book's (a veto trade is not the bot's)."""
+    shares, entry price), oldest first. Only the shadow book's (a veto trade is not the bot's)."""
     rows = session.execute(
-        select(HatPosition.instrument_id, HatPosition.id, HatPosition.qty_open)
+        select(
+            HatPosition.instrument_id, HatPosition.id, HatPosition.qty_open, HatPosition.avg_entry
+        )
         .join(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(
             HatPosition.bot_id == bot_id,
@@ -296,16 +339,18 @@ def _lots(session: Session, bot_id: uuid.UUID) -> dict[str, list[tuple[uuid.UUID
         )
         .order_by(HatPosition.opened_at, HatPosition.id)
     ).all()
-    out: dict[str, list[tuple[uuid.UUID, int]]] = {}
-    for instrument_id, position_id, qty in rows:
+    out: dict[str, list[Lot]] = {}
+    for instrument_id, position_id, qty, entry in rows:
         if qty > 0:
-            out.setdefault(str(instrument_id), []).append((position_id, int(qty)))
+            out.setdefault(str(instrument_id), []).append(
+                Lot(position_id, int(qty), Decimal(entry))
+            )
     return out
 
 
 def _sell(
     session: Session,
-    lots: Sequence[tuple[uuid.UUID, int]],
+    lots: Sequence[Lot],
     qty: int,
     price: Decimal,
     reason: str,
@@ -313,7 +358,7 @@ def _sell(
 ) -> int:
     """Sell `qty` shares of a holding over its lots, newest first; the shares sold."""
     sold = 0
-    for position_id, take in rotation.lot_sales(qty, lots):
+    for position_id, take in rotation.lot_sales(qty, [(lot.position_id, lot.qty) for lot in lots]):
         if sell_position(session, position_id, take, price, reason, now):
             sold += take
     return sold
@@ -323,7 +368,7 @@ def pending_sales(
     session: Session,
     bot_id: uuid.UUID,
     waiting: Mapping[str, str],
-    price: Callable[[str], Decimal | None],
+    price: Price,
     now: datetime,
     done: Rebalanced,
 ) -> None:
@@ -335,12 +380,12 @@ def pending_sales(
         held = lots.get(name)
         if not held:
             continue
-        found = price(name)
+        found, _ = price(name)
         if found is None:
             done.row(name, rotation.SELL, NO_PRICE, 0, None)
             done.waiting[name] = reason
             continue
-        sold = _sell(session, held, sum(q for _, q in held), found, reason, now)
+        sold = _sell(session, held, sum(lot.qty for lot in held), found, reason, now)
         done.row(name, rotation.SELL, reason, sold, found)
 
 
@@ -349,14 +394,21 @@ def rebalance(
     bot_id: uuid.UUID,
     night: Planned,
     *,
-    price: Callable[[str], Decimal | None],
+    price: Price,
     context: Callable[[], SignalContext],
     now: datetime,
 ) -> Rebalanced:
     """Trade the rebalance `night` decided at the open of its trade date (module docstring),
-    on paper. `price` is the usable live price of an instrument (text id), None when there is
-    none (no tick, stale, outside the band); `context` the bot's entry context read now (the
-    sleeve's equity and free cash among it), read again after the sales."""
+    on paper. `price` is an instrument's (text id) usable live price, or None and the refusal's
+    code (`data.live`); `context` the bot's entry context read now (the sleeve's equity at cost
+    and its free cash among it), read again after the sales.
+
+    The capital is the book's equity on the live prices (`rotation.book_equity`, the backtest's
+    basis: cash plus the holdings marked). A name the selection reaches with no tick or a stale
+    one, or a stale feed, raises `RotationUnpricedError` before anything is written, so the job
+    tries again rather than buy a lower-ranked name in its place; a name outside the day's band
+    cannot be bought now and is passed over, as the backtest passes over one locked at its upper
+    band."""
     lock_bot(session, bot_id)
     done = Rebalanced(night.trade_date)
     bot = configs_of(session).get(Bot, bot_id)
@@ -366,25 +418,25 @@ def rebalance(
         return done
     rules = config.rotation
     lots = _lots(session, bot_id)
-    held = {name: sum(q for _, q in parts) for name, parts in lots.items()}
-    quotes: dict[str, Decimal | None] = {}
-
-    def quote(name: str) -> Decimal | None:
-        if name not in quotes:
-            quotes[name] = price(name)
-        return quotes[name]
-
+    held = {name: sum(lot.qty for lot in parts) for name, parts in lots.items()}
     ranking = tuple((name, float(score)) for name, score in night.ranking)
-    target, filtered = rotation.targets(
-        ranking, held, rules, gate_on=night.gate_on, can_buy=lambda n: quote(n) is not None
+    target, filtered, quote, unpriced = priced_targets(
+        ranking, held, rules, gate_on=night.gate_on, price=price
     )
+    first = context()
+    if first.feed_stale is True:
+        raise RotationUnpricedError(["feed"])
+    if unpriced:
+        raise RotationUnpricedError(unpriced)
+    done.target = target
     chosen = rotation.Plan(night.night, ranking, target, filtered=filtered)
-    equity = context().equity
-    if equity is None or equity <= 0:
+    prices = {n: p for n in {*target, *held} if (p := quote(n)) is not None}
+    at_cost = first.equity
+    if at_cost is None or at_cost <= 0:
         done.skipped = NO_EQUITY  # no allocation for the night: nothing trades
         return done
-    prices = {n: p for n in {*target, *held} if (p := quote(n)) is not None}
-    orders = rotation.orders(chosen, held, prices, equity, rules)
+    marked = {name: [(lot.qty, lot.entry) for lot in parts] for name, parts in lots.items()}
+    _, orders = rebalance_orders(chosen, marked, prices, at_cost, rules)
     buys: list[rotation.Order] = []
     for order in orders:
         name = order.instrument_id
@@ -412,6 +464,52 @@ def rebalance(
     return done
 
 
+def priced_targets(
+    ranking: Sequence[tuple[str, float]],
+    held: Mapping[str, int],
+    rules: Rotation,
+    *,
+    gate_on: bool,
+    price: Price,
+) -> tuple[tuple[str, ...], bool, Callable[[str], Decimal | None], list[str]]:
+    """(the target list, whether the market filter emptied it, the price of a name, the names
+    the selection reached that have no tick yet or a stale one): `rotation.targets` with a
+    name buyable when its live price is usable, each price read once. A name outside the day's
+    band is passed over; one in `unpriced` was too, and the caller must not trade on the list."""
+    quotes: dict[str, tuple[Decimal | None, str | None]] = {}
+    unpriced: list[str] = []
+
+    def quote(name: str) -> Decimal | None:
+        if name not in quotes:
+            quotes[name] = price(name)
+        return quotes[name][0]
+
+    def can_buy(name: str) -> bool:
+        found = quote(name)
+        if found is None and quotes[name][1] in WAIT_FOR_PRICE and name not in unpriced:
+            unpriced.append(name)
+        return found is not None
+
+    target, filtered = rotation.targets(ranking, held, rules, gate_on=gate_on, can_buy=can_buy)
+    return target, filtered, quote, unpriced
+
+
+def rebalance_orders(
+    chosen: rotation.Plan,
+    lots: Mapping[str, Sequence[tuple[int, Decimal]]],
+    prices: Mapping[str, Decimal],
+    at_cost: Decimal,
+    rules: Rotation,
+) -> tuple[Decimal, list[rotation.Order]]:
+    """(the capital, the orders) of a live rebalance: the book's equity on `prices`
+    (`rotation.book_equity` of `at_cost`, the equity with the holdings at cost, and the
+    holdings' `lots` of (shares, entry price)), and the order diff to `chosen`'s target on it.
+    The shadow-day replay sizes live's side with it."""
+    held = {name: sum(qty for qty, _ in parts) for name, parts in lots.items()}
+    equity = rotation.book_equity(at_cost, lots, prices)
+    return equity, rotation.orders(chosen, held, prices, equity, rules)
+
+
 def _buy_all(
     session: Session,
     bot_id: uuid.UUID,
@@ -433,6 +531,7 @@ def _buy_all(
         qty = min(qty, FILLS.affordable(cash, at, day))
         if qty <= 0:
             done.row(name, order.action, CASH, 0, at)
+            done.refused[name] = CASH
             continue
         request = EntryRequest(
             bot_id=bot_id,
@@ -454,14 +553,16 @@ def _buy_all(
             )
         except TradeError as refused:  # not in the universe, no live version: nothing written
             done.row(name, order.action, str(refused), 0, at)
+            done.refused[name] = str(refused)
             continue
         decision = outcome.decision
         if outcome.duplicate or decision is None or not decision.accepted:
             reason = "duplicate" if outcome.duplicate else (decision.reason if decision else None)
             done.row(name, order.action, reason, 0, at)
+            done.refused[name] = str(reason)
             continue
         bought = int(decision.quantity or 0)
-        cash -= FILLS.outlay(bought, at, trade_date_of(now))
+        cash -= FILLS.outlay(bought, at, day)
         done.row(name, order.action, None if bought == order.qty else CASH, bought, at)
 
 
@@ -482,6 +583,7 @@ def record_rebalanced(
             "asked_mode": asked,
             "rows": done.rows,
             "waiting": done.waiting,
+            "refused": done.refused,
         },
         bot_id=bot_id,
         occurred_at=now,

@@ -17,7 +17,11 @@ loader; both then run the same decision code:
 - **Rotation targets**: on a rebalance night, `rotation_live.night_ranking` (live) and the
   backtest loop's `_rotation_plan` inputs (the trade date's members, `TrCloses`, the
   factor-pending names), each ranked by `rotation.ranking` and selected by `rotation.targets`
-  from an empty book with every name buyable; the regime gate of each.
+  from the live paper book at D's close with every name buyable; the regime gate of each; and
+  the rebalance's size on that book and the night's allocation: the capital and each order,
+  live's from `rotation_live.rebalance_orders` (the book's equity on the prices) and the
+  backtest's from its own basis (`backtest_sizing`: free cash plus the holdings marked), both
+  on each side's price-basis close of D.
 - **Exits**: each position the live book held at D's close (no veto trade, no rotation holding),
   evaluated at the close phase by `exits.evaluate` on its stored state (the same on both sides)
   and a view from each side's bars through D (`exits.view_from_bars`), its prices put on that
@@ -38,7 +42,7 @@ import argparse
 import json
 import sys
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
@@ -61,19 +65,20 @@ from ..engine import exits, rotation
 from ..engine.portfolio.universe import members_on
 from ..engine.positions import position_state
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.rotation_live import night_ranking
+from ..engine.rotation_live import night_ranking, rebalance_orders
 from ..engine.scan import ScanInputs, scan_bot, universe_passers
-from ..engine.strategy.config import ExitRule, StrategyConfig, parse_config
+from ..engine.strategy.config import ExitRule, Rotation, StrategyConfig, parse_config
 from ..engine.watchlist import bot_universe_members
 from ..errors import HatError
 from ..governance import Mode
-from ..models import HatEvent, HatPosition, HatSignal
+from ..models import HatAllocationDaily, HatEvent, HatPosition, HatSignal
 from ..money import exact, require_exact
 from ..time import day_bounds
 from .market import scan_inputs
 from .nightly_deps import next_session
 
 __all__ = [
+    "Book",
     "Difference",
     "ExitCheck",
     "Facts",
@@ -81,10 +86,13 @@ __all__ = [
     "RotationNight",
     "Side",
     "Watch",
+    "backtest_sizing",
     "compare",
     "facts_of",
     "exit_check",
     "main",
+    "merged",
+    "prices_on",
     "no_later",
     "replay",
     "rotation_night",
@@ -95,6 +103,7 @@ RATIO = Decimal("0.0001")  # a level's share of the close, compared to 4 places
 SCORE = Decimal("0.000001")  # a score, compared to 6 places
 RETURN_SESSIONS = 20  # `Facts.ret`: the return over the last sessions through D
 SAME_INPUTS = "same_inputs"
+CAPITAL = Decimal("0.01")
 
 
 class ReplayError(HatError):
@@ -130,12 +139,39 @@ class Watch:
 
 @dataclass(frozen=True)
 class RotationNight:
-    """A rotation's night: the regime gate, the ranking (best first, scores to `SCORE`) and the
-    target list from an empty book."""
+    """A rotation's night: the regime gate, the ranking (best first, scores to `SCORE`), the
+    target list from the book, and the rebalance's size: the capital it sizes on (None: no
+    allocation, not sized), each order (name, action, shares) and the prices it read."""
 
     gate_on: bool
     ranking: tuple[tuple[str, Decimal], ...]
     target: tuple[str, ...]
+    capital: Decimal | None = None
+    orders: tuple[tuple[str, str, int], ...] = ()
+    prices: tuple[tuple[str, Decimal], ...] = ()
+
+
+@dataclass(frozen=True)
+class Book:
+    """A rotation bot's paper book at D's close, the same on both sides: the sleeve's equity
+    with every holding at cost (None: no allocation that night) and each holding's lots of
+    (shares, entry price)."""
+
+    at_cost: Decimal | None = None
+    lots: Mapping[str, Sequence[tuple[int, Decimal]]] = field(default_factory=dict)
+
+
+# (chosen plan, lots, prices, equity at cost, rules) -> (capital, orders): each side's sizing
+Sizing = Callable[
+    [
+        rotation.Plan,
+        Mapping[str, Sequence[tuple[int, Decimal]]],
+        Mapping[str, Decimal],
+        Decimal,
+        Rotation,
+    ],
+    tuple[Decimal, list[rotation.Order]],
+]
 
 
 @dataclass(frozen=True)
@@ -268,6 +304,7 @@ def _rotation_differences(
                     why,
                 )
             )
+    out.extend(_size_differences(bot, a, b, live, backtest))
     for name in sorted(set(a.target) ^ set(b.target)):
         cause = cause_of(name, live, backtest, rotation_=True)
         if cause == SAME_INPUTS and ranks_a.get(name, (None,))[0] != ranks_b.get(name, (None,))[0]:
@@ -275,6 +312,37 @@ def _rotation_differences(
         here = "target" if name in a.target else None
         there = "target" if name in b.target else None
         out.append(Difference("rotation_target", f"{bot}:{name}", "target", here, there, cause))
+    return out
+
+
+def _size_differences(
+    bot: str, a: RotationNight, b: RotationNight, live: Side, backtest: Side
+) -> list[Difference]:
+    """The rebalance's capital and each order's action and shares, with the cause: the prices
+    the sides read, else the capital, else the instrument's inputs."""
+    out = []
+    pa, pb = dict(a.prices), dict(b.prices)
+    if a.capital != b.capital:
+        why = "prices_differ" if pa != pb else "sizing_basis"
+        out.append(
+            Difference("rotation_size", bot, "capital", _text(a.capital), _text(b.capital), why)
+        )
+    oa = {name: f"{action}:{qty}" for name, action, qty in a.orders}
+    ob = {name: f"{action}:{qty}" for name, action, qty in b.orders}
+    for name in sorted({*oa, *ob}):
+        if oa.get(name) == ob.get(name):
+            continue
+        if pa.get(name) != pb.get(name):
+            why = "prices_differ"
+        elif a.capital != b.capital:
+            why = "capital_differs"
+        elif name in a.target and name in b.target:
+            why = cause_of(name, live, backtest, rotation_=True)
+        else:
+            why = "target_differs"
+        out.append(
+            Difference("rotation_order", f"{bot}:{name}", "order", oa.get(name), ob.get(name), why)
+        )
     return out
 
 
@@ -381,17 +449,74 @@ def _closes_on(frame: pl.DataFrame, day: date) -> dict[str, Decimal]:
 
 
 def rotation_night(
-    config: StrategyConfig, ranks: Sequence[tuple[str, float]], gate_on: bool
+    config: StrategyConfig,
+    ranks: Sequence[tuple[str, float]],
+    gate_on: bool,
+    book: Book,
+    prices: Mapping[str, Decimal],
+    sizing: Sizing,
 ) -> RotationNight:
-    """A ranking's night: its scores to `SCORE` and the targets from an empty book."""
+    """A ranking's night: its scores to `SCORE`, the targets from `book` with every name
+    buyable, and the rebalance `sizing` makes of them on `prices` (none without an allocation)."""
     rules = config.rotation
     if rules is None:
         raise ReplayError("replay_not_a_rotation")
-    target, _ = rotation.targets(ranks, set(), rules, gate_on=gate_on, can_buy=lambda _n: True)
+    held = {name: sum(q for q, _ in lots) for name, lots in book.lots.items()}
+    target, filtered = rotation.targets(
+        ranks, held, rules, gate_on=gate_on, can_buy=lambda _n: True
+    )
     ranking = tuple(
         (name, require_exact(score, "score", floats=True).quantize(SCORE)) for name, score in ranks
     )
-    return RotationNight(gate_on, ranking, target)
+    if book.at_cost is None:
+        return RotationNight(gate_on, ranking, target)
+    chosen = rotation.Plan(date.min, tuple(ranks), target, filtered=filtered)
+    used = {n: p for n in {*target, *held} if (p := prices.get(n)) is not None}
+    capital, orders = sizing(chosen, book.lots, used, book.at_cost, rules)
+    return RotationNight(
+        gate_on,
+        ranking,
+        target,
+        capital.quantize(CAPITAL),
+        tuple((o.instrument_id, o.action, o.qty) for o in orders),
+        tuple(sorted(used.items())),
+    )
+
+
+def backtest_sizing(
+    chosen: rotation.Plan,
+    lots: Mapping[str, Sequence[tuple[int, Decimal]]],
+    prices: Mapping[str, Decimal],
+    at_cost: Decimal,
+    rules: Rotation,
+) -> tuple[Decimal, list[rotation.Order]]:
+    """The backtest's sizing (`loop._rotate_book`): the account's equity as the loop marks it,
+    its free cash plus each holding at its price (at its entry price without one), and the
+    order diff on it."""
+    held = {name: sum(q for q, _ in parts) for name, parts in lots.items()}
+    cost = sum((q * e for parts in lots.values() for q, e in parts), Decimal(0))
+    marked = sum(
+        (q * prices.get(name, e) for name, parts in lots.items() for q, e in parts), Decimal(0)
+    )
+    equity = at_cost - cost + marked
+    return equity, rotation.orders(chosen, held, prices, equity, rules)
+
+
+def prices_on(frame: pl.DataFrame, day: date) -> dict[str, Decimal]:
+    """Each instrument's price-basis close on `day` in `frame` (`raw_close`, else `close`): the
+    price a rebalance sizes on, the same basis on both sides."""
+    if frame.height == 0:
+        return {}
+    column = "raw_close" if "raw_close" in frame.columns else "close"
+    on = frame.filter(pl.col("date") == day)
+    out = {}
+    for name, close in zip(
+        on["instrument_id"].cast(pl.String).to_list(), on[column].to_list(), strict=True
+    ):
+        value = _decimal(close)
+        if value is not None and value > 0:
+            out[name] = value
+    return out
 
 
 def exit_check(
@@ -516,6 +641,56 @@ def _held(session: Session, bot_ids: Sequence[str], day: date) -> list[_Held]:
     return out
 
 
+def merged(frame: pl.DataFrame, more: pl.DataFrame) -> pl.DataFrame:
+    """`frame` with `more`'s bars added (one row per instrument and session): a side's bars
+    across its bots' indices."""
+    if frame.height == 0:
+        return more
+    if more.height == 0:
+        return frame
+    return pl.concat([frame, more], how="diagonal_relaxed").unique(
+        ["instrument_id", "date"], keep="first", maintain_order=True
+    )
+
+
+def _books(session: Session, bots: Sequence[_Bot], day: date) -> dict[str, Book]:
+    """Each rotation bot's paper book at `day`'s close: its rotation lots open then (their
+    shares and entry prices as stored now) and the night's allocation (its nominal capital for
+    a paper sleeve), the equity at cost both sides size from."""
+    end = day_bounds(day)[1]
+    out: dict[str, Book] = {}
+    for b in bots:
+        if b.config.rotation is None:
+            continue
+        rows = session.execute(
+            select(HatPosition.instrument_id, HatPosition.qty_open, HatPosition.avg_entry)
+            .join(HatSignal, HatSignal.id == HatPosition.signal_id)
+            .where(
+                HatPosition.bot_id == b.bot.id,
+                HatPosition.opened_at < end,
+                (HatPosition.closed_at.is_(None)) | (HatPosition.closed_at >= end),
+                HatPosition.is_virtual.is_(True),
+                HatSignal.mode == Mode.SHADOW,
+                HatSignal.playbook == rotation.PLAYBOOK,
+            )
+            .order_by(HatPosition.opened_at)
+        ).all()
+        lots: dict[str, list[tuple[int, Decimal]]] = {}
+        for instrument_id, qty, entry in rows:
+            if qty > 0:
+                lots.setdefault(str(instrument_id), []).append((int(qty), Decimal(entry)))
+        allocation = session.get(HatAllocationDaily, (day, b.bot.id))
+        capital = (
+            None
+            if allocation is None
+            else allocation.virtual_capital
+            if allocation.virtual_capital is not None
+            else allocation.capital
+        )
+        out[b.id] = Book(None if capital is None else Decimal(capital), lots)
+    return out
+
+
 def _add_exits(side: Side, held: Sequence[_Held], frame: pl.DataFrame, day: date) -> None:
     for h in held:
         side.held[h.position_id] = h.instrument_id
@@ -546,6 +721,7 @@ def live_side(
     store: DataStore,
     bots: Sequence[_Bot],
     held: Sequence[_Held],
+    books: Mapping[str, Book],
     day: date,
     trade_date: date,
 ) -> Side:
@@ -560,7 +736,7 @@ def live_side(
         index = b.config.regime.index
         if index not in inputs:
             found = scan_inputs(store, session, day, index)
-            frame = no_later(found.bars, day, trade_date)  # exits read every bar
+            frame = merged(frame, no_later(found.bars, day, trade_date))  # exits read every bar
             if excluded and found.bars.height:
                 found = replace(
                     found,
@@ -575,7 +751,10 @@ def live_side(
             if rotation.is_rebalance(day, trade_date, b.config.rotation.rebalance):
                 night = night_ranking(session, b.bot, b.config, inputs[index], trade_date)
                 if night is not None:
-                    side.rotation[b.id] = rotation_night(b.config, night[1], night[2])
+                    side.rotation[b.id] = rotation_night(
+                        b.config, night[1], night[2], books[b.id], prices_on(frame, day),
+                        rebalance_orders,
+                    )  # fmt: skip
             continue
         members |= mine
         gate_on, rows = watch_rows(b.config, replace(inputs[index], members=mine), b.id)
@@ -591,6 +770,7 @@ def backtest_side(
     store: DataStore,
     bots: Sequence[_Bot],
     held: Sequence[_Held],
+    books: Mapping[str, Book],
     day: date,
     trade_date: date,
 ) -> Side:
@@ -616,11 +796,7 @@ def backtest_side(
         view.open(trade_date)  # the clock: nothing after `day`'s close is read
         bars = view.window(day)
         pending = view.pending_on(day)
-        frame = (
-            bars
-            if frame.height == 0
-            else pl.concat([frame, bars], how="diagonal_relaxed").unique(["instrument_id", "date"])
-        )
+        frame = merged(frame, bars)
         benchmark = [(d, float(c)) for d, c in data.index_closes.get(NIFTY_500_TRI, ()) if d <= day]
         inputs = ScanInputs(
             as_of=day,
@@ -646,7 +822,9 @@ def backtest_side(
             ranks = rotation.ranking(passers, closes, rules, pending)
             gate_on = regime_allows_longs(b.config.regime, inputs.regime_closes, inputs.breadth)
             if rotation.is_rebalance(day, trade_date, rules.rebalance):
-                side.rotation[b.id] = rotation_night(b.config, ranks, gate_on)
+                side.rotation[b.id] = rotation_night(
+                    b.config, ranks, gate_on, books[b.id], prices_on(bars, day), backtest_sizing
+                )
             continue
         night = members_on(scan_night_members(data.members, data.days), day)
         mine = {str(m) for m in night if ordinary_equity(data.isins.get(str(m), ""))}
@@ -670,8 +848,9 @@ def replay(
     if not bots:
         raise ReplayError("replay_no_bot")
     held = _held(session, [b.id for b in bots], day)
-    live = live_side(session, store, bots, held, day, trade_date)
-    backtest = backtest_side(session, store, bots, held, day, trade_date)
+    books = _books(session, bots, day)
+    live = live_side(session, store, bots, held, books, day, trade_date)
+    backtest = backtest_side(session, store, bots, held, books, day, trade_date)
     found = compare(live, backtest)
     counts: dict[str, int] = {}
     for d in found:

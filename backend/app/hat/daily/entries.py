@@ -34,7 +34,9 @@ from ..execution.router import ExecutionRouter, PlacementCheck
 from ..governance import Mode
 from ..models import (
     HatAllocationDaily,
+    HatFill,
     HatInstrument,
+    HatOrder,
     HatPosition,
     HatSignal,
     HatTradeResult,
@@ -48,7 +50,7 @@ from ..time import trade_date_of, utc_now
 from .gates import CalendarSource, GateBoard
 from .prices import LivePrices
 
-__all__ = ["LiveContexts", "LiveRoute"]
+__all__ = ["LiveContexts", "LiveRoute", "sold_gain"]
 
 RouterFor = Callable[[uuid.UUID], ExecutionRouter | None]
 FundsFor = Callable[[uuid.UUID], Decimal | None]
@@ -74,14 +76,41 @@ _SHADOW_BOOK = (HatPosition.is_virtual.is_(True), HatSignal.mode == Mode.SHADOW)
 
 def _shadow_realised(session: Session, bot_id: uuid.UUID) -> Decimal:
     """The realised P&L of the bot's shadow book: a real book's is in the broker funds its
-    capital was read from, so only a shadow book adds it (Q1)."""
+    capital was read from, so only a shadow book adds it (Q1). A closed trade's is its result;
+    an open position's partial sales (an exit partial, a rotation's trim) are booked as they
+    fill (`sold_gain`), so their gain or loss reaches the free cash at once, not at the close."""
     rows = session.scalars(
         select(HatTradeResult.realized_pnl)
         .join(HatPosition, HatPosition.id == HatTradeResult.position_id)
         .join(HatSignal, HatSignal.id == HatPosition.signal_id)
         .where(HatPosition.bot_id == bot_id, *_SHADOW_BOOK)
     )
-    return sum((Decimal(r) for r in rows), Decimal(0))
+    closed = sum((Decimal(r) for r in rows), Decimal(0))
+    sales = session.execute(
+        select(HatPosition.avg_entry, HatFill.qty, HatFill.price, HatFill.fees)
+        .join(HatOrder, HatOrder.id == HatFill.order_id)
+        .join(HatPosition, HatPosition.id == HatOrder.position_id)
+        .join(HatSignal, HatSignal.id == HatPosition.signal_id)
+        .where(
+            HatPosition.bot_id == bot_id,
+            HatPosition.closed_at.is_(None),
+            HatOrder.side == "sell",
+            *_SHADOW_BOOK,
+        )
+    ).all()
+    return closed + sum(
+        (
+            sold_gain(Decimal(entry), qty, Decimal(price), Decimal(fees))
+            for entry, qty, price, fees in sales
+        ),
+        Decimal(0),
+    )
+
+
+def sold_gain(entry: Decimal, qty: int, price: Decimal, fees: Decimal) -> Decimal:
+    """The realised P&L of selling `qty` shares bought at `entry` at `price`, less the sale's
+    `fees`: what the sale adds to the free cash beyond the cost of the shares it returns."""
+    return (price - entry) * qty - fees
 
 
 def _shadow_open_notional(session: Session, bot_id: uuid.UUID) -> Decimal:

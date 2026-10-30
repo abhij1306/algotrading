@@ -29,6 +29,7 @@ from typing import TypeVar
 import numpy as np
 
 from ..money import require_exact
+from ..risk.decision import ROTATION_PLAYBOOK
 from .strategy.config import Rotation
 
 __all__ = [
@@ -43,6 +44,7 @@ __all__ = [
     "TRIMMED",
     "Order",
     "Plan",
+    "book_equity",
     "buy_share",
     "is_rebalance",
     "lot_sales",
@@ -63,7 +65,7 @@ __all__ = [
 FFILL_SESSIONS = 10  # a close carries over at most this many sessions without a bar
 SESSIONS_PER_YEAR = 252  # annualises the volatility
 SELL, TRIM, BUY, TOP_UP = "sell", "trim", "buy", "top_up"
-PLAYBOOK = "rotation"  # a rotation trade's playbook: its signals live, its trades in a run
+PLAYBOOK = ROTATION_PLAYBOOK  # a rotation trade's playbook: its signals live, its trades in a run
 OUT_OF_BUFFER = "rotation_out"  # a sale: ranked below the buffer
 NOT_ELIGIBLE = "rotation_not_eligible"  # a sale: failed the universe stage, or not scored
 MARKET_FILTER = "rotation_market_filter"  # a sale: the regime gate off on the rebalance close
@@ -355,6 +357,23 @@ def sale_reason(chosen: Plan, name: str) -> str:
     if chosen.filtered:
         return MARKET_FILTER
     return OUT_OF_BUFFER if any(n == name for n, _ in chosen.ranking) else NOT_ELIGIBLE
+
+
+def book_equity(
+    at_cost: Decimal,
+    holdings: Mapping[str, Sequence[tuple[int, Decimal]]],
+    prices: Mapping[str, Decimal],
+) -> Decimal:
+    """The book's equity on its holdings' prices, the capital a rebalance sizes on (the
+    backtest's: its cash plus its holdings marked): `at_cost`, the equity with every holding at
+    its cost (cash plus the cost of the shares held), plus each lot's (shares, entry price) gain
+    to its name's price; a name without a price stays at its cost."""
+    gain = Decimal(0)
+    for name, lots in holdings.items():
+        price = prices.get(name)
+        if price is not None:
+            gain += sum((qty * (price - entry) for qty, entry in lots), Decimal(0))
+    return at_cost + gain
 
 
 def buy_share(outlay: Decimal, cash: Decimal) -> Decimal:

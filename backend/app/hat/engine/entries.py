@@ -234,6 +234,7 @@ def open_entry(
         instrument_id=request.instrument_id,
         at=request.triggered_at,
         is_virtual=mode == Mode.SHADOW,
+        playbook=request.playbook,
         open_positions=slots,
         entries_today=entries,
         stopouts_today=stopouts,
