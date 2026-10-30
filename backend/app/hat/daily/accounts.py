@@ -63,12 +63,14 @@ from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
 from ..execution.router import ExecutionRouter, PlacementCheck, unplaced_entry
 from ..execution.session import (
+    UNREACHABLE_AFTER,
     SessionOwner,
     SessionRegistry,
     SessionWatch,
     broker_health_failing,
     record_session,
     refresh_capabilities,
+    unreachable_watched,
 )
 from ..models import (
     HatApproval,
@@ -104,6 +106,7 @@ END_SESSION = "trade.end_session"
 END_SESSION_AT = time(15, 31)  # once the DAY entries can no longer fill; moves with the close
 RECONCILE_FAILED = "reconcile.failed"
 BUDGET_SPENT = "broker.budget_spent"
+BROKER_UNREACHABLE = "broker.unreachable"
 BROKER_HEALTH = "broker_health"
 # The fill sync's cadence when nothing is watched closely; the runtime's `sync` step
 # runs every pass and leaves the cadence to `Desks.sync_due`.
@@ -136,6 +139,13 @@ class OwnedBroker:
     def day_budget_spent(self) -> bool:
         """A local value, no broker call: not serialised, like `capabilities`."""
         return self._broker.day_budget_spent()
+
+    def claim_unreachable_alert(self, after: float) -> float | None:
+        """A local value, no broker call: not serialised, like `capabilities`."""
+        return self._broker.claim_unreachable_alert(after)
+
+    def release_unreachable_alert(self) -> None:
+        self._broker.release_unreachable_alert()
 
     def write_refusal(self) -> str | None:
         """A local value, no broker call: not serialised, so a sale is never held up by it."""
@@ -174,8 +184,9 @@ class AccountDesk:
         """Write today's `hat_broker_session` from one read of the broker's status (the router
         refuses an entry without a live one), raise `broker.session_lost` once an outage has
         lasted two minutes (HAT-OPS-031), and trip or clear the account's bots' `broker_health`
-        kill (HAT-RISK-063; a check that failed counts as not live). True when the session is
-        live."""
+        kill (HAT-RISK-063; a check that failed counts as not live), and raise
+        `broker.unreachable` once an outage of the broker's calls has lasted two minutes (a valid
+        token reads live while every call fails). True when the session is live."""
         live = False
         try:
             status = self.broker.session_status()
@@ -195,7 +206,23 @@ class AccountDesk:
             logger.exception("session check of account %s failed", self.account_id)
             live = False
         self._sync_broker_health(session, now, live)
+        self._watch_reach(now)
         return live
+
+    def _watch_reach(self, now: datetime) -> None:
+        """The one URGENT `broker.unreachable` of an outage, from 08:30 IST to the close
+        (`unreachable_watched`, as `broker.session_lost`), claimed on the broker's circuit
+        breaker so the accounts sharing it send one; told again at the next check when it
+        could not be delivered."""
+        if not unreachable_watched(now):
+            return
+        down = self.broker.claim_unreachable_alert(UNREACHABLE_AFTER.total_seconds())
+        if down is None:
+            return
+        logger.error("broker calls failing for %.0f s (account %s)", down, self.account_id)
+        detail = {"account_id": str(self.account_id), "minutes": int(down // 60)}
+        if not self.notifier.alert(BROKER_UNREACHABLE, trade_date_of(now), detail):
+            self.broker.release_unreachable_alert()
 
     def _sync_broker_health(self, session: Session, now: datetime, live: bool) -> None:
         """Each of the account's bots is manage-only while its session is down between 09:05

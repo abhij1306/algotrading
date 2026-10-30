@@ -34,6 +34,7 @@ from .broker import HatBroker, SessionStatus
 
 __all__ = [
     "ALERT_AFTER",
+    "UNREACHABLE_AFTER",
     "BACKOFF_CAP_SECONDS",
     "BROKER_HEALTH_FROM",
     "BROKER_HEALTH_UNTIL",
@@ -44,6 +45,7 @@ __all__ = [
     "SessionWatch",
     "backoff_delay",
     "broker_health_failing",
+    "unreachable_watched",
     "record_session",
     "refresh_capabilities",
 ]
@@ -51,6 +53,8 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 ALERT_AFTER = timedelta(minutes=2)
+# The broker's calls failing in a row this long (its circuit breaker's outage) is one alert.
+UNREACHABLE_AFTER = ALERT_AFTER
 BACKOFF_CAP_SECONDS = 30
 WATCH_FROM = time(8, 30)  # IST: the login prompt; a logged-out session before it is no outage
 BROKER_HEALTH_FROM = time(9, 5)  # IST: the repeat prompt
@@ -124,6 +128,13 @@ def broker_health_failing(now: datetime, live: bool) -> bool:
     not live between 09:05 and the 15:30 close IST. Any other check clears it."""
     at = now.astimezone(IST).time()
     return not live and BROKER_HEALTH_FROM <= at < BROKER_HEALTH_UNTIL
+
+
+def unreachable_watched(now: datetime) -> bool:
+    """Whether a broker outage at `now` is alerted: from the 08:30 IST login prompt to the
+    close, as a lost session is (before it, the night's broker maintenance is no news)."""
+    at = now.astimezone(IST).time()
+    return WATCH_FROM <= at < BROKER_HEALTH_UNTIL
 
 
 class SessionWatch:

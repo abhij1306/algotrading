@@ -1,6 +1,6 @@
 """Ops tables. hat_live: the quality-gate results and the quality quarantine (the data
 pipeline writes them). hat_state: job runs, broker sessions, Telegram messages and cursors, the
-command log and the daily bot snapshots."""
+command log, the daily bot snapshots and the runtime's heartbeats."""
 
 from sqlalchemy import (
     BigInteger,
@@ -23,6 +23,7 @@ __all__ = [
     "HatBrokerSession",
     "HatCommandLog",
     "HatDailyBotSnapshot",
+    "HatHeartbeat",
     "HatJobRun",
     "HatQualityCheck",
     "HatQualityQuarantine",
@@ -142,6 +143,17 @@ class HatTelegramCursor(StateBase):
     name = Column(Text, primary_key=True)
     position = Column(BigInteger, nullable=False)
     updated_at = Column(Timestamptz, nullable=False, default=now_utc)
+
+
+class HatHeartbeat(StateBase):
+    """The last beat of each named part of the runtime (`scheduler`: its loop, every tick), read
+    by the out-of-process watch (`ops/watch.py`), which tells the owner when it goes stale; and
+    the watch's own once-a-time claims (`watch:<alert>`, stamped when claimed)."""
+
+    __tablename__ = "hat_heartbeat"
+
+    name = Column(Text, primary_key=True)
+    beat_at = Column(Timestamptz, nullable=False)
 
 
 class HatDailyBotSnapshot(StateBase):

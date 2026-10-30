@@ -164,13 +164,15 @@ ALERT_GTT_UNFILLED = "gtt.unfilled"
 ALERT_STOP_CANCEL_UNACKED = "stop.cancel_unacked"
 CODE_NO_CANCEL_ACK = "no_cancel_ack"
 # Raised again at every sync while the cause stands: told once per position, reason and trade
-# date (C22 A4).
+# date (C22 A4). The GTT checks run every `fills.GTT_CHECK_EVERY` as well as at 08:40 and 23:00.
 ONCE_A_DAY = frozenset(
     {
         ALERT_STOP_NOT_PLACED,
         ALERT_STOP_NOT_MOVED,
         ALERT_STOP_WOULD_MOVE_DOWN,
         ALERT_STOP_CANCEL_UNACKED,
+        ALERT_GTT_MISSING,
+        ALERT_GTT_UNVERIFIED,
     }
 )
 # The bounded wait for the broker to acknowledge a sale's stop cancel: its book read this many

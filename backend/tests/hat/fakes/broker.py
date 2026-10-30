@@ -80,6 +80,8 @@ class FakeBroker:
         self.modify_reply: object = {"s": "ok", "message": "Modified"}
         self.cancel_reply: object = {"s": "ok", "message": "Cancelled"}
         self.circuit_open = False
+        self.down_for = 0.0  # the outage's seconds while the circuit is open
+        self.outage_alerted = False
         # a `CallBudget` or none: its spent writes refuse the writes unsent, its spent day the
         # reads, as `FyersBroker` does
         self.budget: Any = None
@@ -106,6 +108,19 @@ class FakeBroker:
         budget's writes of the day are spent."""
         spent = self.budget is not None and self.budget.writes_spent()
         return write_refusal(self.circuit_open, writes_spent=spent)
+
+    def claim_unreachable_alert(self, after: float) -> float | None:
+        """As `FyersBroker.claim_unreachable_alert`, over `circuit_open` and `down_for`."""
+        if not self.circuit_open:
+            self.outage_alerted = False
+            return None
+        if self.outage_alerted or self.down_for < after:
+            return None
+        self.outage_alerted = True
+        return self.down_for
+
+    def release_unreachable_alert(self) -> None:
+        self.outage_alerted = False
 
     def _write(self, method: str, args: object, reply: object, timeout: dict[str, Any]) -> Any:  # noqa: ANN401
         self.calls.append((method, args))
