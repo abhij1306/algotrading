@@ -8,6 +8,22 @@ never edit, commit or push on a builder's branch. Builders follow `builder-proto
 work queue is the owner's handoff file and the open GitHub PRs and issues (nothing in this repo
 plans work). Builders may use Sonnet subagents; nothing else runs on Sonnet.
 
+## The system (owner 2026-10-30; overrides any conflicting rule)
+
+- Every night after the close, many swing strategies run as separate scanners to find stocks: the
+  setups, EP, and more later. A scanner knows nothing of the others.
+- Trading has a manual/auto switch. It stays manual until the system is good enough for auto, so
+  manual approval is not a rule of the design. Backtests always run as auto.
+- The goal is one logical stock portfolio, not a book per strategy. Backtests decide:
+  - which strategy runs when;
+  - each strategy's weight;
+  - stock preference: whether a new signal replaces a held stock when capital is full.
+  These are parameters to test before choosing the system, so plan backtests that compare them.
+- Risk management, execution and reporting are separate engines.
+- Add no guard rules the owner didn't ask for.
+
+This section is for the orchestrator; builders get the parts their task needs through the brief.
+
 ## Start or resume
 
 Rebuild state from GitHub and the hooks, not memory: `gh pr list --state open`, `git worktree
