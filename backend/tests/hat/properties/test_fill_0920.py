@@ -51,13 +51,14 @@ def test_the_estimate_moves_the_open_against_the_order() -> None:
 def test_fill_0920_uses_the_bar_and_falls_back_to_the_estimate() -> None:
     median = OpenTo0920(buy=D("0.001"), sell=D("0.001"))
     bars = (_bar(0, "100", "101"),)
-    assert fill_0920(DAY, "buy", bars, D(100), median) == (D(101), REAL)
-    assert fill_0920(DAY, "sell", bars, D(100), median) == (D(101), REAL)
+    day = {"low": D(95), "high": D(105)}
+    assert fill_0920(DAY, "buy", bars, D(100), median, **day) == (D(101), REAL)
+    assert fill_0920(DAY, "sell", bars, D(100), median, **day) == (D(101), REAL)
     # no five-minute session the caller may read (none stored, refused, a late start)
-    assert fill_0920(DAY, "buy", None, D(100), median) == (D("100.1000"), ESTIMATED)
-    assert fill_0920(DAY, "sell", (), D(100), median) == (D("99.9000"), ESTIMATED)
+    assert fill_0920(DAY, "buy", None, D(100), median, **day) == (D("100.1000"), ESTIMATED)
+    assert fill_0920(DAY, "sell", (), D(100), median, **day) == (D("99.9000"), ESTIMATED)
     late = (_bar(5, "100", "101"),)
-    assert fill_0920(DAY, "buy", late, D(100), median) == (D("100.1000"), ESTIMATED)
+    assert fill_0920(DAY, "buy", late, D(100), median, **day) == (D("100.1000"), ESTIMATED)
 
 
 def test_a_gap_over_fills_at_the_estimate_never_above_the_high() -> None:
@@ -74,6 +75,16 @@ def test_the_estimate_stays_within_the_days_range() -> None:
     assert estimated_0920(D(100), "buy", median, low=D(97), high=D(103)) == D("101.0000")
     found = fill_0920(DAY, "sell", None, D(100), median, low=D("99.5"), high=D(101))
     assert found == (D("99.5"), ESTIMATED)
+
+
+def test_an_estimated_rotation_fill_stays_within_the_days_range() -> None:
+    # the measured constants, on days with no readable 09:15 bar: opened at its high, a buy
+    # fills at the high; opened at its low, a sale fills at the low (never outside the bar)
+    assert fill_0920(DAY, "buy", None, D(100), low=D(98), high=D(100)) == (D(100), ESTIMATED)
+    assert fill_0920(DAY, "sell", None, D(100), low=D(100), high=D(102)) == (D(100), ESTIMATED)
+    for side in ("buy", "sell"):
+        price, _ = fill_0920(DAY, side, None, D(100), low=D(100), high=D(100))
+        assert price == D(100)  # a one-price day
 
 
 def test_a_sale_is_refused_on_a_0915_bar_closing_locked_at_the_lower_band() -> None:

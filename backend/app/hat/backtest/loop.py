@@ -1013,7 +1013,7 @@ class _Run:
             return None, "no_bar"
         first = self._first_bar(instrument_id, day)
         price, source = fill_0920.fill_0920(
-            day, side, None if first is None else (first,), bar.open
+            day, side, None if first is None else (first,), bar.open, low=bar.low, high=bar.high
         )
         self._fill_sources[(instrument_id, day)] = source
         if side == "sell":
