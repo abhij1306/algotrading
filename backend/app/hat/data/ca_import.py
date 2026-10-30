@@ -48,7 +48,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -98,7 +98,7 @@ from .corporate_actions import (
 )
 from .isin import voting_equity
 from .ratios import split_pair_numbers
-from .store import DATASET_BARS, DataStore
+from .store import DataStore
 
 SOURCE_FILE = "nse_ca_file"
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
@@ -261,6 +261,28 @@ def _cell(value: object) -> str:
     return ("" if value is None else str(value)).strip()[:TEXT_MAX]
 
 
+PULL_NOTE = "README.md"  # the pull's own note beside its files: "Collected 24-Oct-2026."
+_COLLECTED = re.compile(r"^Collected (\d{1,2}-[A-Za-z]{3}-\d{4})\b", re.MULTILINE)
+
+
+def collected_on(note: str) -> date | None:
+    """The day an NSE pull was collected, from its note's `Collected DD-Mon-YYYY` line."""
+    found = _COLLECTED.search(note)
+    if found is None:
+        return None
+    try:
+        return datetime.strptime(found.group(1), "%d-%b-%Y").date()  # noqa: DTZ007 - a date
+    except ValueError:
+        return None
+
+
+def pull_date(folder: Path) -> date | None:  # pragma: no cover - a file
+    """The day the NSE pull in `folder` was collected, as its note (`PULL_NOTE`) records it;
+    never a file's modification time, which a copy or a restore resets. None without one."""
+    note = folder / PULL_NOTE
+    return collected_on(note.read_text("utf-8")) if note.is_file() else None
+
+
 def read_file(path: Path) -> dict[str, list[dict[str, str]]]:
     """Each table's rows as text (`rowid` too), the file opened read-only. Raises
     `CaFileError("ca_file_unreadable")` when a table or column is missing."""
@@ -373,8 +395,8 @@ def proposals(
 ) -> list[Proposal]:
     """What each row of the file proposes, as far as its text goes; a rights row is priced at
     the face value of its ex-date, from the file's own face-value splits of the same company
-    (same ISIN or symbol) that took effect by `asof` (the newest stored session: a split still
-    to come has not changed the file's `faceVal`)."""
+    (same ISIN or symbol) that took effect by `asof` (the day the file was pulled from NSE: a
+    split after it had not changed the file's `faceVal`)."""
     changes: dict[str, list[FaceValueChange]] = {}
     for row in tables.get(T_SPLITS, ()):
         day, ratio = nse_date(row["exDate"]), face_value_changes(row["subject_raw"])
@@ -547,11 +569,13 @@ def _demerger_leg(
 
 
 def evaluate(
-    session: Session, store: DataStore, tables: Mapping[str, Sequence[Mapping[str, str]]]
+    session: Session,
+    store: DataStore,
+    tables: Mapping[str, Sequence[Mapping[str, str]]],
+    pulled: date | None = None,
 ) -> list[Outcome]:
-    """Every row's outcome; nothing is written."""
-    days = store.days(DATASET_BARS)
-    props = proposals(tables, days[-1] if days else None)
+    """Every row's outcome, the file pulled from NSE on `pulled`; nothing is written."""
+    props = proposals(tables, pulled)
     reference = load_reference(session)
     needs_children = any(p.demerger is not None and not p.status for p in props)
     ctx = Context(
@@ -602,8 +626,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..time import utc_now
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    pulled = pull_date(path.parent)  # rights are priced at the face value as of the pull
+    if pulled is None:
+        sys.stderr.write(f"refused: ca_pull_date_missing ({PULL_NOTE} beside the file)\n")
+        return 2
     with HatDataSessionLocal() as session:
-        outcomes = evaluate(session, store, tables)
+        outcomes = evaluate(session, store, tables, pulled)
         if args.apply:
             journal = {"source": SOURCE_FILE, "file_sha256": digest(path)}
             created = apply(session, outcomes, journal=journal, now=utc_now())
