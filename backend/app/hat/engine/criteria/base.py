@@ -121,6 +121,12 @@ def _since_break(frame: pl.DataFrame, until: date | None = None) -> pl.DataFrame
     return frame.slice(segment_start(frame["date"].to_list(), until))
 
 
+# What `EvalContext.rules` holds: the buffer under the final contraction's low of the
+# playbook's stop rule (`stop_cap`), and the params of its `book_vcp` (the S1 base count).
+RULE_STOP_BUFFER = "stop_buffer_pct"
+RULE_BOOK_VCP = "book_vcp"
+
+
 @dataclass(eq=False)
 class EvalContext:
     """What a criterion may read, for one instrument on one evaluation date.
@@ -135,7 +141,9 @@ class EvalContext:
     instrument's `(effective_from, band_pct)` rows, `band_pct` None for no band.
     `fundamentals`: rows `filed_at`, `eps_yoy`, `sales_yoy` (none until Phase 2).
     `levels`: the numeric levels earlier criteria of the same stage exposed (such as `vcp`'s
-    `pivot`), set by `with_levels`; empty outside a stage. `benchmark`: the NIFTY 500's
+    `pivot`), set by `with_levels`; empty outside a stage. `rules`: the values of its playbook a
+    criterion reads (`RULE_STOP_BUFFER`, `RULE_BOOK_VCP`), set by `with_rules`; empty outside
+    a playbook. `benchmark`: the NIFTY 500's
     `(date, close)` up to `as_of`, oldest first (`book_vcp`'s relative correction). `memo`: a
     cache a criterion may keep across the evaluation dates of one run (`book_vcp`'s earlier
     bases), holding only values computed from bars dated on or before the date they are for;
@@ -152,6 +160,7 @@ class EvalContext:
     levels: Mapping[str, float] = field(default_factory=lambda: MappingProxyType({}))
     benchmark: Sequence[tuple[date, float]] = ()
     memo: MutableMapping[Any, Any] | None = None
+    rules: Mapping[str, Any] = field(default_factory=lambda: MappingProxyType({}))
     # The bars read so far, shared by the `with_levels` copies (not an init field, so
     # `dataclasses.replace` with other bars starts empty).
     _read: dict[str, Bars] = field(default_factory=dict, init=False, repr=False)
@@ -163,6 +172,12 @@ class EvalContext:
             return self
         staged = copy.copy(self)
         staged.levels = MappingProxyType(dict(levels))
+        return staged
+
+    def with_rules(self, rules: Mapping[str, Any]) -> EvalContext:
+        """A copy reading its playbook's `rules`, sharing the bars read (as `with_levels`)."""
+        staged = copy.copy(self)
+        staged.rules = MappingProxyType(dict(rules))
         return staged
 
     @property

@@ -94,17 +94,28 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   contractions, geometry rules, template and base count. Their tight area dries up on vr, the
   volume over the mean of the 50 sessions before it (`book_vcp` keeps its fixed 50-session base
   ending on the final contraction's first session). Shared criteria placed after a detector read
-  the levels it published: `stop_cap` (stop 0.5% under the tight area's low at most 10% under the
-  pivot), `overhead_supply` (rule B; it reads the scan window of 700 sessions, not 750, so
-  `book_vcp`'s base count is not moved by a longer window) and `setup_tags` (shakeout, ath_pivot
-  over the window, early_leader, stage; never fails; stage 3 and the cheat's H0 uptrend read the
-  template's price checks, no earlier RS rank being in the history). The plan's [mine] values are
-  parameter defaults, logged per signal (`mine` in each criterion's extras). A playbook's
-  `valid_sessions` keeps a setup found on night D on the watchlist for D+1..D+N: found again with
-  the same `pivot_date` it keeps its first night; not found again it is carried (levels re-read
-  through its pivot bar) unless held, used, closed below its stop or a swing high above its pivot
-  is confirmed. `one_setup_per_instrument` publishes one row per instrument (the first playbook in
-  config order) and every row records `setup_tags`. Each row's `criteria_results.setup` holds the
+  the levels it published: `stop_cap` (stop the playbook's stop buffer under the tight area's low,
+  at most 10% under the pivot), `overhead_supply` (rule B over 326-699 sessions back: the scan
+  window is 700 sessions live and in the backtest, `scan.scan_window`) and `setup_tags`
+  (shakeout, ath_pivot over the window, early_leader, stage; never fails; stage 3 and the cheat's
+  H0 uptrend read the template's price checks, no earlier RS rank being in the history). Power
+  play T is the highest high of the last 60 sessions; a detector counts the base number with the
+  playbook's `book_vcp` params, else the defaults; the primary base's history counts from the
+  instrument's first bar in the window (its listing), across series breaks. A tight final
+  contraction confirms only once price leaves it, as in `book_vcp`. The plan's [mine] values are
+  parameter defaults, logged per signal (`mine` in each criterion's extras).
+- **S1 validity window (owner 2026-10-30).** A setup of a playbook with `valid_sessions` N,
+  named by (playbook, instrument, `pivot_date`), is valid D+1..D+N from the night D it was first
+  found (`hat_setup_window`, one row per setup and strategy version). Re-detection never extends
+  it, and once closed it is never armed again: expired, triggered (any signal of its row:
+  entered, skipped by the chase or gap rule, declined; or held), cancelled (a close under the
+  final contraction's low less the stop buffer, a confirmed swing high above the pivot, no bar,
+  out of the universe) or replaced by a newer pivot. A regime-off night ends every open window,
+  live and in the backtest, and a setup found after it starts anew. An open setup not found again
+  is carried (levels re-read through its pivot bar, tags and RS rank evaluated again).
+  `one_setup_per_instrument` publishes one row per instrument (the first playbook in config
+  order) and every row records `setup_tags`; the other setups keep their windows. The window and
+  `valid_until` count the calendar's sessions. Each row's `criteria_results.setup` holds the
   plan's watchlist fields; `setup_type` and `valid_until` are columns. Slot order `leader_rs`:
   an early leader first, then `rs`. Entry trigger, chase and volume are the existing ones
   (`price_breaks_level`, `max_chase` 2% on the 09:20 price, `volume_pace` 1.5).
@@ -649,7 +660,7 @@ adjusted series are stored but unverified; an ETF overlay needs them verified fi
 follow-up: read a stock's series as of each day for `series_in`, not today's. S1 setups Phase 2:
 the R1-R5 runs, the top-signal exit (F) and tennis-ball stop (G) variants, the setup and tag
 columns in the run's result files, the daily stage of open positions, and the shadow-day replay
-of a playbook with a validity window (it scans without the night before's rows).
+of a playbook with a validity window (it scans without the stored windows).
 
 ## Defaults awaiting owner confirmation
 

@@ -24,13 +24,15 @@ from setups_series import (
     quiet,
 )
 
+from app.hat.backtest.data import MarketData, MarketView
 from app.hat.backtest.slots import is_slot_order, order_slots
 from app.hat.engine import scan
-from app.hat.engine.criteria import evaluate
+from app.hat.engine.criteria import REGISTRY, evaluate
 from app.hat.engine.criteria import setups as s
-from app.hat.engine.criteria.base import EvalContext
+from app.hat.engine.criteria.base import RULE_BOOK_VCP, RULE_STOP_BUFFER, EvalContext
 from app.hat.engine.criteria.book import Contraction, series_of
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
+from app.hat.engine.strategy.scoring import playbook_context, stop_buffer_pct
 
 D = Decimal
 
@@ -68,13 +70,40 @@ def test_area_dryup_over_the_tight_area() -> None:
     )
 
 
+def _capped(low: float, buffer_pct: float = 0.5) -> Any:  # noqa: ANN401
+    staged = _run(CHEAT, 15, pivot=100.0, final_contraction_low=low)
+    return evaluate("stop_cap", {}, staged.with_rules({RULE_STOP_BUFFER: buffer_pct}))
+
+
 def test_stop_cap() -> None:
-    passed = evaluate("stop_cap", {}, _run(CHEAT, 15, pivot=100.0, final_contraction_low=91.0))
+    passed = _capped(91.0)
     assert passed.passed
     assert passed.value == pytest.approx(9.455)
-    wide = evaluate("stop_cap", {}, _run(CHEAT, 15, pivot=100.0, final_contraction_low=90.4))
+    wide = _capped(90.4)
     assert (wide.passed, wide.reason) == (False, "stop_too_wide")
+    assert _capped(91.0, buffer_pct=1.0).value == pytest.approx(9.91)  # the playbook's buffer
     assert evaluate("stop_cap", {}, _run(CHEAT, 15)).reason == "no_data"
+    outside = _run(CHEAT, 15, pivot=100.0, final_contraction_low=91.0)  # no playbook: no buffer
+    assert evaluate("stop_cap", {}, outside).reason == "no_data"
+
+
+def test_playbook_context_reads_the_playbooks_own_values() -> None:
+    vcp = {"type": "book_vcp", "mode": "hard", "order": 1, "params": {"stage2_fail_sessions": 7}}
+    playbook = S1_SETUPS["playbooks"][0]
+    own = {**playbook, "setup": {"criteria": [vcp]}, "stop": {**playbook["stop"], "buffer_pct": 1}}
+    config = parse_config({**S1_SETUPS, "playbooks": [own]})
+    rules = playbook_context(config.playbooks[0], _run(CHEAT, 15)).rules
+    assert rules[RULE_STOP_BUFFER] == 1
+    assert rules[RULE_BOOK_VCP].stage2_fail_sessions == 7
+    other = {**playbook, "stop": {"rule": "pct_below_entry", "pct": 3}}
+    plain = parse_config({**S1_SETUPS, "playbooks": [other]}).playbooks[0]
+    assert playbook_context(plain, _run(CHEAT, 15)).rules == {RULE_STOP_BUFFER: 0.5}
+    assert stop_buffer_pct(plain) == 0.5  # the contraction stop's default
+
+
+def test_data_needs_name_the_features() -> None:
+    assert "features_daily" in REGISTRY["setup_tags"].data_needs
+    assert "features_daily" in REGISTRY["book_primary_base"].data_needs
 
 
 # --- Setup 2: the cup and the cheat ---------------------------------------------------------
@@ -248,6 +277,19 @@ def test_book_primary_base_passes() -> None:
         s.PRIMARY_BASE,
         127,
     )
+
+
+def test_a_stock_back_from_a_suspension_is_no_recent_listing() -> None:
+    old = frame([50.0] * 600 + PRIMARY, quiet(10, 600 + len(PRIMARY)))
+    later = pl.col("date") >= old["date"][600]
+    resumed = old.with_columns(  # a 200-day suspension before the last 127 bars
+        pl.when(later).then(pl.col("date") + timedelta(days=200)).otherwise(pl.col("date"))
+    )
+    staged = ctx(resumed)
+    assert len(staged.history.dates) == len(PRIMARY)  # the series since the break
+    assert s.listed_sessions(staged) == 600 + len(PRIMARY)
+    found = s.book_primary_base(staged, s.BookPrimaryBaseParams())
+    assert (found.passed, found.reason) == (False, "not_a_recent_listing")
 
 
 @pytest.mark.parametrize(
@@ -501,35 +543,79 @@ def test_scan_equals_the_backtests_setup_list() -> None:
     assert live.funnel == backtest.funnel
 
 
-def _first(bars: pl.DataFrame) -> scan.WatchRow:
-    (row,) = [r for r in scan.scan_bot(CONFIG, _inputs(bars)).rows if r.instrument_id == "a"]
+def _first(bars: pl.DataFrame, config: StrategyConfig = CONFIG) -> scan.WatchRow:
+    (row,) = [r for r in scan.scan_bot(config, _inputs(bars)).rows if r.instrument_id == "a"]
     return row
 
 
-def _found(row: scan.WatchRow, first: date) -> scan.EarlierRow:
-    """`row` as published the night before, its setup first found on `first`."""
-    results = dict(row.criteria_results)
-    results[scan.WINDOW] = {**results[scan.WINDOW], "found_on": first.isoformat()}
-    return scan.EarlierRow(row.playbook, row.instrument_id, row.score, results)
+def _found(
+    row: scan.WatchRow,
+    first: date,
+    status: str = scan.OPEN,
+    **results: Any,  # noqa: ANN401
+) -> scan.SetupWindow:
+    """`row`'s setup window as stored, first found on `first`."""
+    stored = {**row.criteria_results, **results}
+    stored[scan.WINDOW] = {**stored[scan.WINDOW], "found_on": first.isoformat()}
+    pivot_on = date.fromisoformat(stored["pivot_date"])
+    return scan.SetupWindow(
+        row.playbook, row.instrument_id, pivot_on, first, status, row.score, stored
+    )
+
+
+def _a(result: scan.ScanResult) -> list[scan.WatchRow]:
+    return [r for r in result.rows if r.instrument_id == "a"]
+
+
+def _windows(result: scan.ScanResult) -> dict[str, str]:
+    return {f"{w.playbook}:{w.instrument_id}": w.status for w in result.windows}
 
 
 def test_a_setup_found_again_keeps_its_first_night() -> None:
     first = _first(BARS)
     as_of = BARS["date"].max()
-    again = scan.scan_bot(CONFIG, _inputs(BARS, earlier=[_found(first, as_of - timedelta(4))]))
-    (row,) = [r for r in again.rows if r.instrument_id == "a"]
+    again = scan.scan_bot(CONFIG, _inputs(BARS, windows=[_found(first, as_of - timedelta(4))]))
+    (row,) = _a(again)
     assert row.criteria_results[scan.WINDOW]["session"] == 5  # D+5: its last session
-    over = scan.scan_bot(CONFIG, _inputs(BARS, earlier=[_found(first, as_of - timedelta(5))]))
-    assert "a" not in {r.instrument_id for r in over.rows}  # its window is over
+    assert row.valid_until == as_of + timedelta(1)  # the trade date is its last session
 
 
-def _carried(close: float, config: StrategyConfig = CONFIG) -> list[scan.WatchRow]:
-    """The cheat row of `a` found last night, on a night that adds `close` on heavy volume (the
-    pause no longer dries up, so the scan does not find it again)."""
-    night = _bars({"a": CHEAT, "c": [50.0] * len(CHEAT)}, {"a": 15, "c": 0})
-    first = _first(night)
+def test_a_window_expires_and_is_never_armed_again() -> None:
+    first = _first(BARS)
+    as_of = BARS["date"].max()
+    # night D+5: found again, but its window D+1..D+5 is over
+    over = scan.scan_bot(CONFIG, _inputs(BARS, windows=[_found(first, as_of - timedelta(5))]))
+    assert _a(over) == []
+    assert _windows(over)["cheat:a"] == scan.EXPIRED
+    # night D+6: the expired setup is found again with the same pivot and stays closed
+    closed = _found(first, as_of - timedelta(6), scan.EXPIRED)
+    later = scan.scan_bot(CONFIG, _inputs(BARS, windows=[closed]))
+    assert _a(later) == []
+    assert "cheat:a" not in _windows(later)
+    # a regime-off night ended it instead: a setup found again starts a new window
+    reset = _found(first, as_of - timedelta(6), scan.REGIME_OFF)
+    (row,) = _a(scan.scan_bot(CONFIG, _inputs(BARS, windows=[reset])))
+    assert row.criteria_results[scan.WINDOW]["session"] == 1
+
+
+def test_a_regime_off_night_ends_every_open_window() -> None:
+    windows = [_found(_first(BARS), BARS["date"].max())]
+    off = _inputs(BARS, windows=windows, regime_closes=[D(n) for n in range(60, 0, -1)])
+    result = scan.scan_bot(CONFIG, off)
+    assert (result.gate_on, _windows(result)) == (False, {"cheat:a": scan.REGIME_OFF})
+
+
+def test_a_triggered_setup_is_not_armed_again() -> None:
+    first = _first(BARS)
+    window = _found(first, BARS["date"].max() - timedelta(1))
+    result = scan.scan_bot(CONFIG, _inputs(BARS, windows=[window], triggered={window.key}))
+    assert _a(result) == []
+    assert _windows(result)["cheat:a"] == scan.TRIGGERED
+
+
+def _later(close: float) -> pl.DataFrame:
     a = frame([*CHEAT, close], [*quiet(15, len(CHEAT)), 5000.0])
-    later = pl.concat(
+    return pl.concat(
         [
             a.with_columns(pl.lit("a").alias("instrument_id")),
             frame([50.0] * len(a), [1000.0] * len(a)).with_columns(
@@ -537,25 +623,107 @@ def _carried(close: float, config: StrategyConfig = CONFIG) -> list[scan.WatchRo
             ),
         ]
     )
-    earlier = [_found(first, night["date"].max())]
-    return list(scan.scan_bot(config, _inputs(later, earlier=earlier)).rows)
+
+
+NIGHT = _bars({"a": CHEAT, "c": [50.0] * len(CHEAT)}, {"a": 15, "c": 0})
+
+
+def _carried(
+    close: float,
+    config: StrategyConfig = CONFIG,
+    **changes: Any,  # noqa: ANN401
+) -> scan.ScanResult:
+    """The night after the cheat setup of `a` was found, a night that adds `close` on heavy
+    volume (the pause no longer dries up, so the scan does not find it again)."""
+    windows = [_found(_first(NIGHT, config), NIGHT["date"].max(), **changes)]
+    return scan.scan_bot(config, _inputs(_later(close), windows=windows))
 
 
 def test_a_setup_not_found_again_is_carried() -> None:
-    (row,) = _carried(81.0)  # above its stop, under its pivot
+    result = _carried(81.0)  # above its cancel level, under its pivot
+    (row,) = result.rows
     assert row.criteria_results["carried"] is True
     assert row.criteria_results[scan.WINDOW]["session"] == 2
     assert row.pivot == D("82.41")
+    assert row.valid_until == _later(81.0)["date"].max() + timedelta(4)  # D+5
+    assert _windows(result) == {"cheat:a": scan.OPEN}
 
 
-def test_a_close_below_the_stop_cancels() -> None:
-    assert _carried(78.0) == []  # the stop: 0.5% under the pause's low of 79.202
+def test_a_close_below_the_cancel_level_cancels() -> None:
+    result = _carried(78.0)  # 0.5% under the pause's low of 79.202
+    assert (result.rows, _windows(result)) == ((), {"cheat:a": scan.CANCELLED})
+
+
+def test_the_cancel_level_is_the_contraction_low_less_the_stop_buffer() -> None:
+    playbook = CONFIG.playbooks[0]
+    assert scan.cancel_level(playbook, D("80")) == D("79.6")
+    # a playbook that stops a fixed 2% under the entry plans its stop at ~80.76, yet a close
+    # of 80 is above the contraction's cancel level (~78.81): the setup is carried
+    two_pct = {"rule": "pct_below_entry", "pct": 2}
+    playbooks = [{**p, "stop": two_pct} for p in S1_SETUPS["playbooks"]]
+    config = parse_config({**S1_SETUPS, "playbooks": playbooks})
+    (row,) = _carried(80.0, config).rows
+    assert row.planned_stop is not None
+    assert row.planned_stop > D(80)
+
+
+def test_carried_tags_are_evaluated_again() -> None:
+    stale = {"setup": {**_first(NIGHT).criteria_results["setup"], "early_leader": "stale"}}
+    (row,) = _carried(81.0, **stale).rows
+    setup = row.criteria_results["setup"]
+    assert setup.get("early_leader") is None  # tonight's: no benchmark here, so no tag
+    assert setup["stage"] is not None
 
 
 def test_a_setup_failing_its_playbooks_own_universe_is_not_carried() -> None:
     own = [{"type": "min_price", "params": {"inr": 100}}]  # the close of 81 is under it
     playbooks = [{**p, "universe": own} for p in S1_SETUPS["playbooks"]]
-    assert _carried(81.0, parse_config({**S1_SETUPS, "playbooks": playbooks})) == []
+    windows = [_found(_first(NIGHT), NIGHT["date"].max())]
+    config = parse_config({**S1_SETUPS, "playbooks": playbooks})
+    result = scan.scan_bot(config, _inputs(_later(81.0), windows=windows))
+    assert (result.rows, _windows(result)) == ((), {"cheat:a": scan.CANCELLED})
+
+
+def test_one_setup_per_instrument_keeps_the_others_windows() -> None:
+    twice = [S1_SETUPS["playbooks"][0], {**S1_SETUPS["playbooks"][0], "name": "cheat2"}]
+    config = parse_config({**S1_SETUPS, "playbooks": twice})
+    tonight = scan.scan_bot(config, _inputs(NIGHT))
+    assert [r.playbook for r in _a(tonight)] == ["cheat"]  # one row for trading
+    assert _windows(tonight) == {"cheat:a": scan.OPEN, "cheat2:a": scan.OPEN}
+    # the next night both are carried, each in its own window; one row again
+    later = scan.scan_bot(config, _inputs(_later(81.0), windows=tonight.windows))
+    assert [r.playbook for r in later.rows] == ["cheat"]
+    assert _windows(later) == {"cheat:a": scan.OPEN, "cheat2:a": scan.OPEN}
+
+
+def test_the_window_counts_the_calendars_sessions() -> None:
+    # `a` has no bar on one session after it was found; the window counts the session anyway
+    bars = _later(81.0)
+    gap = bars["date"].max() - timedelta(1)
+    a_missing = bars.filter(~((pl.col("instrument_id") == "a") & (pl.col("date") == gap)))
+    assert scan.calendar(_inputs(a_missing))[-2] == gap
+    assert scan.window_session(scan.calendar(_inputs(a_missing)), gap - timedelta(1)) == 3
+
+
+def test_both_scan_windows_are_700_sessions() -> None:
+    calendar = [date(2015, 1, 1) + timedelta(days=n) for n in range(750)]
+    as_of = calendar[-10]
+    live = scan.scan_window(calendar, as_of)
+    assert (len(live), live[-1]) == (scan.SCAN_SESSIONS, as_of)
+    bars = pl.DataFrame(
+        {
+            "instrument_id": ["x"] * len(calendar),
+            "date": calendar,
+            **{c: [1_000_000] * len(calendar) for c in ("open_e4", "high_e4", "low_e4")},
+            "close_e4": [1_000_000] * len(calendar),
+            "raw_close": [100.0] * len(calendar),
+            "close": [100.0] * len(calendar),
+        }
+    )
+    market = MarketData(
+        tuple(calendar), bars, pl.DataFrame({"date": [], "instrument_id": []}), {}, ()
+    )
+    assert MarketView(market, "NIFTY 500").window(as_of).height == len(live)
 
 
 def test_one_row_per_instrument_records_every_setup() -> None:

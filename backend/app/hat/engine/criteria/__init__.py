@@ -107,12 +107,25 @@ _TYPES = (
             ("book_cheat", setups.BookCheatParams, setups.book_cheat),
             ("book_cup_handle", setups.BookCupHandleParams, setups.book_cup_handle),
             ("book_power_play", setups.BookPowerPlayParams, setups.book_power_play),
-            ("book_primary_base", setups.BookPrimaryBaseParams, setups.book_primary_base),
         )
+    ),
+    _t(
+        "book_primary_base",
+        "setup",
+        setups.BookPrimaryBaseParams,
+        (BARS, FEATURES),  # the RS rank gate
+        setups.book_primary_base,
+        levels=(PIVOT, CONTRACTION_LOW),
     ),
     _t("stop_cap", "setup", setups.StopCapParams, (BARS,), setups.stop_cap),
     _t("overhead_supply", "setup", setups.OverheadSupplyParams, (BARS,), setups.overhead_supply),
-    _t("setup_tags", "setup", setups.SetupTagsParams, (BARS, "index_daily"), setups.setup_tags),
+    _t(
+        "setup_tags",
+        "setup",
+        setups.SetupTagsParams,
+        (BARS, "index_daily", FEATURES),
+        setups.setup_tags,
+    ),
     _t(
         "consolidation",
         "setup",

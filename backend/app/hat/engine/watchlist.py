@@ -15,14 +15,16 @@ to BZ or any other series, or gone from the listing (a stock in BZ today is, whi
 rows go on), is never scanned or entered (D210), whatever its strategy's criteria say.
 
 The bot's own book is read here too: the instruments it holds and the pivots its positions were
-opened on, which the scan keeps off the watchlist (decisions.md "A pivot is used once").
+opened on, which the scan keeps off the watchlist (decisions.md "A pivot is used once"); and
+for a windowed playbook its setup windows (`hat_setup_window`), which the scan reads and changes
+and this module stores.
 """
 
 from __future__ import annotations
 
 import copy
 import uuid
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
@@ -38,6 +40,7 @@ from ..models import (
     HatEvent,
     HatInstrument,
     HatPosition,
+    HatSetupWindow,
     HatSignal,
     HatUniverseVersion,
     HatWatchlistEntry,
@@ -46,7 +49,7 @@ from ..money import require_exact
 from . import lifecycle
 from .botlock import lock_bot
 from .portfolio.universe_service import members_of
-from .scan import EarlierRow, ScanInputs, ScanResult, scan_bot
+from .scan import OPEN, ScanInputs, ScanResult, SetupWindow, WindowKey, scan_bot
 from .strategy.config import StrategyConfig, parse_config
 
 __all__ = ["EVENT_PUBLISHED", "Published", "bot_universe_members", "scan_and_publish"]
@@ -137,41 +140,114 @@ def _book(
     return held, used
 
 
-def _earlier(
-    session: Session, bot_id: uuid.UUID, version_id: uuid.UUID, config: StrategyConfig, day: date
-) -> tuple[EarlierRow, ...]:
-    """The rows the bot published for the session `day` of its playbooks with a validity window
-    (`Playbook.valid_sessions`) under its live version `version_id`, which the scan may carry
-    on: a new version starts with no carried setup."""
+def _windows(
+    session: Session,
+    bot_id: uuid.UUID,
+    version_id: uuid.UUID,
+    config: StrategyConfig,
+    since: date | None,
+) -> dict[WindowKey, HatSetupWindow]:
+    """The setup windows of the bot's windowed playbooks (`Playbook.valid_sessions`) under its
+    live version `version_id` whose pivot is on or after `since`, the scan's first session (an
+    older pivot is out of the bars, so no detector finds it again): a new version starts with
+    none."""
     windowed = [p.name for p in config.playbooks if p.valid_sessions is not None]
     if not windowed:
-        return ()
-    rows = session.scalars(
-        select(HatWatchlistEntry).where(
-            HatWatchlistEntry.bot_id == bot_id,
-            HatWatchlistEntry.strategy_version_id == version_id,
-            HatWatchlistEntry.trade_date == day,
-            HatWatchlistEntry.playbook.in_(windowed),
+        return {}
+    query = select(HatSetupWindow).where(
+        HatSetupWindow.bot_id == bot_id,
+        HatSetupWindow.strategy_version_id == version_id,
+        HatSetupWindow.playbook.in_(windowed),
+    )
+    if since is not None:
+        query = query.where(HatSetupWindow.pivot_date >= since)
+    return {(r.playbook, str(r.instrument_id), r.pivot_date): r for r in session.scalars(query)}
+
+
+def _setup_window(row: HatSetupWindow) -> SetupWindow:
+    return SetupWindow(
+        row.playbook,
+        str(row.instrument_id),
+        row.pivot_date,
+        row.found_on,
+        row.status,
+        float(row.score),
+        row.criteria_results or {},
+    )
+
+
+def _triggered(
+    session: Session, bot_id: uuid.UUID, windows: Sequence[SetupWindow]
+) -> frozenset[WindowKey]:
+    """The open `windows` a row of which triggered since it was found: the bot has a signal for
+    the row (its playbook, instrument and trade date), whatever became of it (entered, skipped
+    by an entry filter or the gap, declined). A setup triggers once."""
+    armed = {w.key: w for w in windows if w.status == OPEN}
+    if not armed:
+        return frozenset()
+    rows = session.execute(
+        select(HatSignal.playbook, HatSignal.instrument_id, HatWatchlistEntry.criteria_results)
+        .join(
+            HatWatchlistEntry,
+            (HatWatchlistEntry.bot_id == HatSignal.bot_id)
+            & (HatWatchlistEntry.playbook == HatSignal.playbook)
+            & (HatWatchlistEntry.instrument_id == HatSignal.instrument_id)
+            & (HatWatchlistEntry.trade_date == HatSignal.trade_date),
+        )
+        .where(
+            HatSignal.bot_id == bot_id,
+            HatSignal.trade_date > min(w.found_on for w in armed.values()),
+            HatSignal.playbook.in_({w.playbook for w in armed.values()}),
         )
     )
-    return tuple(
-        EarlierRow(r.playbook, str(r.instrument_id), float(r.score), r.criteria_results or {})
-        for r in rows
-    )
+    keys = {
+        (playbook, str(instrument_id), day)
+        for playbook, instrument_id, results in rows
+        if (day := _pivot_on(results)) is not None
+    }
+    return frozenset(keys & armed.keys())
+
+
+def _store_windows(
+    session: Session,
+    bot_id: uuid.UUID,
+    version_id: uuid.UUID,
+    stored: Mapping[WindowKey, HatSetupWindow],
+    changed: Sequence[SetupWindow],
+) -> None:
+    """Write the windows the scan opened or changed (one row per setup)."""
+    for window in changed:
+        row = stored.get(window.key)
+        if row is None:
+            row = HatSetupWindow(
+                id=uuid.uuid4(),
+                bot_id=bot_id,
+                strategy_version_id=version_id,
+                playbook=window.playbook,
+                instrument_id=uuid.UUID(window.instrument_id),
+                pivot_date=window.pivot_date,
+            )
+            session.add(row)
+        row.found_on = window.found_on
+        row.status = window.status
+        row.score = require_exact(window.score, "score", floats=True)
+        row.criteria_results = dict(window.criteria_results)
 
 
 def _with_members(
     inputs: ScanInputs,
     members: frozenset[uuid.UUID],
     book: tuple[frozenset[str], frozenset[tuple[str, date]]],
-    earlier: tuple[EarlierRow, ...],
+    windows: Sequence[SetupWindow],
+    triggered: frozenset[WindowKey],
 ) -> ScanInputs:
     return copy.replace(
         inputs,
         members={str(m) for m in members},
         held=book[0],
         used_pivots=book[1],
-        earlier=earlier,
+        windows=tuple(windows),
+        triggered=triggered,
     )
 
 
@@ -198,9 +274,10 @@ def scan_and_publish(
     """Scan `bot_id` as of `inputs.as_of` and publish the watchlist for `trade_date`.
 
     `inputs.members` is replaced by the bot's universe on `inputs.as_of`, `inputs.held` and
-    `inputs.used_pivots` by the bot's book (`_book`) and `inputs.earlier` by the rows it
-    published for `inputs.as_of` (`_earlier`): the caller chooses none. Idempotent per (bot,
-    trade date)."""
+    `inputs.used_pivots` by the bot's book (`_book`), `inputs.windows` by its setup windows
+    (`_windows`) and `inputs.triggered` by those a row of which triggered (`_triggered`): the
+    caller chooses none. The windows the scan changed are stored. Idempotent per (bot, trade
+    date)."""
     lock_bot(session, bot_id)  # held to commit: a concurrent run waits, then sees our event
     bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.live_version_id is None:
@@ -215,10 +292,14 @@ def scan_and_publish(
         return Published(0, False, "no_universe")
     config = parse_config(version.config)
     members = _tradable_members(session, universe_id, inputs.as_of)
-    earlier = _earlier(session, bot_id, version.id, config, inputs.as_of)
+    since: date | None = inputs.bars["date"].min() if inputs.bars.height else None  # type: ignore[assignment]
+    stored = _windows(session, bot_id, version.id, config, since)
+    windows = [_setup_window(r) for r in stored.values()]
+    triggered = _triggered(session, bot_id, windows)
     result: ScanResult = scan_bot(
-        config, _with_members(inputs, members, _book(session, bot_id), earlier)
+        config, _with_members(inputs, members, _book(session, bot_id), windows, triggered)
     )
+    _store_windows(session, bot_id, version.id, stored, result.windows)
     for row in result.rows:
         session.add(
             HatWatchlistEntry(

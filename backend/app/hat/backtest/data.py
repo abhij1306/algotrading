@@ -64,6 +64,7 @@ from ..data.ticks import scaled_tick, tick_for_date
 from ..engine.portfolio import regime
 from ..engine.portfolio.universe import Interval
 from ..engine.regime_gate import BREADTH_SESSIONS
+from ..engine.scan import SCAN_SESSIONS, scan_window
 from ..engine.stops import mean_true_range
 from ..engine.trigger import ResultEvent
 from ..models import (
@@ -138,7 +139,7 @@ def looks_ahead(day: date, session: date | None, known: date | None, *, inclusiv
 
 # The scan reads at most 652 sessions back (a 400-session SMA compared 252 sessions earlier);
 # the window it is given holds more, so its watchlist equals a scan of the full history.
-LOOKBACK_SESSIONS = 700
+LOOKBACK_SESSIONS = SCAN_SESSIONS
 _PRICE_DIGITS = 4
 _ZERO_CASH = Decimal(0)
 _ALWAYS = date(1900, 1, 1)
@@ -687,11 +688,11 @@ class MarketView:
         return self.pending.get(day, frozenset())
 
     def window(self, as_of: date) -> pl.DataFrame:
-        """The bars of the `LOOKBACK_SESSIONS` sessions up to `as_of`: what the scan reads, as
-        the total-return series on each instrument's scale of its last bar by `as_of` (CA3),
-        without the instruments factor-pending on `as_of` (CA5: no signal)."""
+        """The bars of the scan's sessions through `as_of` (`scan.scan_window`, as live): what
+        the scan reads, as the total-return series on each instrument's scale of its last bar
+        by `as_of` (CA3), without the instruments factor-pending on `as_of` (CA5: no signal)."""
         self._check(as_of)
-        first = self.days[max(0, self.index[as_of] - LOOKBACK_SESSIONS)]
+        first = scan_window(self.days, as_of)[0]
         frame = self.bars.filter((pl.col("date") >= first) & (pl.col("date") <= as_of))
         pending = self.pending_on(as_of)
         if pending:

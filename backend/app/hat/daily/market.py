@@ -28,7 +28,7 @@ from ..data.ticks import tick_for_date
 from ..engine.exits import ExitView, history_sessions, reads_peak, view_from_bars
 from ..engine.portfolio.jobs import INDEX_NAME, read_breadth
 from ..engine.regime_gate import BREADTH_SESSIONS
-from ..engine.scan import ScanInputs
+from ..engine.scan import SCAN_SESSIONS, ScanInputs, scan_window
 from ..engine.strategy.config import ExitRule, StopRule
 from ..engine.trigger import DailyFeeds, DailyInputs, daily_inputs
 from ..models import HatInstrument
@@ -45,7 +45,6 @@ __all__ = [
     "sessions_before",
 ]
 
-SCAN_SESSIONS = 700  # the scan's window: enough for the 52-week and 200-day criteria
 DAILY_SESSIONS = 260  # the live inputs: 200-day SMAs, 50-day volume, swing lows
 
 _ADJ_SQL = """
@@ -123,7 +122,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
     """The inputs of a nightly scan as of the session `as_of` (the members are replaced by the
     bot's universe in `scan_and_publish`). Price bands are not read: no criterion of the MVP
     bots uses them in the scan, as in the backtest."""
-    window = sessions_before(store, as_of, SCAN_SESSIONS, inclusive=True)
+    window = scan_window(store.days(DATASET_BARS), as_of)
     if not window:
         bars = pl.DataFrame()
     else:

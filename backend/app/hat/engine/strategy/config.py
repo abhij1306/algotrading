@@ -544,9 +544,10 @@ class Playbook(Model):
     exits: list[ExitRule] | None = Field(
         default=None, min_length=1, max_length=20, exclude_if=lambda v: v is None
     )
-    # The trigger validity window (S1 setups): a setup found on night D stays on the watchlist
-    # for the sessions D+1..D+`valid_sessions` unless cancelled (`scan`); unset, a row is valid
-    # for the next session only and the scan finds it afresh each night.
+    # The trigger validity window (S1 setups): a setup first found on night D stays on the
+    # watchlist for the sessions D+1..D+`valid_sessions` unless closed, and is armed once
+    # (`scan.SetupWindow`); unset, a row is valid for the next session only and the scan finds
+    # it afresh each night.
     valid_sessions: int | None = Field(default=None, ge=1, le=20, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
@@ -653,7 +654,7 @@ class StrategyConfig(Model):
     # canonical form when unset, so the stored configs keep their hash.
     rotation: Rotation | None = Field(default=None, exclude_if=lambda v: v is None)
     # One watchlist row per instrument a night (S1 setups): the first playbook's in config
-    # order, recording every setup found for it (`scan`).
+    # order, recording every setup found for it; the others keep their windows (`scan`).
     one_setup_per_instrument: bool = Field(default=False, exclude_if=lambda v: not v)
 
     @model_validator(mode="after")
