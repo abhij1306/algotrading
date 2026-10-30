@@ -206,6 +206,33 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `momentum-rotation` is the research pick (riskadj, top 20, monthly, buffer 40, ADV20 >= Rs 10
   cr, close >= 50, 240 bars). Configs without the block keep their canonical JSON and hash.
 
+- **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
+  backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
+  sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that
+  gaps over its level fills at 09:20 too (the 5-minute replay and live never trigger before
+  09:20:02, the first bar's close). The price at 09:20 is the last trade before it: the close of
+  the 09:15 five-minute bar (live's last price at 09:20 is that close; the 09:20 bar's open is a
+  trade after it). Without that bar (before the 5-minute store's 2021-10-26 start, a name
+  without bars, a session the backtest refuses) it is the daily open moved against the order by
+  the median move from the open to 09:20, buy side and sell side, measured on NIFTY 500
+  member-days liquid as a rotation buys them (ADV20 >= Rs 10 cr, close >= 50) over
+  2021-10-26..2024-12-31 (`scripts/research/open_to_0920.py`). One rule for all
+  (`engine/fill_0920.py`), read by the backtest and the shadow-day replay; circuit, demerger and
+  factor-pending refusals are judged at that price (the 09:15 bar, else the day as before). A
+  run counts its rotation fills at real 09:20 prices and estimated ones (`rotation_fills_0920`,
+  `rotation_fills_estimated`). **Measured 2026-10-30** on m3 (read-only, at 984e097):
+  `venv/bin/python scripts/research/open_to_0920.py` (NIFTY 500 point in time,
+  2021-10-26..2024-12-31, ADV20 >= Rs 10 cr, close >= 50, EQ/BE, sessions the backtest admits).
+  All member-days: n = 310,189, median move from the open to 09:20 -0.0307% (q1 -0.479%, q3
+  +0.429%, median |move| 0.455%), suggesting buy 0, sell 0.03%. Rebalance sessions (each
+  month's first): n = 14,777, median +0.0235% (q1 -0.449%, q3 +0.540%, median |move| 0.491%),
+  suggesting buy 0.02%, sell 0. Set conservatively per side, the larger of the two:
+  `OPEN_TO_0920` buy 0.02%, sell 0.03% (`OPEN_TO_0920_MEASURED = True`). The ~0.46% median
+  absolute move is noise around the open in either direction, which a constant cannot capture;
+  it is not added as extra cost (the run's slippage applies as on every fill). Hard-stop exits
+  that gap through at the open still fill at the open (`fills.stop_fill`), not part of this
+  rule.
+
 ## Data
 
 - **Tradable series: EQ and BE.** BE (trade-for-trade, delivery only) suits CNC swing trades, so

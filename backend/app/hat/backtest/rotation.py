@@ -6,19 +6,22 @@ reach `evaluate_signal`. The loop holds its book here and shares the account wit
 cash flows are the account's (`flow`), its holdings are marked with the strategies' positions,
 its fills go into the overlay's tax book, and its buys draw on the overlay's same-day credit.
 
-Each session, at the open: the dividends its holdings earned that ex-date, then any sale still
-pending fills at the open where it can, then, when the session before closed a rebalance period
-(`rotation.is_rebalance`), the rebalance decided on that close (`plan`): every member passing the
-config's universe stage that night is scored on its total-return closes, the target list is
-selected with the hold buffer, and the order diff to an equal share of the sleeve's capital (its
-weight of the account's equity at that close) is traded at the day's open (`rebalance`): sales and
-trims first, then buys and top-ups, scaled down together when the cash and the overlay's credit
-cannot pay them all. A name without a bar that day does not trade, nor does a sale pinned at the
-lower band all day or a buy at the upper band at the open: a sale waits for the next open it can
-fill at (`_Holding.exit`), a buy is not made. A factor-pending name (CA5) is not scored or bought
-that night; a holding in it is kept. At the close the loop sells a holding at the close of its
-last session before a dated demerger (CA8) or its last traded session (HAT-BT-012), and at the
-period's end at its mark (`finish`).
+Each session, at 09:20 (never at the 09:15 open, owner 2026-10-30; the price is
+`engine/fill_0920.py`'s: the 09:15 bar's close where the name's five-minute session may be read,
+else the open moved by the median to 09:20): the dividends its holdings earned that ex-date, then
+any sale still pending fills where it can, then, when the session before closed a rebalance
+period (`rotation.is_rebalance`), the rebalance decided on that close (`plan`): every member
+passing the config's universe stage that night is scored on its total-return closes, the target
+list is selected with the hold buffer, and the order diff to an equal share of the sleeve's
+capital (its weight of the account's equity at that close), sized on the prices at 09:20, is
+traded then (`rebalance`): sales and trims first, then buys and top-ups, scaled down together
+when the cash and the overlay's credit cannot pay them all. A name without a bar that day does
+not trade, nor does a sale pinned at the lower band (its 09:15 bar, else the whole day) or a buy
+at the upper band (its 09:15 bar's close, else the open): a sale waits for the next session it
+can fill at (`_Holding.exit`), a buy is not made. A factor-pending name (CA5) is not scored or
+bought that night; a holding in it is kept. At the close the loop sells a holding at the close of
+its last session before a dated demerger (CA8) or its last traded session (HAT-BT-012), and at
+the period's end at its mark (`finish`).
 
 A trade is one holding from its first buy to its last sale; top-ups and trims change its size.
 Its entry price is its first buy's fill. It has no stop: its `initial_stop` is 0, so its R is its
@@ -130,8 +133,8 @@ class _Holding:
 
 @dataclass(frozen=True)
 class Market:
-    """What a rebalance reads of the day from the loop: the open of each name with a bar
-    (`opens`, which sizes the orders), whether a name can be sold or bought at it now
+    """What a rebalance reads of the day from the loop: the price at 09:20 of each name with a
+    bar (`opens`, which sizes the orders), whether a name can be sold or bought at it now
     (`sell`, `buy`), the cash the account can spend now (`cash`: free cash and the overlay's
     credit), each name's symbol, and a new trade's signal row (`entry`)."""
 
@@ -228,7 +231,7 @@ class RotationBook:
     def sell_pending(
         self, day: date, sell: Callable[[str], Quote], symbol: Callable[[str], str]
     ) -> None:
-        """Sell each holding whose sale is pending at `day`'s open, where it can now."""
+        """Sell each holding whose sale is pending at `day`'s 09:20, where it can now."""
         for name in sorted(self.holdings):
             holding = self.holdings[name]
             if holding.exit is None:
@@ -242,7 +245,7 @@ class RotationBook:
             self._row(day, None, name, symbol(name), "sell", reason, rank, score, qty, price)
 
     def rebalance(self, day: date, plan: Plan, capital: Decimal, market: Market) -> None:
-        """Trade `plan` at `day`'s open on `capital`, the sleeve's (module docstring)."""
+        """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring)."""
         rank = {name: n for n, (name, _) in enumerate(plan.ranking, start=1)}
         score = {
             name: require_exact(value, "score", floats=True).quantize(_SCORE)
@@ -270,7 +273,7 @@ class RotationBook:
                 why = rotation.sale_reason(plan, name)
                 holding = self.holdings[name]
                 price, blocked = market.sell(name)
-                if price is None:  # waits for the next open it can sell at
+                if price is None:  # waits for the next session it can sell at
                     holding.exit = (why, rank.get(name), score.get(name))
                     row(name, "sell", blocked, 0, None)
                     continue
@@ -302,7 +305,7 @@ class RotationBook:
     ) -> None:
         """The buys and top-ups: each scaled down by the share of their outlay the cash covers
         when it cannot pay them all (whole shares, rounded down), then cut to what the cash
-        left can pay. A name that cannot be bought at the open is skipped."""
+        left can pay. A name that cannot be bought at 09:20 is skipped."""
         priced: list[tuple[rotation.Order, Decimal]] = []
         for order in buys:
             price, blocked = market.buy(order.instrument_id)

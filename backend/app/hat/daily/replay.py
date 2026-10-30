@@ -21,7 +21,9 @@ loader; both then run the same decision code:
   the rebalance's size on that book and the night's allocation: the capital and each order,
   live's from `rotation_live.rebalance_orders` (the book's equity on the prices) and the
   backtest's from its own basis (`backtest_sizing`: free cash plus the holdings marked), both
-  on each side's price-basis close of D.
+  on the trade date's prices at 09:20 (`prices_0920`: the shared `fill_0920` rule on the
+  store's raw five-minute bars and opens; a rebalance trades then, so these are read past D on
+  purpose, and both sides read the same list, so a price difference is never one).
 - **Exits**: each position the live book held at D's close (no veto trade, no rotation holding),
   evaluated at the close phase by `exits.evaluate` on its stored state (the same on both sides)
   and a view from each side's bars through D (`exits.view_from_bars`), its prices put on that
@@ -53,15 +55,19 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from ..backtest.data import MarketView, load_market, looks_ahead, scan_night_members
+from ..backtest.intraday import Admission, session_bars
 from ..backtest.rotation import TrCloses
 from ..configs.records import Bot, StrategyVersion
 from ..configs.unit import configs_of
+from ..data.bars import Bar
+from ..data.bars_store import BarStore
 from ..data.identity import series_as_of
 from ..data.index_history import NIFTY_500_TRI
 from ..data.isin import ordinary_equity
 from ..data.quality import excluded_for
 from ..data.store import DataStore
 from ..engine import exits, rotation
+from ..engine.fill_0920 import fill_0920
 from ..engine.portfolio.universe import members_on
 from ..engine.positions import position_state
 from ..engine.regime_gate import regime_allows_longs
@@ -92,7 +98,9 @@ __all__ = [
     "exit_check",
     "main",
     "merged",
-    "prices_on",
+    "prices_0920",
+    "prices_0920_of",
+    "DayBar",
     "no_later",
     "replay",
     "rotation_night",
@@ -502,21 +510,65 @@ def backtest_sizing(
     return equity, rotation.orders(chosen, held, prices, equity, rules)
 
 
-def prices_on(frame: pl.DataFrame, day: date) -> dict[str, Decimal]:
-    """Each instrument's price-basis close on `day` in `frame` (`raw_close`, else `close`): the
-    price a rebalance sizes on, the same basis on both sides."""
-    if frame.height == 0:
-        return {}
-    column = "raw_close" if "raw_close" in frame.columns else "close"
-    on = frame.filter(pl.col("date") == day)
+@dataclass(frozen=True)
+class DayBar:
+    """An instrument's raw daily bar as the 09:20 price reads it: its open, low and high (the
+    estimate's range) and its ISIN (the coverage gaps)."""
+
+    open: Decimal
+    low: Decimal
+    high: Decimal
+    isin: str | None = None
+
+
+def prices_0920_of(
+    day: date,
+    sessions: Mapping[str, Sequence[Bar]],
+    daily: Mapping[str, DayBar],
+    admits: Callable[[str, Sequence[Bar], DayBar], bool],
+) -> dict[str, Decimal]:
+    """Each instrument's price at 09:20 on `day` (`fill_0920`, the buy side: what a rebalance
+    sizes on): its 09:15 bar's close where its five-minute session (`sessions`, raw prices) is
+    admitted (`admits`: the backtest's `intraday.session_admitted`), else its open moved by the
+    estimate within the day's range."""
     out = {}
-    for name, close in zip(
-        on["instrument_id"].cast(pl.String).to_list(), on[column].to_list(), strict=True
-    ):
-        value = _decimal(close)
-        if value is not None and value > 0:
-            out[name] = value
+    for name, bar in daily.items():
+        bars = sessions.get(name)
+        readable = bars if bars and admits(name, bars, bar) else None
+        out[name] = fill_0920(day, "buy", readable, bar.open, low=bar.low, high=bar.high)[0]
     return out
+
+
+def prices_0920(store: DataStore, day: date) -> dict[str, Decimal]:
+    """`prices_0920_of` on the store's raw daily bars and five-minute bars of `day`, sessions
+    admitted as a run admits them (`intraday.Admission`): the one price list both sides size a
+    rebalance on, so the replay's price difference is zero. `replay_no_0920_prices` when the
+    store holds no daily bar of `day` (not stored yet): sizing on nothing would hide every
+    difference."""
+    raw = store.read_bars(day)
+    daily = {}
+    for name, isin, open_, low, high in zip(
+        raw["instrument_id"].to_list(),
+        raw["isin"].to_list(),
+        raw["open"].to_list(),
+        raw["low"].to_list(),
+        raw["high"].to_list(),
+        strict=True,
+    ):
+        o, lo, hi = _decimal(open_), _decimal(low), _decimal(high)
+        if o is not None and o > 0 and lo is not None and hi is not None:
+            daily[str(name)] = DayBar(o, lo, hi, None if isin is None else str(isin))
+    if not daily:
+        raise ReplayError("replay_no_0920_prices")
+    five = BarStore(store.root)
+    admission = Admission.read(five)
+    scales = dict.fromkeys(five.instruments(day) & set(daily), Decimal(1))
+    return prices_0920_of(
+        day,
+        session_bars(five, day, scales),
+        daily,
+        lambda name, bars, bar: admission.admits(name, day, bars, bar.open, bar.isin),
+    )
 
 
 def exit_check(
@@ -722,6 +774,7 @@ def live_side(
     bots: Sequence[_Bot],
     held: Sequence[_Held],
     books: Mapping[str, Book],
+    prices: Mapping[str, Decimal],
     day: date,
     trade_date: date,
 ) -> Side:
@@ -752,9 +805,8 @@ def live_side(
                 night = night_ranking(session, b.bot, b.config, inputs[index], trade_date)
                 if night is not None:
                     side.rotation[b.id] = rotation_night(
-                        b.config, night[1], night[2], books[b.id], prices_on(frame, day),
-                        rebalance_orders,
-                    )  # fmt: skip
+                        b.config, night[1], night[2], books[b.id], prices, rebalance_orders
+                    )
             continue
         members |= mine
         gate_on, rows = watch_rows(b.config, replace(inputs[index], members=mine), b.id)
@@ -771,6 +823,7 @@ def backtest_side(
     bots: Sequence[_Bot],
     held: Sequence[_Held],
     books: Mapping[str, Book],
+    prices: Mapping[str, Decimal],
     day: date,
     trade_date: date,
 ) -> Side:
@@ -823,7 +876,7 @@ def backtest_side(
             gate_on = regime_allows_longs(b.config.regime, inputs.regime_closes, inputs.breadth)
             if rotation.is_rebalance(day, trade_date, rules.rebalance):
                 side.rotation[b.id] = rotation_night(
-                    b.config, ranks, gate_on, books[b.id], prices_on(bars, day), backtest_sizing
+                    b.config, ranks, gate_on, books[b.id], prices, backtest_sizing
                 )
             continue
         night = members_on(scan_night_members(data.members, data.days), day)
@@ -849,8 +902,10 @@ def replay(
         raise ReplayError("replay_no_bot")
     held = _held(session, [b.id for b in bots], day)
     books = _books(session, bots, day)
-    live = live_side(session, store, bots, held, books, day, trade_date)
-    backtest = backtest_side(session, store, bots, held, books, day, trade_date)
+    # a rebalance sizes at 09:20 of the trade date: the same prices on both sides (`fill_0920`)
+    prices = prices_0920(store, trade_date) if any(b.config.rotation for b in bots) else {}
+    live = live_side(session, store, bots, held, books, prices, day, trade_date)
+    backtest = backtest_side(session, store, bots, held, books, prices, day, trade_date)
     found = compare(live, backtest)
     counts: dict[str, int] = {}
     for d in found:

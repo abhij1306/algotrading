@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -27,6 +27,7 @@ from app.paths import BARS5M_GAPS
 
 from ..costs import BacktestFills
 from ..data.bars5m_gaps import gap_spans, read_gaps, spans_digest
+from ..engine.fill_0920 import OPEN_TO_0920, OPEN_TO_0920_MEASURED
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.strategy.config import Playbook, StrategyConfig
@@ -59,7 +60,7 @@ __all__ = [
     "ENTRY_DAY_LOW_ESTIMATED",
     "EP_TRIGGER_ESTIMATED",
     "ESTIMATE_GAPS",
-    "GAP_OVER_AT_OPEN",
+    "GAP_OVER_ESTIMATED",
     "GAP_PLAYBOOKS",
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
@@ -126,7 +127,9 @@ LEVEL_BREAK_ESTIMATED = "trigger_is_level_break_only"
 # (the daily estimate always; a 5-minute session too under `volume_pace: full_day`)
 VOLUME_PACE_ESTIMATED = "volume_pace_on_full_day_volume"
 ENTRY_DAY_LOW_ESTIMATED = "entry_day_low_estimated"  # the pre-break low is the adr20 estimate
-GAP_OVER_AT_OPEN = "gap_over_fills_at_open"  # live fills at the first tick after the open
+# a daily-estimate gap over the level fills at the open moved to 09:20 (`fill_0920`): live's
+# first trade comes after the trigger window opens
+GAP_OVER_ESTIMATED = "gap_over_fills_0920_estimate"
 # a pre-open playbook's trigger (opening-range break, early volume) estimated from the daily
 # bar with the constants calibrated on the 5-minute years (`intraday.EP_ESTIMATE`)
 EP_TRIGGER_ESTIMATED = "episodic_pivot_trigger_estimated"
@@ -141,7 +144,7 @@ ESTIMATE_GAPS = (
     LEVEL_BREAK_ESTIMATED,
     VOLUME_PACE_ESTIMATED,
     ENTRY_DAY_LOW_ESTIMATED,
-    GAP_OVER_AT_OPEN,
+    GAP_OVER_ESTIMATED,
     EP_TRIGGER_ESTIMATED,
     CATALYST_NOT_EVALUATED,
     ANALYST_BEAT_NOT_EVALUATED,
@@ -210,10 +213,16 @@ CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
 # from the 1D Rate Index less its expense ratio where its dividends are not known (the ranges in
 # `overlay.liquidbees_tr_proxy`), ETF trades on the stock cost model (equity delivery STT on every
 # ETF, LIQUIDBEES included).
-# Reported by a run with a rotation strategy (`strategy.config.Rotation`): its orders fill at the
-# stored daily open (the pre-open auction's price) plus the run's slippage, and are sized on the
-# account's equity at the decision close, not marked at that open.
-ROTATION_GAPS = ("rotation_fills_at_daily_open", "rotation_sized_on_decision_close")
+# Reported by a run with a rotation strategy (`strategy.config.Rotation`): its orders fill at 09:20
+# (`rotation.fill_0920`), at the 09:15 bar's close where the session's five-minute bars may be
+# read and else at the daily open moved by the measured median to 09:20 (the run counts each,
+# `rotation_fills_0920`, `rotation_fills_estimated`), plus the run's slippage, and are sized on
+# the account's equity at the decision close, not marked at 09:20.
+ROTATION_GAPS = ("rotation_fills_0920_estimated_without_5m", "rotation_sized_on_decision_close")
+# Reported while the median move from the open to 09:20 (`fill_0920.OPEN_TO_0920`) is not yet
+# measured on the data, by a run that estimates a price at 09:20 with it: a rotation's fills, or
+# a daily-estimate entry that gapped over its level (`GAP_OVER_ESTIMATED`).
+PROVISIONAL_0920 = "fill_0920_estimate_provisional"
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",
@@ -453,7 +462,9 @@ class RunSpec:
 
     def recorded_conventions(self) -> dict[str, Any]:
         """The conventions block recorded in the run's metrics, which `config_digest` hashes;
-        the co-sleeves and the overlay only when the run has them."""
+        the co-sleeves and the overlay only when the run has them, and the 09:20 estimate
+        (`fill_0920.OPEN_TO_0920`, its values and whether they are measured) always: a change
+        of it moves every rotation fill and gap-over entry."""
         out = self.conventions.record(
             self.fills, (self.start, self.end), sleeve_weight(self), self.regime_table
         )
@@ -461,6 +472,12 @@ class RunSpec:
             out["co_sleeves"] = [c.record() for c in self.co_sleeves]
         if self.overlay is not None:
             out["overlay"] = self.overlay.record()
+        # the median move to 09:20 a rotation fill or a gap-over entry is estimated with
+        out["open_to_0920"] = {
+            "buy": str(OPEN_TO_0920.buy),
+            "sell": str(OPEN_TO_0920.sell),
+            "measured": OPEN_TO_0920_MEASURED,
+        }
         return out
 
 
@@ -487,8 +504,8 @@ def sleeve_weight(spec: RunSpec) -> Decimal:
 
 def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[str]:
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
-    of them when not known yet: a run that did not finish may have any), and the touch fill
-    under `touch`."""
+    of them when not known yet: a run that did not finish may have any), the touch fill
+    under `touch`, and `PROVISIONAL_0920` while its 09:20 estimate is unmeasured."""
     found = set(ESTIMATE_GAPS if estimated is None else estimated)
     return [
         # a portfolio run's account caps bind across its sleeves, as live
@@ -498,7 +515,16 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(ROTATION_GAPS if _rotates(spec) else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
+        *([PROVISIONAL_0920] if provisional_0920(spec, found) else []),
     ]
+
+
+def provisional_0920(spec: RunSpec, found: Collection[str]) -> bool:
+    """Whether the run estimated a price at 09:20 with the unmeasured median (`PROVISIONAL_0920`):
+    a rotation run, or one whose estimates include a gap-over entry."""
+    if OPEN_TO_0920_MEASURED:
+        return False
+    return _rotates(spec) or GAP_OVER_ESTIMATED in found
 
 
 def _rotates(spec: RunSpec) -> bool:

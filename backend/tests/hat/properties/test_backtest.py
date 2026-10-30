@@ -57,7 +57,9 @@ from app.hat.backtest.spec import (
     CATALYST_NOT_EVALUATED,
     ENTRY_BARS_DAILY,
     ESTIMATE_GAPS,
+    GAP_OVER_ESTIMATED,
     KNOWN_GAPS,
+    PROVISIONAL_0920,
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
     RESEARCH_SLEEVE_WEIGHT,
@@ -71,6 +73,7 @@ from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedul
 from app.hat.data.bars import Bar as Bar5m
 from app.hat.data.bars_store import RejectRow
 from app.hat.data.ticks import scaled_tick, tick_for_date
+from app.hat.engine.fill_0920 import OPEN_TO_0920, OPEN_TO_0920_MEASURED
 from app.hat.engine.portfolio.allocator import sleeve_key
 from app.hat.engine.portfolio.universe import Interval, members_on
 from app.hat.engine.stops import floor_to_tick
@@ -287,7 +290,14 @@ def test_known_gaps_name_only_the_estimates_taken() -> None:
     spec = s.spec(s.config(), DAYS)
     assert known_gaps(spec, ()) == list(KNOWN_GAPS)
     assert known_gaps(spec, {CATALYST_NOT_EVALUATED}) == [*KNOWN_GAPS, CATALYST_NOT_EVALUATED]
-    assert known_gaps(spec) == [*KNOWN_GAPS, *ESTIMATE_GAPS]
+    provisional = [] if OPEN_TO_0920_MEASURED else [PROVISIONAL_0920]
+    assert known_gaps(spec) == [*KNOWN_GAPS, *ESTIMATE_GAPS, *provisional]
+    # the estimate's values are in the conventions `config_digest` hashes
+    recorded = spec.recorded_conventions()["open_to_0920"]
+    assert recorded["measured"] is OPEN_TO_0920_MEASURED
+    assert (recorded["buy"], recorded["sell"]) == (str(OPEN_TO_0920.buy), str(OPEN_TO_0920.sell))
+    # a gap-over entry estimated at 09:20 with the unmeasured median says so
+    assert known_gaps(spec, {GAP_OVER_ESTIMATED}) == [*KNOWN_GAPS, GAP_OVER_ESTIMATED, *provisional]
     with pytest.raises(BacktestError, match="backtest_promotion_daily_only"):
         dataclasses.replace(PROMOTED, entry_bars=ENTRY_BARS_DAILY).check_promotion(
             DEFAULT_SLIPPAGE_BPS

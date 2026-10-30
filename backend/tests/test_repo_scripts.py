@@ -7,7 +7,7 @@ import json
 import sys
 import uuid
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from types import ModuleType
@@ -1164,3 +1164,79 @@ def test_fyers_login__remove_profile_never_raises(tmp_path: Path) -> None:
     assert fyers_login.remove_profile(
         str(tmp_path / "never-made"), rmtree=fyers_login.shutil.rmtree
     )
+
+
+open_0920 = _script("research/open_to_0920.py")
+
+
+def test_open_to_0920__medians_per_side_and_never_favourable() -> None:
+    found = open_0920.adverse_medians([0.004, 0.001, -0.002, 0.003, 0.0])
+    assert found["count"] == 5
+    assert found["buy_side_median"] == 0.001
+    assert found["sell_side_median"] == -0.001
+    assert found["suggested"] == {"buy": 0.001, "sell": 0.0}  # a sale's median helps it: 0
+    assert open_0920.adverse_medians([]) == {"count": 0}
+
+
+def test_open_to_0920__rebalance_sessions_are_each_months_first() -> None:
+    days = [date(2024, 1, 30), date(2024, 1, 31), date(2024, 2, 1), date(2024, 2, 2)]
+    assert open_0920.rebalance_sessions(days) == {date(2024, 1, 30), date(2024, 2, 1)}
+
+
+def test_open_to_0920__liquidity_reads_the_sessions_before() -> None:
+    liquid = open_0920.Liquidity(Decimal(100), Decimal(50))
+    for _ in range(19):
+        liquid.feed([("a", Decimal(60), Decimal(150)), ("b", Decimal(40), Decimal(500))])
+    assert not liquid.liquid("a")  # 19 sessions: too few
+    liquid.feed([("a", Decimal(60), Decimal(150)), ("b", Decimal(40), Decimal(500))])
+    assert liquid.liquid("a")
+    assert not liquid.liquid("b")  # under the price floor
+    assert not liquid.liquid("z")
+
+
+def test_open_to_0920__moves_read_fitting_sessions_only() -> None:
+    from app.hat.data.bars import Bar
+    from app.hat.time import IST
+
+    day = date(2024, 2, 1)
+    first = datetime.combine(day, datetime.min.time().replace(hour=9, minute=15), tzinfo=IST)
+    fits = (Bar("a", first, Decimal(100), Decimal(103), Decimal(99), Decimal(102), 10),)
+    off = (Bar("b", first, Decimal(150), Decimal(151), Decimal(149), Decimal(150), 10),)
+    opens = {"a": Decimal(100), "b": Decimal(100)}
+    from app.hat.backtest.intraday import Admission
+
+    refused_0920 = first + timedelta(minutes=5)  # a bucket the import refused, not stored
+    admission = Admission(refused={("g", day): frozenset({refused_0920})}, gaps={})
+    gapped = (Bar("g", first, Decimal(100), Decimal(101), Decimal(99), Decimal(100), 10),)
+
+    def admits(name: str, bars: object, open_: Decimal) -> bool:
+        return admission.admits(name, day, bars, open_, None)  # type: ignore[arg-type]
+
+    opens = {**opens, "g": Decimal(100)}
+    sessions = {"a": fits, "b": off, "g": gapped}
+    # g's stored bars hold a bucket the import refused, so it is not quiet there: not read
+    assert open_0920.moves_of(day, sessions, opens, ["a", "b", "c", "g"], admits) == [
+        pytest.approx(0.02)
+    ]
+
+
+def test_open_to_0920__turnover_falls_back_to_close_times_volume() -> None:
+    assert open_0920.turnover(Decimal(500), Decimal(10), 7) == Decimal(500)
+    assert open_0920.turnover(None, Decimal(10), 7) == Decimal(70)
+    assert open_0920.turnover(None, None, 7) is None
+    assert open_0920.SERIES_IN == {"EQ", "BE"}
+
+
+def test_open_to_0920__an_empty_sample_is_refused() -> None:
+    assert open_0920.sample_refusal({"all_member_days": {"count": 0}}) == "empty_sample"
+    assert open_0920.sample_refusal({}) == "empty_sample"
+    assert open_0920.sample_refusal({"all_member_days": {"count": 12}}) is None
+
+
+def test_open_to_0920__members_are_read_by_chain() -> None:
+    lineage = {"old": "chain"}  # an older ISIN's id carried by the day's raw bars
+    assert open_0920.member_ids(["old", "chain", "x", "y"], {"chain", "y"}, lineage) == {
+        "old",
+        "chain",
+        "y",
+    }
