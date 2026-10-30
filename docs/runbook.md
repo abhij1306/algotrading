@@ -640,7 +640,7 @@ it, so run it after they finish.
 
 Each bot's real positions (`live`) and shadow ones (`paper`) are one book each, from its first
 allocation with capital (`capital`, or the sleeve's nominal `virtual_capital` for paper), marked
-at the official closes (`daily/books.py`). The report: equity and the day's P&L, realised P&L
+at the official closes, each dividend credited on its ex-date as the backtest does (`daily/books.py`). The report: equity and the day's P&L, realised P&L
 (net, with dividends) and unrealised, costs, the invested share (today's and the mean; idle cash
 is a failure), each closed trade's R, and the Backtest Result Standard's headline metrics
 (`standard.book_metrics`, the code a run's `run.json` uses, so `win_pct`, `expectancy_r`,

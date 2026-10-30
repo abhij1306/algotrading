@@ -7,11 +7,12 @@ A book is one bot's real positions (`live`) or its shadow ones (`paper`; a veto 
 virtual trade of a skipped confirm signal, is scored elsewhere and is in neither). Its start is
 the bot's first allocation with capital (`capital` for live, the sleeve's nominal
 `virtual_capital` for paper) and its capital that allocation's. Each session's close of the book
-is rebuilt from its fills, closed trades' dividends and the official closes: equity = start +
-the fills' net cash (sales less purchases, less fees) + the dividends of the trades closed by
-then + the shares held at the session's close (the last close before it when the stock did not
-trade, the fill price before any close). The rules are the pure functions here; `read_books`
-reads the database and the bar store, read-only.
+is rebuilt from its fills, its positions' dividends and the official closes: equity = start +
+the fills' net cash (sales less purchases, less fees) + the dividends credited on their
+ex-dates by then (`trade_dividends`, the backtest's rule) + the shares held at the session's
+close (the last close before it when the stock did not trade, the fill price before any
+close). The rules are the pure functions here; `read_books` reads the database and the bar
+store, read-only.
 
 `$ADMIN books [--date D]` prints the report as JSON (read-only).
 """
@@ -81,7 +82,7 @@ class OpenRow:
     current_stop: Decimal
     mark: Decimal | None
     value: Decimal
-    unrealised: Decimal  # its fills' net cash + its shares at the mark
+    unrealised: Decimal  # its fills' net cash and dividends earned + its shares at the mark
     open_r: Decimal | None  # (mark - entry) / (entry - initial stop)
     opened: date
 
@@ -240,8 +241,8 @@ def open_row(
     mark: Decimal | None,
 ) -> OpenRow:
     """An open position marked at `mark` (None: at its entry): its value, its unrealised P&L
-    (the net cash of its fills plus its shares at the mark, so its costs are in) and its open
-    R."""
+    (`fill_cash`, the net cash of its fills and the dividends it earned, plus its shares at the
+    mark, so its costs are in) and its open R."""
     price = avg_entry if mark is None else mark
     value = qty * price
     risk = avg_entry - initial_stop
@@ -302,6 +303,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
     from ..configs.records import Bot
     from ..configs.unit import configs_of
     from ..data.calendar import session_calendar
+    from ..engine.trade_dividends import positions_dividend_credits
     from ..governance import Mode
     from ..models import (
         HatAllocationDaily,
@@ -385,9 +387,20 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
             ids = sorted({f.instrument_id for f in fills})
             closes = _closes(store, ids, period_start, as_of)
             trades, dividends, open_rows = [], [], []
+            # each position's dividends on their ex-dates, through its exit or `as_of`
+            earned_by = positions_dividend_credits(
+                session,
+                [
+                    (p.id, p.instrument_id, min(trade_date_of(as_utc(p.closed_at)), as_of))
+                    if p.closed_at
+                    else (p.id, p.instrument_id, as_of)
+                    for p in positions
+                ],
+            )
             for p in positions:
                 opened = trade_date_of(as_utc(p.opened_at))
                 closed = trade_date_of(as_utc(p.closed_at)) if p.closed_at else None
+                earned = earned_by.get(p.id, [])
                 symbol = symbol_of(session, p.instrument_id)
                 result = session.get(HatTradeResult, p.id) if closed else None
                 if result is not None and closed is not None and closed <= as_of:  # closed by then
@@ -403,8 +416,9 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                             Decimal(result.r_multiple),
                         )
                     )
-                    dividends.append((closed, Decimal(result.dividends)))
+                    dividends.extend(earned)
                 elif opened <= as_of and held[p.signal_id] > 0:  # its shares on `as_of`
+                    dividends.extend(earned)
                     series = closes.get(str(p.instrument_id), ())
                     open_rows.append(
                         open_row(
@@ -414,7 +428,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                             initial_stop=Decimal(p.initial_stop),
                             current_stop=Decimal(p.current_stop),
                             opened=opened,
-                            fill_cash=cash[p.signal_id],
+                            fill_cash=cash[p.signal_id] + sum((c for _, c in earned), _ZERO),
                             mark=_close_on(series, as_of),
                         )
                     )

@@ -3,7 +3,7 @@ closes, an open position's mark, and the report on the backtest's own metric cod
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 
 from app.hat.backtest.standard import BookSession, BookTrade, book_metrics
@@ -16,6 +16,8 @@ from app.hat.daily.books import (
     open_row,
     report_doc,
 )
+from app.hat.engine.trade_dividends import Step, dividend_credits
+from app.hat.time import IST
 
 D = Decimal
 DAYS = [date(2026, 10, 26), date(2026, 10, 27), date(2026, 10, 28), date(2026, 10, 29)]
@@ -145,3 +147,18 @@ def test_loss_streak_is_counted_in_exit_order() -> None:
     sessions = [BookSession(d, START, D(0), 0) for d in DAYS]
     metrics = book_metrics(trades, curve, sessions, START, DAYS[0])
     assert metrics["max_consecutive_losses"] == 2
+
+
+def test_dividends_are_credited_on_their_ex_dates() -> None:
+    """A position's dividends land on each ex-date it held shares at the open (the backtest's
+    rule), not at its exit: the curve moves on the ex-date."""
+
+    def at(day: date) -> datetime:
+        return datetime.combine(day, time(10, 0), tzinfo=IST)
+
+    steps = [Step(at(DAYS[0]), "buy", 100), Step(at(DAYS[2]), "sell", 100)]
+    paid = [(DAYS[0], D("5")), (DAYS[1], D("2")), (DAYS[3], D("9"))]
+    # bought on DAYS[0] (its ex-date earns nothing), sold on DAYS[2]; DAYS[3] past `through`
+    assert dividend_credits(steps, paid, DAYS[2]) == [(DAYS[1], D("200"))]
+    curve = book_curve(START, DAYS, [], [(DAYS[1], D("200"))], {})
+    assert [s.equity for s in curve] == [START, START + 200, START + 200, START + 200]
