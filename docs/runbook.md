@@ -411,8 +411,13 @@ D1 daily bars vs the bhavcopy files under `raw/`; D2 corporate actions vs NSE's 
 pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_unit_actions_*`,
 `dividends/ca_*.json`, `results_announcements_*`), each demerger factor against the company's
 published cost-of-acquisition split (`d2_cost_splits.csv` beside the exceptions; a book-value
-apportionment, so a far one warns), the adjusted series' moves over 20% and a seeded sample of
-yearly price returns (2022-2025, the depth Fyers serves) against Fyers' daily history; D3 NIFTY 500 membership vs the
+apportionment, so a far one warns), each stored price factor against NSE's own base price that
+day (the bhavcopy's previous close; NSE keeps the raw close on nearly every ex-date, and a base
+it did adjust must agree), the adjusted series' moves over 20% (a band's only when the close is
+held at the band) and a seeded sample of one stock per company, yearly price returns
+(2022-2025, the depth Fyers serves) against Fyers' daily history (fails under 70% of the sample
+or 250 stock-years compared). The pull's date is its note's `Collected DD-Mon-YYYY` line
+(`README.md` in `--ca-data`), never a file time; without it D2 fails and `ca_import` refuses; D3 NIFTY 500 membership vs the
 parsed notices and archived lists (`--notices`: `changes_parsed.json`, `overrides.json`); D4 the
 5-minute bars vs the Kotak raw files (`--kotak`: the refused days classified, and a seeded sample
 of stored days compared bar by bar); D5 results `public_at` vs NSE's dissemination times
@@ -570,7 +575,7 @@ input files sit under the working directory (run there with `PYTHONPATH=<repo>/b
 | `lineage report [--since D] [--kind K]` | Review list: unlinked successions, disagreeing copies, unexplained jumps by kind (`other` needs a reason) |
 | `lineage show SYMBOL...` | Chains and jumps of symbols |
 | `lineage link\|unlink OLD NEW --note T` | Owner's verdict on a succession |
-| `ca_import --db FILE` | Collected NSE corporate-action file |
+| `ca_import --db FILE` | Collected NSE corporate-action file (its folder's `README.md` gives the pull date: `Collected DD-Mon-YYYY`) |
 | `ca_research --db FILE --a .. --d ..` | Research-confirmed demergers and rights |
 | `ca_dividends --feed DIR [--bonus F]` | Dividends from NSE's monthly feed JSON; `symbol_isin_disagree` (NSE filed one company under another's ISIN) is the owner's to fix |
 | `ca_demergers [--apply [--neutral]]` | Demerger gaps, ratio, disputed list; `--neutral` only with owner approval |

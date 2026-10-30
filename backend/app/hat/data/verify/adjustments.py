@@ -62,6 +62,12 @@
    no Fyers symbol or no kept answer and a year Fyers has that the series lacks; under
    `SECOND_SOURCE_MIN_STOCKS` of the sample or `SECOND_SOURCE_MIN_YEARS` stock-years compared
    fails (the second source did not run).
+4. NSE's base: each stored split, bonus, rights and demerger (a chain's factors of one day,
+   multiplied) against NSE's own base price that day, the ex-session's previous close in the
+   bhavcopy over the chain's last close (`nse_factor`, from `bars_daily_raw`, no network). NSE
+   keeps the raw close as the base on nearly every ex-date (`unadjusted`); where it adjusted, its
+   factor must agree with the stored one (`nse_base_verdict`), else it warns (`nse_base_differs`,
+   a reviewed one excepted). Counted by verdict for 2011-2021 and from 2022.
 Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
@@ -126,6 +132,7 @@ EXPLAINED_LISTED = ("circuit", "results", "market")
 PENNY = 5.0  # rupees: below it a tick of 0.05 (0.01 since 2023) is 1% or more
 PREV_DAYS = 20  # calendar days: a reference's close before the ex-date is looked for this far back
 DEMERGER_GAP = Fraction(5, 100)  # a demerger not stored whose close gap is beyond this fails
+NSE_BASE_SLACK = 0.002  # NSE's base factor agrees with the stored one within this (or a tick)
 COST_SPLIT_GAP = Fraction(10, 100)  # a stored factor this far from the parent's cost share warns
 FUND_PREFIX = "INF"  # mutual-fund units (ETFs): not stocks, not judged
 NON_EQUITY = frozenset({"preference", "debentures", "warrants"})
@@ -1416,6 +1423,114 @@ def _second_source(
     return summary, findings
 
 
+# --- the stored factors against NSE's own base price ----------------------------------------------
+
+
+def nse_factor(
+    bars: Sequence[tuple[date, float, float]], ex_date: date
+) -> tuple[float, float, float] | None:
+    """NSE's factor for an action from one chain's raw bars (day, previous close, close) around
+    its ex-date: the ex-session's previous close (NSE's base price for the day) over the chain's
+    last close before it, with both prices; None without a bar on each side."""
+    ordered = sorted(bars)
+    before = [b for b in ordered if b[0] < ex_date]
+    after = [b for b in ordered if b[0] >= ex_date]
+    if not before or not after or before[-1][2] <= 0:
+        return None
+    base, last = after[0][1], before[-1][2]
+    return base / last, base, last
+
+
+def nse_base_verdict(stored: float, nse: float, last_close: float) -> str:
+    """How NSE's base factor (`nse_factor`) stands to the stored factor: `agrees` within
+    `NSE_BASE_SLACK` or one tick of the last close, `unadjusted` (NSE kept the last close as the
+    base, as on nearly every ex-date: its bhavcopy's previous close is the raw close), or
+    `differs`."""
+    slack = max(NSE_BASE_SLACK, TICK / last_close) if last_close > 0 else NSE_BASE_SLACK
+    if abs(stored - nse) <= slack:
+        return "agrees"
+    if abs(nse - 1) <= slack:
+        return "unadjusted"
+    return "differs"
+
+
+_NSE_BASE_SQL = """
+SELECT isin, date, CAST(prev_close AS DOUBLE), CAST(close AS DOUBLE)
+FROM bars_daily_raw_latest WHERE date BETWEEN ? AND ? AND isin IN (SELECT unnest(?))
+"""
+NSE_BASE_DAYS = (40, 10)  # calendar days of bars read before and after each ex-date
+
+
+def _nse_base(
+    ctx: Context,
+    con: duckdb.DuckDBPyConnection,
+    stored: Sequence[StoredAction],
+    heads: Mapping[str, tuple[str, int]],
+    exceptions: Exceptions,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+    isin_of = dict(ctx.rows("SELECT CAST(id AS TEXT), isin FROM hat_instrument"))
+    symbol_of = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
+    members: dict[str, set[str]] = defaultdict(set)
+    for instrument, (head, _) in heads.items():
+        members[head].add(instrument)
+    factors: dict[tuple[str, date], Fraction] = defaultdict(lambda: Fraction(1))
+    for a in stored:
+        head = heads.get(a.instrument_id, (a.instrument_id, 0))[0]
+        if (a.action_type in PRICE_TYPES or a.action_type == "other" or a.demerger) and (
+            ordinary_equity(isin_of.get(head, ""))
+        ):
+            factors[(head, a.ex_date)] *= a.factor
+    keys = sorted(factors)
+    before, after = (timedelta(days=d) for d in NSE_BASE_DAYS)
+    wanted: dict[int, list[tuple[int, set[str]]]] = defaultdict(list)  # by year: key, ISINs
+    for n, (head, ex) in enumerate(keys):
+        wanted[ex.year].append((n, {isin_of[m] for m in members[head] | {head} if m in isin_of}))
+    bars: dict[int, list[tuple[date, float, float]]] = defaultdict(list)
+    for year, asked in sorted(wanted.items()):  # a year at a time: the store is read by date
+        rows = con.execute(
+            _NSE_BASE_SQL,
+            [
+                date(year, 1, 1) - before,
+                date(year, 12, 31) + after,
+                sorted(set().union(*(isins for _, isins in asked))),
+            ],
+        ).fetchall()
+        by_isin: dict[str, list[tuple[date, float, float]]] = defaultdict(list)
+        for isin, day, prev, close in rows:
+            by_isin[isin].append((day, prev or 0.0, close or 0.0))
+        for n, isins in asked:
+            ex = keys[n][1]
+            bars[n] = [b for i in isins for b in by_isin[i] if ex - before <= b[0] <= ex + after]
+    counts: Counter[str] = Counter()
+    differs = []
+    for n, (head, ex) in enumerate(keys):
+        found = nse_factor(bars[n], ex)
+        if found is None:
+            counts["no_bars"] += 1
+            continue
+        nse, base, last = found
+        stored_factor = float(factors[(head, ex)])
+        verdict = nse_base_verdict(stored_factor, nse, last)
+        counts[f"{verdict}_{'2011_2021' if ex.year <= 2021 else '2022_on'}"] += 1
+        if verdict == "differs":
+            differs.append(
+                {
+                    "symbol": symbol_of.get(head, ""),
+                    "isin": isin_of.get(head, ""),
+                    "ex_date": ex.isoformat(),
+                    "stored": round(stored_factor, 6),
+                    "nse": round(nse, 6),
+                    "nse_prev_close": base,
+                    "last_close": last,
+                }
+            )
+    findings = []
+    differs = exceptions.split("nse_base_differs", differs)
+    if differs:
+        findings.append(finding("nse_base_differs", WARN, differs))
+    return {"actions": len(keys), **dict(sorted(counts.items()))}, findings
+
+
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     from ..chains import chains, stored_adjustment, stored_links  # noqa: PLC0415
 
@@ -1508,6 +1623,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings += move_findings
         summary["second_source"], second = _second_source(ctx, con, members, heads, exceptions)
         findings += second
+        summary["nse_base"], base_findings = _nse_base(ctx, con, stored, heads, exceptions)
+        findings += base_findings
     summary["excepted"] = exceptions.summary()
     result = check_result("D2", summary, [*findings, *exceptions.findings()])
     return result if coverage is None else covered(result, *coverage)

@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from app.hat.data import audit, bars5m_volume, verify
+from app.hat.data import audit, bars5m_volume, ca_import, verify
 from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
     adjustments,
@@ -622,6 +622,57 @@ def test_d2_circuit_needs_the_close_held_at_the_band() -> None:
     # a fall held at the lower band closes at the day's low; SAIL 2024-06-04 closed above it
     assert adjustments.pinned(-20.0, close=80.0, high=99.0, low=80.0)
     assert not adjustments.pinned(-20.02, close=133.05, high=164.90, low=124.80)
+
+
+def test_d2_second_source_sample_takes_one_stock_per_chain() -> None:
+    symbols = {f"i{n}": f"S{n}" for n in range(300)}
+    members = list(symbols)
+    plain = adjustments.second_source_sample(symbols, members, {})
+    assert len(plain) == adjustments.SAMPLE_SIZE
+    # tie the first two drawn into one chain: the second is replaced by the next in order
+    first, second = plain[0], plain[1]
+    heads = {first: (second, 1), second: (second, 0)}
+    deduped = adjustments.second_source_sample(symbols, members, heads)
+    assert len(deduped) == adjustments.SAMPLE_SIZE
+    assert first in deduped
+    assert second not in deduped
+    ranked = verify.seeded_sample(sorted(members), len(members), adjustments.SAMPLE_SEED)
+    assert deduped == [first, *ranked[2 : adjustments.SAMPLE_SIZE + 1]]
+
+
+def test_d2_second_source_fails_on_too_little_compared() -> None:
+    assert adjustments.judge_second_source(100, 82, 311) == []
+    assert adjustments.judge_second_source(100, 69, 300)[0]["code"] == "second_source_not_run"
+    assert adjustments.judge_second_source(100, 90, 249)[0]["code"] == "second_source_not_run"
+    assert adjustments.years_only_theirs(
+        {2022: 1.0}, {2022: 1.0, 2023: 2.0, 2026: 3.0}, 2022, 2025
+    ) == [2023]
+
+
+def test_d2_pull_date_is_read_from_the_pulls_note() -> None:
+    note = "# NSE backtest data\nCollected 24-Oct-2026. Window: 24-Oct-2011 to 23-Oct-2026.\n"
+    assert ca_import.collected_on(note) == date(2026, 10, 24)
+    assert ca_import.collected_on("# no date here\n") is None
+    assert ca_import.collected_on("Collected 31-Feb-2026.") is None
+
+
+def test_d2_nse_base_against_the_stored_factor() -> None:
+    ex = date(2022, 10, 6)
+    # AHLEAST: NSE's base 233.55 over the last close 350.35 is the 1:2 bonus alone (2/3)
+    bars = [
+        (date(2022, 10, 4), 333.7, 350.35),
+        (ex, 233.55, 175.75),
+        (date(2022, 10, 7), 175.75, 167.0),
+    ]
+    found = adjustments.nse_factor(bars, ex)
+    assert found is not None
+    nse, base, last = found
+    assert (base, last) == (233.55, 350.35)
+    assert adjustments.nse_base_verdict(2 / 3, nse, last) == "agrees"
+    assert adjustments.nse_base_verdict(0.5017, nse, last) == "differs"  # bonus and demerger
+    # NSE kept the raw close as the base: the bhavcopy's previous close is the last close
+    assert adjustments.nse_base_verdict(0.5, 1.0, 1377.85) == "unadjusted"
+    assert adjustments.nse_factor(bars[1:], ex) is None  # no bar before the ex-date
 
 
 def test_d2_dividends_count_against_the_chains_series() -> None:
