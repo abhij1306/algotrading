@@ -187,9 +187,22 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   under `min_change_pct` of the target skipped (`reweight: false` never tops up or trims);
   `market_filter: true` sells everything and holds cash while the regime gate is off.
   Exits are by rank only (plus demerger, delisting and suspension as for every trade); no stop,
-  slot, per-trade risk or open-risk cap applies. Rules: `engine/rotation.py` (pure); the book:
-  `backtest/rotation.py`. Backtest only: a rotation version is refused as a promotion run
-  (`backtest_promotion_rotation`), so it cannot be published or run live. The seed
+  slot, per-trade risk or open-risk cap applies. Rules: `engine/rotation.py` (pure, shared); the
+  books: `backtest/rotation.py` and, live, `engine/rotation_live.py`. **Live on paper only (owner
+  2026-10-29, W3):** the nightly scan ranks on a rebalance close (`rotation.planned`) and
+  `rotation.rebalance` (09:20) selects at the open on the live prices, sizes on the book's equity
+  at those prices (cash plus the holdings marked, the backtest's basis), sells and trims as
+  virtual sales of the holding's lots (newest first; a sale's gain or loss reaches the shadow
+  cash at once) and buys each name as a shadow signal through `evaluate_signal` (`rotation_buy`,
+  refused unless the rotation playbook's and virtual: the kills, a pause, the market, feed and
+  quality checks, the free cash; a top-up is a lot of its own). A name it may buy with no tick
+  yet, or a stale feed, holds the whole rebalance back until 09:45 (with the open; retried each
+  minute, alerted `rotation.unpriced`) rather than buy a lower-ranked name; after it a name still
+  unpriced is passed over as the backtest passes over a name with no bar and the rest trades; every buy not made is alerted
+  `rotation.buy_refused`; a waiting sale of a name back in the target is off. A bot whose mode is confirm or auto does not trade
+  and is alerted `rotation.shadow_only`: real rotation orders need a stopless protective path and
+  a sale card, not built. A rotation version may be a promotion run, so it can be frozen and run
+  its trial on paper. The seed
   `momentum-rotation` is the research pick (riskadj, top 20, monthly, buffer 40, ADV20 >= Rs 10
   cr, close >= 50, 240 bars). Configs without the block keep their canonical JSON and hash.
 

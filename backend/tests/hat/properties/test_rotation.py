@@ -12,15 +12,26 @@ import pytest
 
 from app.hat.engine.rotation import (
     BUY,
+    MARKET_FILTER,
+    NOT_ELIGIBLE,
+    OUT_OF_BUFFER,
     SELL,
     TOP_UP,
     TRIM,
     Order,
+    Plan,
+    buy_share,
     is_rebalance,
+    lot_sales,
     order_diff,
+    orders,
+    plan,
     ranked,
+    ranking,
+    sale_reason,
     scores,
     select,
+    targets,
     window_rows,
     zscores,
 )
@@ -165,3 +176,58 @@ def test_a_rotation_config_has_no_playbook_or_exit_and_old_configs_keep_their_fo
     with pytest.raises(ConfigError) as mixed:
         parse_config({**raw, "playbooks": playbook})
     assert mixed.value.codes == {"rotation_with_playbooks_or_exits"}
+
+
+def test_ranking_leaves_out_pending_names_and_plan_selects_with_the_buffer() -> None:
+    rules = SMALL.model_copy(update={"score": "r6", "buffer_rank": 2})
+    closes = _closes([100, 100, 100, 100, 130.0], [100, 100, 100, 100, 120.0], [100] * 4 + [110.0])
+    assert [n for n, _ in ranking(["a", "b", "c"], closes, rules)] == ["a", "b", "c"]
+    assert [n for n, _ in ranking(["a", "b", "c"], closes, rules, pending={"a"})] == ["b", "c"]
+    # c is held but ranks 3rd, outside a buffer of 2: it leaves; a pending holding is kept
+    found = plan(date(2024, 1, 31), ["a", "b", "c"], closes, rules, {"c"}, gate_on=True,
+                 can_buy=lambda n: True)  # fmt: skip
+    assert found.target == ("a", "b")
+    assert not found.filtered
+    kept = plan(date(2024, 1, 31), ["a", "b", "c"], closes, rules, {"c"}, pending={"c"},
+                gate_on=True, can_buy=lambda n: True)  # fmt: skip
+    assert kept.target == ("c", "a")
+
+
+def test_the_market_filter_empties_the_target_only_when_the_gate_is_off() -> None:
+    ranks = (("a", 2.0), ("b", 1.0))
+    filtered = SMALL.model_copy(update={"market_filter": True})
+    assert targets(ranks, {"a"}, filtered, gate_on=False, can_buy=lambda n: True) == ((), True)
+    assert targets(ranks, {"a"}, filtered, gate_on=True, can_buy=lambda n: True) == (
+        ("a", "b"),
+        False,
+    )
+    assert targets(ranks, set(), SMALL, gate_on=False, can_buy=lambda n: True)[0] == ("a", "b")
+
+
+def test_a_sale_names_why_the_holding_left() -> None:
+    chosen = Plan(date(2024, 1, 31), (("a", 1.0), ("b", 0.5)), ("a",))
+    assert sale_reason(chosen, "b") == OUT_OF_BUFFER
+    assert sale_reason(chosen, "z") == NOT_ELIGIBLE
+    assert sale_reason(Plan(date(2024, 1, 31), (("a", 1.0),), (), True), "a") == MARKET_FILTER
+
+
+def test_orders_are_the_order_diff_under_the_config() -> None:
+    rules = SMALL.model_copy(update={"top_n": 2, "min_change_pct": 2.0, "reweight": False})
+    chosen = Plan(date(2024, 1, 31), (), ("a", "b"))
+    found = orders(chosen, {"a": 10, "x": 3}, {"a": D(100), "b": D(50)}, D(10000), rules)
+    assert found == [Order("x", SELL, 3), Order("b", BUY, 100)]
+
+
+def test_buy_share_scales_buys_down_to_the_cash() -> None:
+    assert buy_share(D(1000), D(2000)) == 1
+    assert buy_share(D(1000), D(250)) == D("0.25")
+    assert buy_share(D(0), D(250)) == 0
+    assert buy_share(D(1000), D(0)) == 0
+
+
+def test_lot_sales_sell_the_newest_lot_first_and_never_more_than_held() -> None:
+    lots = [("old", 10), ("new", 4)]
+    assert lot_sales(3, lots) == [("new", 3)]
+    assert lot_sales(6, lots) == [("new", 4), ("old", 2)]
+    assert lot_sales(99, lots) == [("new", 4), ("old", 10)]
+    assert lot_sales(0, lots) == []

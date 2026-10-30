@@ -9,6 +9,9 @@ number never rounds up across a cap. The smallest floored term is the binding on
 
 A size whose value `q * P_entry` is under the policy's floor `E * min_position_pct` is skipped,
 `size_below_min`: a position too small to matter would dilute the expectancy and hold a slot.
+
+A rotation buy (`rotation_quantity`) has no stop: its shares come from the rotation's equal
+target weight (`engine.rotation.orders`), and only the cash term caps them.
 """
 
 from __future__ import annotations
@@ -115,3 +118,22 @@ def size_position(inputs: SizingInputs) -> SizingResult:
         if quantity * entry < equity * floor:
             return SizingResult(0, binding, risk_pct, terms, "size_below_min")
     return SizingResult(quantity, binding, risk_pct, terms, None)
+
+
+def rotation_quantity(requested: int, entry: Decimal, cash: Decimal) -> tuple[int, str]:
+    """(shares, binding term) of a rotation buy of `requested` shares at `entry`: the request,
+    floored to what the free cash pays (`cash`, Infinity unbounded). Raises `SizingInputError`
+    for a request that is not a positive whole number, an entry not above zero or a negative
+    cash."""
+    if isinstance(requested, bool) or not isinstance(requested, int) or requested < 1:
+        raise SizingInputError("a rotation buy needs a positive whole number of shares")
+    entry = exact_input(entry, "entry_price")
+    cash = exact_input(cash, "free_cash", cash=True)
+    if entry <= 0 or cash < 0:
+        raise SizingInputError("entry must be positive, cash not negative")
+    if cash == UNBOUNDED_CASH:
+        return requested, "rotation"
+    with localcontext() as ctx:
+        ctx.prec = _PRECISION
+        affordable = _floor_div(cash, entry)
+    return (requested, "rotation") if requested <= affordable else (affordable, "cash")

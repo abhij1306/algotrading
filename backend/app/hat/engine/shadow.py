@@ -54,6 +54,7 @@ __all__ = [
     "expire_watchlist",
     "open_veto_trade",
     "open_virtual",
+    "sell_position",
 ]
 
 
@@ -279,10 +280,34 @@ def close_position(
     """Sell the whole open quantity of a virtual position at `price` for a `reason` outside the
     exit stack (the backtest's period end, an instrument's last traded day) and write its trade
     result. False when the position was already closed."""
+    return sell_position(
+        session, position_id, None, price, reason, now, high=high, low=low, fills=fills
+    )
+
+
+def sell_position(
+    session: Session,
+    position_id: uuid.UUID,
+    qty: int | None,
+    price: Decimal,
+    reason: str,
+    now: datetime,
+    *,
+    high: Decimal | None = None,
+    low: Decimal | None = None,
+    fills: FillModel = SHADOW_FILLS,
+) -> bool:
+    """Sell `qty` shares (None or at least the open quantity: all of them) of a virtual position
+    at `price` for a `reason` outside the exit stack (`close_position`, a rotation's sale or
+    trim); the last share writes its trade result. False when the position was already closed
+    or `qty` is not positive."""
     position = _locked_virtual_position(session, position_id)
     if position.closed_at is not None or position.qty_open <= 0:
         return False
-    sale = _Sale(True, position.qty_open, reason)
+    sold = position.qty_open if qty is None else min(qty, position.qty_open)
+    if sold <= 0:
+        return False
+    sale = _Sale(sold == position.qty_open, sold, reason)
     _virtual_exit(session, trade_of(session, position), sale, price, now, _Marks(fills, high, low))
     session.flush()
     return True
