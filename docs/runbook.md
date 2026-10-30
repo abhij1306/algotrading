@@ -647,8 +647,7 @@ is a failure), each closed trade's R, and the Backtest Result Standard's headlin
 `max_dd_pct`, `invested_pct`, `cost_share_pct` and the rest compare one to one with the
 strategy's evidence run) against the NIFTY 500 TRI. Telegram sends it at 23:45 IST after
 `ingest.nightly` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
-books` show it on demand. A held stock whose shares a split or bonus changed is valued from its
-fills at the raw close until it closes, so its book reads wrong in between.
+books` show it on demand.
 
 ## Alerts and failures
 
