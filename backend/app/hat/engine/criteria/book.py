@@ -131,8 +131,8 @@ class BookVcpParams(ParamModel):
             raise ValueError("first_depth_pct is [min, max] within 0..100")
         if not 2 <= self.base_sessions[0] <= self.base_sessions[1]:
             raise ValueError("base_sessions is [min, max] with 2 <= min <= max")
-        if not 1 <= self.window_sessions[0] <= self.window_sessions[1]:
-            raise ValueError("window_sessions is [min, max] with 1 <= min <= max")
+        if not 1 <= self.window_sessions[0] <= self.window_sessions[1] <= 325:
+            raise ValueError("window_sessions is [min, max] with 1 <= min <= max <= 325")
         return self
 
     def geometry_key(self) -> tuple[object, ...]:

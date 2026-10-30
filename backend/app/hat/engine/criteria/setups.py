@@ -186,8 +186,8 @@ class _Window(_DryUp):
 
     @model_validator(mode="after")
     def _check_window(self) -> _Window:
-        if not 1 <= self.window_sessions[0] <= self.window_sessions[1]:
-            raise ValueError("window_sessions is [min, max] with 1 <= min <= max")
+        if not 1 <= self.window_sessions[0] <= self.window_sessions[1] <= 325:
+            raise ValueError("window_sessions is [min, max] with 1 <= min <= max <= 325")
         return self
 
 
