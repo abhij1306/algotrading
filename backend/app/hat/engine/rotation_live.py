@@ -94,6 +94,7 @@ EVENT_REBALANCED = "rotation.rebalanced"
 ROTATION_CONFIDENCE = "rotation_unscored"
 NO_PRICE = "no_price"
 NO_EQUITY = "no_equity"
+VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
 # affordable shares the buys are scaled with.
@@ -191,6 +192,8 @@ def plan_night(
             "gate_on": gate_on,
             "strategy_version_id": str(bot.live_version_id),
             "passers": len(passers),
+            # how deep the open's selection may reach: its subscriptions (`planned_instruments`)
+            "depth": rules.top_n + rules.buffer_rank,
             "ranking": [[name, str(_score(value))] for name, value in ranks],
         },
         bot_id=bot_id,
@@ -232,6 +235,7 @@ class Planned:
     trade_date: date
     gate_on: bool
     ranking: tuple[tuple[str, Decimal], ...]
+    strategy_version_id: str | None = None
 
 
 def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | None:
@@ -245,12 +249,14 @@ def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | 
         trade_date=trade_date,
         gate_on=bool(payload["gate_on"]),
         ranking=tuple((str(name), Decimal(score)) for name, score in payload["ranking"]),
+        strategy_version_id=payload.get("strategy_version_id"),
     )
 
 
 def planned_instruments(session: Session, trade_date: date, depth: int) -> set[uuid.UUID]:
-    """The instruments the rebalances at `trade_date`'s open may buy: the first `depth` of each
-    recorded ranking (subscribed and priced from the day's start)."""
+    """The instruments the rebalances at `trade_date`'s open may buy: the first names of each
+    recorded ranking, as deep as the plan says its selection may reach (its `top_n` and
+    `buffer_rank`) and at least `depth` (subscribed and priced from the day's start)."""
     found: set[uuid.UUID] = set()
     for (payload,) in session.execute(
         select(HatEvent.payload).where(
@@ -258,7 +264,8 @@ def planned_instruments(session: Session, trade_date: date, depth: int) -> set[u
         )
     ):
         if payload.get("trade_date") == trade_date.isoformat():
-            found.update(uuid.UUID(name) for name, _ in payload["ranking"][:depth])
+            reach = max(depth, int(payload.get("depth") or 0))
+            found.update(uuid.UUID(name) for name, _ in payload["ranking"][:reach])
     return found
 
 
@@ -413,8 +420,12 @@ def rebalance(
     done = Rebalanced(night.trade_date)
     bot = configs_of(session).get(Bot, bot_id)
     config = None if bot is None else rotation_config(session, bot)
-    if config is None or config.rotation is None:
+    if bot is None or config is None or config.rotation is None:
         done.skipped = "not_a_rotation"
+        return done
+    if night.strategy_version_id != str(bot.live_version_id):
+        # ranked under another version's rules: not traded on this one's
+        done.skipped = VERSION_CHANGED
         return done
     rules = config.rotation
     lots = _lots(session, bot_id)

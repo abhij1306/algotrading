@@ -117,8 +117,8 @@ GAPSCAN_UNTIL = time(9, 20)  # a scan that cannot start before the first bar is 
 WATCHLIST_EXPIRE_AT = time(15, 30)  # the session close: a Watchlisted row ends with its day
 ONE_MINUTE = timedelta(minutes=1)
 GAPPERS_RECORDED = "gapscan.completed"
-# How deep into a rotation's ranking the day's subscriptions reach: its buys fill the top `top_n`
-# best first, passing over a name without a usable price (a seed's buffer is 40).
+# How deep into a rotation's ranking the day's subscriptions reach at least; a plan reaching
+# deeper (its `top_n` and `buffer_rank`) is subscribed as deep as it records.
 PLANNED_DEPTH = 60
 
 Gappers = tuple[Mapping[str, uuid.UUID], Mapping[str, Decimal]]  # symbol -> id, symbol -> open
@@ -558,7 +558,7 @@ def intraday_jobs(intraday: Intraday) -> tuple[ScheduledJob, ...]:
                     intraday.rotations.rebalance,
                     until=REBALANCE_UNTIL,
                     retry_after=ONE_MINUTE,
-                    after=(MODES_APPLY,),
+                    after=(LIVE_PREPARE, MODES_APPLY),  # its names priced and subscribed
                     shift=intraday.open_shift,
                 ),
             )
