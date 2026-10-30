@@ -1197,9 +1197,13 @@ def fyers_request(symbol: str, year: int, base: bool = False) -> tuple[str, dict
     return f"{symbol.removeprefix('NSE:')}_{year}.json", request
 
 
+FYERS_INVALID_SYMBOL = -300  # Fyers' "Invalid symbol provided": an answer about the symbol
+
+
 def fyers_answered(answer: Mapping[str, Any]) -> bool:
-    """A history answer to keep: candles (`ok`), or `no_data` for a year without any."""
-    return answer.get("s") in ("ok", "no_data")
+    """A history answer to keep: candles (`ok`), `no_data` for a year without any, or Fyers'
+    "invalid symbol" (no series; read as no closes, so the stock counts as missing)."""
+    return answer.get("s") in ("ok", "no_data") or answer.get("code") == FYERS_INVALID_SYMBOL
 
 
 def fyers_closes(data: bytes) -> list[tuple[date, float]]:

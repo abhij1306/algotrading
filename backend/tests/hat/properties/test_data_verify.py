@@ -575,6 +575,9 @@ def test_d2_second_source_returns_by_calendar_year() -> None:
     assert adjustments.fyers_answered({"s": "no_data", "candles": []})
     assert adjustments.fyers_closes(b'{"s":"no_data","candles":[]}') == []
     assert not adjustments.fyers_answered({"s": "error", "code": -50})
+    invalid = {"s": "error", "code": -300, "message": "Invalid symbol provided"}
+    assert adjustments.fyers_answered(invalid)
+    assert adjustments.fyers_closes(json.dumps(invalid).encode()) == []
 
 
 def test_d2_second_source_requests() -> None:

@@ -6,10 +6,11 @@ into `verify_reference/fyers/`, one file per stock and calendar year of `SECOND_
 It uses HAT's Fyers session as the app's login left it (`fyers_history`): it never logs in or
 refreshes the token, and stops (exit 2) without a valid one. The token is shared with the
 data downloads and live trading, so it asks at most `PER_MINUTE` times a minute. Every answer
-with candles or `no_data` is kept once (`store.keep_once`), so a rerun asks only what is not
-kept; any other answer stops the run with its code (never the broker's text), to be rerun
-later. A stock with no Fyers symbol (delisted: Fyers lists only what trades now) is not asked.
-The database is read once, for the sample, and the session closed before the first request.
+with candles, `no_data` or "invalid symbol" is kept once (`store.keep_once`), so a rerun asks
+only what is not kept; any other answer stops the run with its code (never the broker's
+text), to be rerun later. A stock with no Fyers symbol (delisted: Fyers lists only what trades
+now) is not asked. The database is read once, for the sample, and the session closed before
+the first request.
 """
 
 from __future__ import annotations
