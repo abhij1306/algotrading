@@ -104,6 +104,7 @@ __all__ = [
     "membership_cover_refusal",
     "point_in_time_members",
     "real_shares",
+    "index_members",
     "scan_night_members",
     "stopped_trading",
 ]
@@ -789,21 +790,15 @@ def _members(
     index_name = definition.get("index")
     if not index_name:
         raise BacktestError("backtest_universe_no_index")
-    record = session.get(HatIndexMembership, index_name)
-    refusal = membership_cover_refusal(
-        None if record is None else (record.covered_from, record.covered_to), start, until
-    )
-    if refusal is not None:
-        raise BacktestError(refusal)
-    rows = session.scalars(select(HatIndexMember).where(HatIndexMember.index_name == index_name))
-    members = point_in_time_members(
-        (Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows),
-        include=[uuid.UUID(i) for i in definition.get("include", ())],
-        exclude=[uuid.UUID(i) for i in definition.get("exclude", ())],
+    members, record = index_members(
+        session,
+        index_name,
         lineage=lineage,
         since=since,
+        start=start,
         until=until,
-        history_from=record.covered_from,
+        include=[uuid.UUID(i) for i in definition.get("include", ())],
+        exclude=[uuid.UUID(i) for i in definition.get("exclude", ())],
     )
     source = {
         "index": index_name,
@@ -817,6 +812,40 @@ def _members(
         "universe_key": membership_key(definition),
     }
     return members, source
+
+
+def index_members(
+    session: Session,
+    index_name: str,
+    *,
+    lineage: Mapping[str, str],
+    since: date,
+    start: date,
+    until: date,
+    include: Iterable[uuid.UUID] = (),
+    exclude: Iterable[uuid.UUID] = (),
+) -> tuple[tuple[Interval, ...], HatIndexMembership]:
+    """The point-in-time members of index `index_name` over `since..until`, by chain id
+    (`point_in_time_members`), with the index's membership record: what every run's universe is
+    (`_members`) and what research reads the same way. Raises `BacktestError` when the loaded
+    history does not cover `start..until` (`membership_cover_refusal`)."""
+    record = session.get(HatIndexMembership, index_name)
+    refusal = membership_cover_refusal(
+        None if record is None else (record.covered_from, record.covered_to), start, until
+    )
+    if refusal is not None or record is None:
+        raise BacktestError(refusal or "backtest_no_index_membership")
+    rows = session.scalars(select(HatIndexMember).where(HatIndexMember.index_name == index_name))
+    members = point_in_time_members(
+        (Interval(r.instrument_id, r.effective_from, r.effective_to) for r in rows),
+        include=include,
+        exclude=exclude,
+        lineage=lineage,
+        since=since,
+        until=until,
+        history_from=record.covered_from,
+    )
+    return members, record
 
 
 def real_shares(qty: int, factor: float) -> int | None:

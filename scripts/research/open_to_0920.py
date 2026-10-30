@@ -2,22 +2,25 @@
 backtest uses for an order at 09:20 on a day without five-minute bars (`engine/fill_0920.py`
 `OPEN_TO_0920`, decisions.md "Orders at 09:20").
 
-    venv/bin/python scripts/research/open_to_0920.py [--universe "NIFTY 500"] \
+    venv/bin/python scripts/research/open_to_0920.py [--index "NIFTY 500"] \
         [--from 2021-10-26] [--to 2024-12-31] [--min-adv-cr 10] [--min-price 50]
 
 For every session in the window with a stored `bars_5m` day, every point-in-time member of the
-universe that is liquid as a rotation buys it (the seed's universe stage: series EQ or BE, the
-20 sessions before the day averaging at least `--min-adv-cr` crore traded, close times volume
-where no traded value is stored, and the previous close at least `--min-price`) and whose five-
-minute session a backtest admits (`intraday.session_admitted`: it fits its daily bar, lacks no
-refused bucket, lies in no known coverage gap) gives one move: the price at 09:20
-(`fill_0920.price_0920`, the 09:15 bar's close) over the day's raw open, less 1. It prints one
-JSON report: the count, the median, quartiles and mean of the move, the buy-side median (the
-move: a buy pays it) and the sell-side median (minus the move: a sale loses it), over all
-member-days and over rebalance sessions only (the first session of each month, when a monthly
-rotation trades), and the constants to set (`suggested`: each side's median, never favourable,
-so at least 0). Read only: the database in a read-only transaction, the store's files.
-Membership is by the ids the universe stores (a chain's older ISIN is not joined).
+index (`--index`, default the rotation seed's NIFTY 500) that is liquid as a rotation buys it
+(the seed's universe stage: series EQ or BE, the 20 sessions before the day averaging at least
+`--min-adv-cr` crore traded, close times volume where no traded value is stored, and the
+previous close at least `--min-price`) and whose five- minute session a backtest admits
+(`intraday.session_admitted`: it fits its daily bar, lacks no refused bucket, lies in no known
+coverage gap) gives one move: the price at 09:20 (`fill_0920.price_0920`, the 09:15 bar's close)
+over the day's raw open, less 1. It prints one JSON report: the count, the median, quartiles and
+mean of the move, the buy-side median (the move: a buy pays it) and the sell-side median (minus
+the move: a sale loses it), over all member-days and over rebalance sessions only (the first
+session of each month, when a monthly rotation trades), and the constants to set (`suggested`:
+each side's median, never favourable, so at least 0). Membership is the backtest's own read
+(`backtest.data.index_members`: the index's point-in-time history, by chain id), each raw bar's
+id taken to its chain through the stored lineage. A run whose sample is empty exits 2
+(`empty_sample`): its numbers cannot set the estimate. Read only: the database in a read-only
+transaction, the store's files.
 """
 
 from __future__ import annotations
@@ -27,7 +30,7 @@ import json
 import statistics
 import sys
 from collections import defaultdict, deque
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -132,6 +135,19 @@ def moves_of(
     return out
 
 
+def member_ids(ids: Iterable[str], chains: Collection[str], lineage: Mapping[str, str]) -> set[str]:
+    """The instrument ids (as the raw daily bars carry them) whose chain (`lineage`: an older
+    ISIN's id to its chain's; else the id itself) is a member that day (`chains`)."""
+    return {i for i in ids if lineage.get(i, i) in chains}
+
+
+def sample_refusal(report: Mapping[str, Any]) -> str | None:
+    """Why a report cannot set the estimate: `empty_sample` when no member-day was measured (a
+    wrong index, no membership history, no five-minute day admitted); else None."""
+    counted = report.get("all_member_days", {}).get("count", 0)
+    return "empty_sample" if not counted else None
+
+
 def _decimal(value: object) -> Decimal | None:
     from app.hat.money import exact
 
@@ -139,19 +155,22 @@ def _decimal(value: object) -> Decimal | None:
 
 
 def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs the data
-    from sqlalchemy import select, text
+    from sqlalchemy import text
 
     from app.database import db_session_scope
+    from app.hat.backtest.data import index_members
     from app.hat.backtest.intraday import Admission, session_bars
     from app.hat.data.bars_store import BarStore
+    from app.hat.data.chains import stored_adjustment
     from app.hat.data.store import DATASET_BARS, DataStore
     from app.hat.engine.portfolio.universe import members_on
-    from app.hat.engine.portfolio.universe_service import membership_rows
-    from app.hat.models import HatEvent, HatUniverse
+    from app.hat.engine.strategy.versions import seed_config
+    from app.hat.models import HatEvent
     from app.hat.settings import operator_settings
 
     p = argparse.ArgumentParser(prog="open_to_0920.py", description=__doc__)
-    p.add_argument("--universe", default="NIFTY 500")
+    # the index a rotation's universe reads (the seed's), as the backtest reads it
+    p.add_argument("--index", default=seed_config("momentum-rotation").regime.index)
     p.add_argument("--from", dest="start", type=date.fromisoformat, default=date(2021, 10, 26))
     p.add_argument("--to", dest="end", type=date.fromisoformat, default=date(2024, 12, 31))
     p.add_argument("--min-adv-cr", type=Decimal, default=Decimal(10))
@@ -162,12 +181,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     five = BarStore(store.root)
     with db_session_scope() as session:
         session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
-        universe = session.scalars(
-            select(HatUniverse).where(HatUniverse.name == args.universe)
-        ).first()
-        if universe is None:
-            sys.exit(f"no universe named {args.universe!r}")
-        rows = membership_rows(session, universe.id)
+        lineage = dict(stored_adjustment(session).lineage)
+        # the backtest's own read (`backtest.data._members`): point in time, by chain id
+        rows, _ = index_members(
+            session, args.index, lineage=lineage, since=args.start, start=args.start, until=args.end
+        )
     days = sorted(d for d in store.days(DATASET_BARS) if d <= args.end)
     liquidity = Liquidity(args.min_adv_cr * CRORE, args.min_price)
     rebalance = rebalance_sessions([d for d in days if d >= args.start])
@@ -184,10 +202,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             i: o for i, v in zip(ids, daily["open"].to_list(), strict=True) if (o := _decimal(v))
         }
         if day >= args.start and five.path(day).is_file():
-            members = {str(m) for m in members_on(rows, day)}
+            chains = {str(m) for m in members_on(rows, day)}
             wanted = sorted(
                 n
-                for n in members & set(opens)
+                for n in member_ids(opens, chains, lineage)
                 if series.get(n) in SERIES_IN and liquidity.liquid(n)
             )
             sessions = session_bars(five, day, dict.fromkeys(wanted, Decimal(1)))
@@ -217,7 +235,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             and (v := turnover(_decimal(value), c, volume)) is not None
         )
     report = {
-        "universe": args.universe,
+        "index": args.index,
         "window": [args.start.isoformat(), args.end.isoformat()],
         "liquidity": {"min_adv_cr": str(args.min_adv_cr), "min_price": str(args.min_price)},
         "sessions_with_5m": sessions_read,
@@ -225,6 +243,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         "rebalance_sessions": adverse_medians(first_of_month),
     }
     sys.stdout.write(json.dumps(report, indent=2) + "\n")
+    refused = sample_refusal(report)
+    if refused is not None:
+        sys.stderr.write(f"refused: {refused}\n")
+        return 2
     return 0
 
 

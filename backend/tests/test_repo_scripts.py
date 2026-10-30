@@ -1225,3 +1225,18 @@ def test_open_to_0920__turnover_falls_back_to_close_times_volume() -> None:
     assert open_0920.turnover(None, Decimal(10), 7) == Decimal(70)
     assert open_0920.turnover(None, None, 7) is None
     assert open_0920.SERIES_IN == {"EQ", "BE"}
+
+
+def test_open_to_0920__an_empty_sample_is_refused() -> None:
+    assert open_0920.sample_refusal({"all_member_days": {"count": 0}}) == "empty_sample"
+    assert open_0920.sample_refusal({}) == "empty_sample"
+    assert open_0920.sample_refusal({"all_member_days": {"count": 12}}) is None
+
+
+def test_open_to_0920__members_are_read_by_chain() -> None:
+    lineage = {"old": "chain"}  # an older ISIN's id carried by the day's raw bars
+    assert open_0920.member_ids(["old", "chain", "x", "y"], {"chain", "y"}, lineage) == {
+        "old",
+        "chain",
+        "y",
+    }
