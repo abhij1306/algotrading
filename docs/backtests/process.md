@@ -154,6 +154,12 @@ whose audit warns or fails):
   in memory on real data and lists any watchlist, signal, fill, rebalance or equity difference up
   to T (empty: none); `fingerprint --from D --to E` prints a run's resolved and trade-list hashes
   and content digests, to compare a run before and after a change. Never past 2024-12-31.
+- A rerun against its earlier run (a data or engine change): `python -m app.hat.backtest.rundiff
+  <before> <after> [--before-root DIR] [--after-root DIR] [--out DIR]` reads the two folders and
+  prints the headline metrics before and after, the trade diff (paired on the entry, then on the
+  signal as a moved entry; same, changed by field, sizing only, only before, only after), the net
+  P&L change by those buckets, the first divergence and the `config.json` paths that differ;
+  `--out` writes `trade_diff.csv` and `config_diff.csv`.
 - Independent parity of an engine change (accuracy plan B6): `python
   scripts/research/s1_parity.py --portfolio p2-vcp.yaml --from D --to E` and `python
   scripts/research/s2_ep_parity.py parity --portfolio p6-ep-a.yaml --from D --to E` rerun S1 VCP
