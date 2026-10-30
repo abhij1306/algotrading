@@ -578,6 +578,12 @@ def correct_action(
             raise ActionCorrectionError("action_key_taken")
         if holder is not None and correction.cash is not None:
             raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
+        if holder is not None and holder.known_on is None:  # the kept factor must be dated
+            correction_known(
+                correction.ex_date,
+                correction.known_on,
+                price_neutral=new_type in PRICE_NEUTRAL_TYPES,
+            )
         if holder is not None:
             ledger.vacate(row, available=vacated, text=note)
             if correction.known_on is not None:  # else the stored fact keeps its own date

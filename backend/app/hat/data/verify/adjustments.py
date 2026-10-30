@@ -115,7 +115,7 @@ from ..ca_import import PULL_NOTE, pull_date
 from ..ca_versions import select as select_version
 from ..isin import ordinary_equity
 from ..lineage import issuer
-from . import covered, dated, seeded_sample
+from . import covered, dated, seeded_sample, spanning
 from .context import Context
 from .exceptions import Exceptions, read_exceptions
 from .filings import Announcement, read_announcements
@@ -1817,14 +1817,17 @@ def undated_values(events: Iterable[Event], symbol_of: Mapping[str, str]) -> dic
     """`ca_value_undated`, FAIL: an event the series applies (`point_in_time.series`) whose
     value, its accepted version of highest precedence, has no `available_on`. A backtest holds
     its name factor-pending from the ex-date on (`ca_versions.pending_days`), so it is never
-    scanned again. The owner's correction dates it (`correct-actions` with `known_on`); not
-    exceptable."""
-    items = sorted(
-        f"{symbol_of.get(e.chain_id, e.chain_id)} {e.ex_date} {e.action_type}"
+    scanned again: the finding spans the earliest such ex-date on. The owner's correction dates
+    it (`correct-actions` with `known_on`); not exceptable."""
+    undated = sorted(
+        (e.ex_date, f"{symbol_of.get(e.chain_id, e.chain_id)} {e.ex_date} {e.action_type}")
         for e in events
         if (top := select_version(e.versions, None)) is not None and top.available_on is None
     )
-    return finding("ca_value_undated", FAIL if items else PASS, items)
+    if not undated:
+        return finding("ca_value_undated", PASS, [])
+    found = finding("ca_value_undated", FAIL, [item for _, item in undated])
+    return spanning(found, undated[0][0], date.max)
 
 
 def _stored(ctx: Context, start: date, end: date) -> list[StoredAction]:  # pragma: no cover

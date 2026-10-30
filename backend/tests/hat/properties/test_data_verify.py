@@ -816,6 +816,9 @@ def test_d2_fails_a_value_the_series_applies_undated() -> None:
     found = undated_values([misread, conflict], {"i1": "GLAXO"})
     assert (found["code"], found["severity"]) == ("ca_value_undated", audit.FAIL)
     assert found["items"] == ["GLAXO 2015-07-23 dividend"]
+    # it pends from the ex-date on: a run ending before it is not failed
+    assert not verify.failing_in(found, date(2014, 1, 1), date(2015, 7, 22))
+    assert verify.failing_in(found, date(2022, 1, 1), date(2024, 12, 31))
     assert undated_values([fixed, conflict], {})["severity"] == audit.PASS
 
 
