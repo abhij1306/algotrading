@@ -17,7 +17,7 @@ from typing import Any
 
 from ..money import require_exact
 from .criteria.indicators import sma_sum
-from .strategy.config import BreadthAbove, CloseAboveSma, FastAboveSlow, Regime
+from .strategy.config import AlwaysOn, BreadthAbove, CloseAboveSma, FastAboveSlow, Regime
 
 __all__ = [
     "BREADTH_SESSIONS",
@@ -90,6 +90,7 @@ RULES: dict[type, Callable[[Sequence[Decimal], Sequence[Decimal | None], Any], b
     CloseAboveSma: lambda closes, _, rule: close_above_sma_and_rising(closes, rule),
     FastAboveSlow: lambda closes, _, rule: sma_fast_above_slow_both_rising(closes, rule),
     BreadthAbove: lambda _, breadth, rule: breadth_above(breadth, rule),
+    AlwaysOn: lambda *_: True,
 }
 
 

@@ -16,17 +16,21 @@ Detectors (each publishes `pivot`, `final_contraction_low` (the tight area's low
   The template's price checks passed on H0's bar (`h0_template`).
 - `book_cup_handle` (Setup 3): the cup, and the handle from the highest high since C (the
   right lip) to the signal date: `handle_sessions` long, its low in the cup's upper part
-  (`handle_low_min_fraction`), its high at most H0, at most `handle_depth_max_pct` deep.
+  (`handle_low_min_fraction`), its high at most H0, at most `handle_depth_max_pct` deep. The
+  handle is the tight area: a final tightening anchored at its high, as `book.tight_window`'s,
+  starts at the lip, so it is the handle.
 - `book_power_play` (Setup 4): T the highest high of the last `thrust_sessions`, at least
   `thrust_multiple` x the lowest low of the `thrust_base_sessions` before it; the flag from T to
   the signal date `flag_sessions` long and at most `flag_depth_max_pct` deep, with
-  `min_contractions` contractions (zigzag from T) each at most `depth_ratio_max` x the one
-  before, the final at most `final_depth_max_pct`.
+  `min_contractions` contractions (zigzag from T and the tight pullback after them, as
+  `book_vcp`'s, `book.chain_geometry`) each at most `depth_ratio_max` x the one before, the
+  final at most `final_depth_max_pct`.
 - `book_primary_base` (Setup 5): only on `history_sessions` of history (the scan calendar's
   sessions since the instrument's first bar, across gaps: `listed_sessions`); H0 the highest
   high, the base from it at least `base_min_sessions` long and at most `base_depth_max_pct`
-  deep, with `contractions` like a VCP's; close above the SMA50 from `sma50_min_history`
-  sessions and the eligible RS rank at least `rs_min` from `rs_min_history`.
+  deep, with `contractions` like a VCP's (with the tight pullback); close above the SMA50 from
+  `sma50_min_history` sessions and the eligible RS rank at least `rs_min` from
+  `rs_min_history`.
 
 A detector counts the base number by the book's default params. The tight area's dry-up
 (`area_dryup`): each session's volume over ADV50, the mean of the 50 sessions before it
@@ -68,10 +72,11 @@ from .book import (
     Contraction,
     Geometry,
     Series,
+    area,
     base_number,
+    chain_geometry,
     contractions_of,
     footprint_text,
-    geometry_fault,
     series_of,
     sma_series,
     swing_thresholds,
@@ -175,6 +180,17 @@ class _DryUp(ParamModel):
     dryup_session_max: float | None = Field(default=0.5, gt=0, le=10)
 
 
+class _Window(_DryUp):
+    # The tight pullback after the last zigzag contraction (`book.tight_window`), as `book_vcp`'s.
+    window_sessions: list[int] = Field(default_factory=lambda: [5, 15], min_length=2, max_length=2)
+
+    @model_validator(mode="after")
+    def _check_window(self) -> _Window:
+        if not 1 <= self.window_sessions[0] <= self.window_sessions[1] <= 325:
+            raise ValueError("window_sessions is [min, max] with 1 <= min <= max <= 325")
+        return self
+
+
 def mine(params: ParamModel) -> dict[str, Any]:
     """The [mine] values a rule ran with (`MINE`), for the signal's log."""
     return {name: getattr(params, name) for name in getattr(params, "MINE", ())}
@@ -215,11 +231,6 @@ def dryup_fault(ratios: tuple[Decimal, Decimal] | None, params: _DryUp) -> str |
     if params.dryup_session_max is not None and lowest >= dec(params.dryup_session_max):
         return "no_dryup_session"
     return None
-
-
-def area(high: Sequence[float], low: Sequence[float], start: int, end: int) -> Contraction:
-    """Bars `start..end` as a tight area: their highest high and lowest low."""
-    return Contraction(start, end, dec(max(high[start : end + 1])), dec(min(low[start : end + 1])))
 
 
 @cache
@@ -506,23 +517,16 @@ def book_cup_handle(ctx: EvalContext, params: BookCupHandleParams) -> CriterionR
 def base_contractions(
     series: Series, threshold: Sequence[float], start: int, end: int
 ) -> tuple[Contraction, ...]:
-    """The contractions of the zigzag from bar `start` (a swing high) through `end`."""
+    """The contractions of the zigzag from bar `start` (a swing high) through `end`, without the
+    tight pullback after them (`book.with_window`, which the detectors add)."""
     swings = zigzag(series.high, series.low, threshold, start, end)
     return tuple(contractions_of(series.high, series.low, swings))
-
-
-def contraction_fault(
-    start: int, contractions: tuple[Contraction, ...], end: int, rules: BookVcpParams
-) -> tuple[str, float] | None:
-    """The book's geometry rules (`geometry_fault`) on the contractions from `start`, with no
-    swing high above the start (the start is the base's highest high)."""
-    return geometry_fault(Geometry(start, contractions, 0), end, rules)
 
 
 # --- Setup 4: power play --------------------------------------------------------------------
 
 
-class BookPowerPlayParams(_DryUp):
+class BookPowerPlayParams(_Window):
     MINE: ClassVar[tuple[str, ...]] = ("final_depth_max_pct",)
 
     thrust_sessions: int = Field(default=60, ge=2, le=325)
@@ -549,6 +553,7 @@ class BookPowerPlayParams(_DryUp):
             depth_ratio_max=self.depth_ratio_max,
             final_depth_max_pct=self.final_depth_max_pct,
             final_min_sessions=1,
+            window_sessions=tuple(self.window_sessions),
             base_sessions=tuple(self.flag_sessions),
         )
 
@@ -596,11 +601,10 @@ def book_power_play(ctx: EvalContext, params: BookPowerPlayParams) -> CriterionR
     if flag.depth_pct > dec(params.flag_depth_max_pct):
         return verdict(False, float(flag.depth_pct), "flag_too_deep")
     threshold = thresholds(series)
-    contractions = base_contractions(series, threshold, top, end)
-    fault = contraction_fault(top, contractions, end, rules)
-    if fault is not None:
-        return verdict(False, fault[1], fault[0])
-    final = contractions[-1]
+    geo = chain_geometry(series.high, series.low, threshold, top, end, rules)
+    if not isinstance(geo, Geometry):
+        return verdict(False, geo[1], geo[0])
+    contractions, final = geo.contractions, geo.final
     ratios = area_dryup(series.volume, final)
     fault_reason = dryup_fault(ratios, params)
     if fault_reason is not None:
@@ -614,7 +618,7 @@ def book_power_play(ctx: EvalContext, params: BookPowerPlayParams) -> CriterionR
 # --- Setup 5: primary base ------------------------------------------------------------------
 
 
-class BookPrimaryBaseParams(_DryUp):
+class BookPrimaryBaseParams(_Window):
     MINE: ClassVar[tuple[str, ...]] = ("history_sessions",)
 
     history_sessions: list[int] = Field(
@@ -646,6 +650,7 @@ class BookPrimaryBaseParams(_DryUp):
             depth_ratio_max=self.depth_ratio_max,
             final_depth_max_pct=self.final_depth_max_pct,
             final_min_sessions=1,
+            window_sessions=tuple(self.window_sessions),
             base_sessions=(self.base_min_sessions, max(self.base_min_sessions, history)),
         )
 
@@ -695,11 +700,10 @@ def book_primary_base(ctx: EvalContext, params: BookPrimaryBaseParams) -> Criter
     if base.depth_pct > dec(params.base_depth_max_pct):
         return verdict(False, float(base.depth_pct), "base_too_deep")
     threshold = thresholds(series)
-    contractions = base_contractions(series, threshold, h0, end)
-    fault = contraction_fault(h0, contractions, end, params.rules(history))
-    if fault is not None:
-        return verdict(False, fault[1], fault[0])
-    final = contractions[-1]
+    geo = chain_geometry(series.high, series.low, threshold, h0, end, params.rules(history))
+    if not isinstance(geo, Geometry):
+        return verdict(False, geo[1], geo[0])
+    contractions, final = geo.contractions, geo.final
     ratios = area_dryup(series.volume, final)
     fault_reason = dryup_fault(ratios, params)
     if fault_reason is not None:

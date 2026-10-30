@@ -22,6 +22,7 @@ from .book import (
     h0_index,
     relative_fault,
     time_compression,
+    with_window,
     zigzag,
 )
 
@@ -96,7 +97,8 @@ def geometry_check(
     swings = zigzag(high, low, threshold, h0, end)
     top = high[h0]
     above = sum(1 for s in swings[1:] if s.high and s.price > top)
-    contractions = contractions_of(high, low, swings)
+    # the zigzag's contractions and the tight pullback after them, as `book.chain_geometry`
+    contractions = with_window(high, low, contractions_of(high, low, swings), end, params)
     rules = geometry_rules(h0, contractions, above, end, params)
     return GeometryCheck(h0, tuple(swings), tuple(contractions), rules)
 

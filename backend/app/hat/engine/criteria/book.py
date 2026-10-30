@@ -9,8 +9,12 @@ each have their own parameter and failure reason, checked in the funnel's order 
   depth (Hi - Li) / Hi; no swing high above H0. The base (H0 to the signal date, both counted)
   lasts `base_sessions`; there are `contractions` of them; the first is `first_depth_pct` deep;
   each at most `depth_ratio_max` x the one before; the final at most `final_depth_max_pct` deep
-  and at least `final_min_sessions` long. Pivot: the final contraction's highest high; stop
-  basis: its lowest low.
+  and at least `final_min_sessions` long. A pullback after the zigzag's last contraction too
+  shallow for the zigzag to confirm is the final contraction when it is a window
+  (`tight_window`): from the highest high after the last swing low through the signal date,
+  `window_sessions` long, at most `final_depth_max_pct` and `depth_ratio_max` x the last zigzag
+  contraction deep; without one the zigzag's last contraction is the final one. Pivot: the
+  final contraction's highest high; stop basis: its lowest low.
 - time compression (D): sessions from the base's deepest low to the signal date at least
   `tc_min_ratio` x the sessions from H0 to that low, and at least `tc_min_sessions`.
 - dry-up (E): over the final contraction, mean volume below `dryup_mean_max` x the mean of the
@@ -106,6 +110,7 @@ class BookVcpParams(ParamModel):
     depth_ratio_max: float = Field(default=0.75, gt=0, le=1)
     final_depth_max_pct: float = Field(default=10.0, gt=0, le=100)
     final_min_sessions: int = Field(default=3, ge=1, le=100)
+    window_sessions: list[int] = Field(default_factory=lambda: [5, 15], min_length=2, max_length=2)
     base_sessions: list[int] = Field(default_factory=lambda: [15, 325], min_length=2, max_length=2)
     tc_min_ratio: float | None = Field(default=0.5, ge=0, le=10)
     tc_min_sessions: int | None = Field(default=10, ge=0, le=325)
@@ -126,6 +131,8 @@ class BookVcpParams(ParamModel):
             raise ValueError("first_depth_pct is [min, max] within 0..100")
         if not 2 <= self.base_sessions[0] <= self.base_sessions[1]:
             raise ValueError("base_sessions is [min, max] with 2 <= min <= max")
+        if not 1 <= self.window_sessions[0] <= self.window_sessions[1] <= 325:
+            raise ValueError("window_sessions is [min, max] with 1 <= min <= max <= 325")
         return self
 
     def geometry_key(self) -> tuple[object, ...]:
@@ -142,6 +149,7 @@ class BookVcpParams(ParamModel):
             self.depth_ratio_max,
             self.final_depth_max_pct,
             self.final_min_sessions,
+            tuple(self.window_sessions),
             tuple(self.base_sessions),
         )
 
@@ -251,6 +259,60 @@ def contractions_of(
     return out
 
 
+def area(high: Sequence[float], low: Sequence[float], start: int, end: int) -> Contraction:
+    """Bars `start..end` as a contraction: their highest high and lowest low."""
+    return Contraction(start, end, dec(max(high[start : end + 1])), dec(min(low[start : end + 1])))
+
+
+def tight_window(
+    high: Sequence[float],
+    low: Sequence[float],
+    last: Contraction,
+    end: int,
+    sessions: Sequence[int],
+    max_pct: float,
+    ratio: float,
+) -> Contraction | None:
+    """The tight pullback after the zigzag's last confirmed contraction `last`: the bars from the
+    first highest high after its swing low through `end` (so its high is the pivot), when they
+    number within `sessions` and are at most `max_pct` and at most `ratio` x `last` deep; else
+    None (the high within the last `sessions[0]` bars or more than `sessions[1]` back, or too
+    deep). A pullback shallower than the zigzag's reversal threshold never confirms a swing, so
+    the zigzag alone misses it."""
+    if end <= last.end:
+        return None
+    after = high[last.end + 1 : end + 1]
+    top = last.end + 1 + after.index(max(after))
+    if not sessions[0] <= end - top + 1 <= sessions[1]:
+        return None
+    window = area(high, low, top, end)
+    limit = min(dec(max_pct), dec(ratio) * last.depth_pct)
+    return window if window.depth_pct <= limit else None
+
+
+def with_window(
+    high: Sequence[float],
+    low: Sequence[float],
+    contractions: Sequence[Contraction],
+    end: int,
+    params: BookVcpParams,
+) -> tuple[Contraction, ...]:
+    """The zigzag's contractions and, when there is one, the tight pullback after the last
+    (`tight_window`) as the final contraction."""
+    if not contractions:
+        return tuple(contractions)
+    window = tight_window(
+        high,
+        low,
+        contractions[-1],
+        end,
+        params.window_sessions,
+        params.final_depth_max_pct,
+        params.depth_ratio_max,
+    )
+    return tuple(contractions) if window is None else (*contractions, window)
+
+
 @dataclass(frozen=True)
 class Geometry:
     h0: int
@@ -291,6 +353,26 @@ def geometry_fault(geo: Geometry, end: int, params: BookVcpParams) -> tuple[str,
     return None
 
 
+def chain_geometry(
+    high: Sequence[float],
+    low: Sequence[float],
+    threshold: Sequence[float],
+    h0: int,
+    end: int,
+    params: BookVcpParams,
+) -> Geometry | tuple[str, float | None]:
+    """The base from bar `h0` to the signal bar `end`: the zigzag's contractions from `h0` and
+    the tight pullback after them (`with_window`), when it keeps every rule of C, else (reason,
+    value)."""
+    swings = zigzag(high, low, threshold, h0, end)
+    top = high[h0]
+    above = sum(1 for s in swings[1:] if s.high and s.price > top)
+    chain = with_window(high, low, contractions_of(high, low, swings), end, params)
+    geo = Geometry(h0, chain, above)
+    fault = geometry_fault(geo, end, params)
+    return geo if fault is None else fault
+
+
 def base_geometry(
     high: Sequence[float],
     low: Sequence[float],
@@ -302,12 +384,7 @@ def base_geometry(
     h0 = h0_index(high, low, end, params)
     if h0 is None:
         return "no_base", None
-    swings = zigzag(high, low, threshold, h0, end)
-    top = high[h0]
-    above = sum(1 for s in swings[1:] if s.high and s.price > top)
-    geo = Geometry(h0, tuple(contractions_of(high, low, swings)), above)
-    fault = geometry_fault(geo, end, params)
-    return geo if fault is None else fault
+    return chain_geometry(high, low, threshold, h0, end, params)
 
 
 def time_compression(h0: int, deepest: int, end: int) -> tuple[int, int]:

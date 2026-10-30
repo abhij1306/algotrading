@@ -83,3 +83,12 @@ def test_config_round_trip_and_needs_breadth() -> None:
     raw["regime"]["params"] = {"min_pct": 101}
     with pytest.raises(ConfigError):
         parse_config(raw)
+
+
+def test_always_on_is_no_gate() -> None:
+    # the research variant without a regime: on with no closes and a missing breadth session
+    regime = Regime(index="NIFTY 500", rule="always_on", params={})
+    assert regime_gate.regime_allows_longs(regime, [], [None])
+    assert not regime_gate.needs_breadth(regime)
+    with pytest.raises(ValueError):
+        Regime(index="NIFTY 500", rule="always_on", params={"min_pct": 0})

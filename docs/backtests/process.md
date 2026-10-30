@@ -142,6 +142,10 @@ whose audit warns or fails):
   [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
   `run.json`) and writes its entries, seeded near-misses of the base geometry with charts, and
   the Depth_1 gate table to `reports/<variant>/audit/` (gitignored; needs matplotlib).
+- The S1 setups diagnosis: `python scripts/research/s1_setups_diag.py sweeps --out DIR` writes
+  the setups, NSE-stocks and leave-one-out variants files; `... loo --log <the leave-one-out
+  sweep's log>` prints each rule's extra entries (shadow trades: no cash or slot limit, the
+  normal exits) against the shadow run. Both paths stay inside the working directory.
 - A run with a pre-open playbook also writes `ep_candidates.csv` and the
   `breakdowns.episodic_pivot` tables (result-standard.md). Its audit: `python
   scripts/research/s2_ep_audit.py --run-id <id> [--seed N]` samples 20 EP entries and 10 near
@@ -311,7 +315,7 @@ line flag sets the same for one run or every variant.
 | Initial stop and its cap | `set: ['playbooks[default].stop={"rule": "atr_multiple", "days": 14, "multiple": 2, "max_pct": 8}']`, `...stop.max_pct=10` | `--set` |
 | Exits (partial, breakeven, step trail, SMA/EMA close, swing low, ATR trail, time stop, early failure, max hold) | `set: ['exits[step_trail].step_r=1.5', 'exits[time_stop].enabled=false', 'exits[+]={"rule": "early_failure", "days": 5}']` | `--set` |
 | SMA exit grace window (no SMA exit in the first N sessions after the entry session; stops still act; unset = off) | `set: ['exits[close_below_sma].grace_sessions=10']` | `--set` |
-| Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100` | `--set` |
+| Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100`; rule `always_on` is no gate | `--set` |
 | Regime sizing (1 or the live regime engine) | `regime_mult: policy` | `--regime-mult` |
 | Risk per trade | `risk_pct: 0.005` | `--risk-pct` |
 | Sleeve weight | `sleeve_weight: 0.5` | `--sleeve-weight` |
@@ -326,7 +330,7 @@ line flag sets the same for one run or every variant.
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
 | `volume_pace` on the full day's volume on 5-minute sessions too (the daily estimate always uses it; a look-ahead, known gap `volume_pace_on_full_day_volume`) | `volume_pace: full_day` | `--volume-pace` |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
-| Universe, window | one sweep per value (a sweep reads one market) | `--universe`, `--from`, `--to` |
+| Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook) | `--universe`, `--from`, `--to` |
 
 Not knobs without a code change (strategy or engine changes, shared with live): the live regime
 engine's thresholds and multiplier table (`engine/portfolio/regime.py`, under `regime_mult:

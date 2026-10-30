@@ -210,9 +210,16 @@ class BreadthAbove(_Rule):
         return self
 
 
+class AlwaysOn(_Rule):
+    """No regime gate: new longs on every session, whatever the index or breadth (a research
+    variant without the regime). Reads no index."""
+
+    rule: Literal["always_on"]
+
+
 # The closed set of strategy regime rules, one model each; `regime_gate.RULES` maps each to its
 # function, as `stops` maps each stop rule to its planner.
-RegimeRuleModel = CloseAboveSma | FastAboveSlow | BreadthAbove
+RegimeRuleModel = CloseAboveSma | FastAboveSlow | BreadthAbove | AlwaysOn
 RegimeRule = Annotated[RegimeRuleModel, Field(discriminator="rule")]
 _REGIME_RULE: TypeAdapter[RegimeRuleModel] = TypeAdapter(RegimeRule)
 # The indices a regime may read: those the store ingests, less India VIX (not a price index).
