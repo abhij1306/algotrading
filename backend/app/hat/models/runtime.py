@@ -46,6 +46,7 @@ __all__ = [
     "HatPosition",
     "HatSignal",
     "HatSignalAnnouncement",
+    "HatSetupWindow",
     "HatTradeResult",
     "HatWatchlistEntry",
 ]
@@ -106,6 +107,34 @@ class HatWatchlistEntry(StateBase):
     planned_stop = Column(Money)
     adtr = Column(Money)
     status = Column(Text, nullable=False)
+    # the S1 setup the row is (`scan.setup_type`) and its last valid session (`scan`)
+    setup_type = Column(Text)
+    valid_until = Column(Date)
+
+
+class HatSetupWindow(StateBase):
+    """A setup of a windowed playbook and its validity window (`engine.scan.SetupWindow`): one
+    row per (bot, version, playbook, instrument, pivot date), so a setup is armed once."""
+
+    __tablename__ = "hat_setup_window"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_id", "strategy_version_id", "playbook", "instrument_id", "pivot_date"
+        ),
+    )
+
+    id = uuid_pk()
+    bot_id = ref()
+    strategy_version_id = ref()
+    playbook = Column(Text, nullable=False)
+    instrument_id = ref()
+    pivot_date = Column(Date, nullable=False)
+    found_on = Column(Date, nullable=False)
+    # `engine.scan.WINDOW_STATUSES`
+    status = Column(Text, nullable=False)
+    score = Column(Ratio, nullable=False)
+    # the setup's last row (`hat_watchlist_entry.criteria_results`), which the scan carries
+    criteria_results = Column(JsonB, nullable=False)
 
 
 class HatSignal(StateBase):

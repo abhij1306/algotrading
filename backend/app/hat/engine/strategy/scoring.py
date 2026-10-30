@@ -20,7 +20,8 @@ from fractions import Fraction
 from typing import Any
 
 from ..criteria import CriterionResult, EvalContext, evaluate
-from .config import Instance, StrategyConfig
+from ..criteria.base import RULE_STOP_BUFFER
+from .config import Instance, Playbook, StopBelowFinalContractionLow, StrategyConfig
 
 EMPTY_SCORE = 1.0  # [OWNER-PENDING] docs silent: no scored criterion means only hard rules decide
 
@@ -143,6 +144,25 @@ def regime_outcome(allows_longs: bool) -> StageOutcome:
     )
 
 
+def stop_buffer_pct(playbook: Playbook) -> float:
+    """The buffer under the final contraction's low of the playbook's stop rule, or that rule's
+    default when the playbook stops another way: what `stop_cap` and a carried setup's cancel
+    level read (one source with the entry's stop)."""
+    rule = playbook.stop
+    if isinstance(rule, StopBelowFinalContractionLow):
+        return rule.buffer_pct
+    return StopBelowFinalContractionLow.model_fields["buffer_pct"].default
+
+
+def playbook_context(
+    playbook: Playbook, ctx: EvalContext, levels: Mapping[str, float] | None = None
+) -> EvalContext:
+    """`ctx` reading the playbook's own values (`EvalContext.rules`): its stop buffer; with
+    `levels` when given."""
+    staged = ctx.with_rules({RULE_STOP_BUFFER: stop_buffer_pct(playbook)})
+    return staged if levels is None else staged.with_levels(levels)
+
+
 def evaluate_playbook(
     config: StrategyConfig,
     playbook: str,
@@ -155,6 +175,7 @@ def evaluate_playbook(
     after every earlier one passed. `universe`: the bot's universe stage already evaluated on
     `ctx`, which a playbook with its own universe (`Playbook.universe`) does not read."""
     chosen = config.playbook(playbook)
+    ctx = playbook_context(chosen, ctx)
     if chosen.universe is not None:
         universe = evaluate_stage("universe", chosen.universe, ctx)
     elif universe is None:

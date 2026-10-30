@@ -48,7 +48,7 @@ from .fills import (
 from .intraday import REPLAY_RULE
 from .overlay import OverlayConfig
 from .overrides import Overrides
-from .slots import SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
+from .slots import SLOT_ORDER_LEADER_RS, SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
 
 __all__ = [
     "ANALYST_BEAT_NOT_EVALUATED",
@@ -310,14 +310,14 @@ class RunConventions:
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
         of 0), the optimistic `touch` rule, a slot order other than the estimated trigger time
-        or the RS rank (`rs`, the S1 book's sizing rule), a suspension markdown later than
-        `SUSPENSION_SESSIONS`, a weight other than the policy's base weight (PR 68) or a regime
-        rule other than `policy` (PR 69)."""
+        or the RS rank (`rs`, the S1 book's sizing rule; `leader_rs`, the S1 setups'), a
+        suspension markdown later than `SUSPENSION_SESSIONS`, a weight other than the policy's
+        base weight (PR 68) or a regime rule other than `policy` (PR 69)."""
         if slippage_bps == 0:
             raise BacktestError("backtest_promotion_without_slippage")
         if self.entry_fill_rule != PENETRATION:
             raise BacktestError("backtest_promotion_on_touch")
-        if self.slot_order not in (SLOT_ORDER_TIME, SLOT_ORDER_RS):
+        if self.slot_order not in (SLOT_ORDER_TIME, SLOT_ORDER_RS, SLOT_ORDER_LEADER_RS):
             raise BacktestError("backtest_promotion_off_time_order")
         if self.suspension_sessions > SUSPENSION_SESSIONS:
             raise BacktestError("backtest_promotion_late_suspension")

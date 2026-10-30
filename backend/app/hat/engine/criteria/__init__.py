@@ -1,4 +1,4 @@
-"""The criteria library: a registry of the 30 catalogue types.
+"""The criteria library: a registry of the 37 catalogue types.
 
 Pure by construction: nothing here imports the database, a router, a broker or the network
 (CONF `import_graph_boundaries`). Parameter models validate a config on save; `evaluate`
@@ -12,7 +12,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from ...errors import HatError
-from . import book, darvas, live, pullback, reversion, setup, universe, vcp
+from . import book, darvas, live, pullback, reversion, setup, setups, universe, vcp
 from .base import (
     STAGES,
     CriterionResult,
@@ -99,6 +99,32 @@ _TYPES = (
         (BARS, "index_daily"),
         book.book_vcp,
         levels=(PIVOT, CONTRACTION_LOW),
+    ),
+    # the S1 setups 2-5 and the rules every S1 setup shares (`setups`)
+    *(
+        _t(code, "setup", params, (BARS,), fn, levels=(PIVOT, CONTRACTION_LOW))
+        for code, params, fn in (
+            ("book_cheat", setups.BookCheatParams, setups.book_cheat),
+            ("book_cup_handle", setups.BookCupHandleParams, setups.book_cup_handle),
+            ("book_power_play", setups.BookPowerPlayParams, setups.book_power_play),
+        )
+    ),
+    _t(
+        "book_primary_base",
+        "setup",
+        setups.BookPrimaryBaseParams,
+        (BARS, FEATURES),  # the RS rank gate
+        setups.book_primary_base,
+        levels=(PIVOT, CONTRACTION_LOW),
+    ),
+    _t("stop_cap", "setup", setups.StopCapParams, (BARS,), setups.stop_cap),
+    _t("overhead_supply", "setup", setups.OverheadSupplyParams, (BARS,), setups.overhead_supply),
+    _t(
+        "setup_tags",
+        "setup",
+        setups.SetupTagsParams,
+        (BARS, "index_daily", FEATURES),
+        setups.setup_tags,
     ),
     _t(
         "consolidation",

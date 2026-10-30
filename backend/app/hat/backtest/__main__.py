@@ -173,7 +173,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     """python -m app.hat.backtest (--bot <id> | --strategy-version <id> --universe <id|name>)
     --from YYYY-MM-DD --to YYYY-MM-DD [--version <id>] [--slippage-bps N] [--cost-model NAME]
     [--cooldown-sessions N]
-    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|rs|random:K]
+    [--entry-fill penetration_1_tick|touch] [--slot-order time|score|rs|leader_rs|random:K]
     [--ambiguous optimistic|pessimistic] [--suspension-sessions N] [--sleeve-weight W]
     [--regime-mult 1|policy] [--start-capital RUPEES] [--entry-bars bars_5m|daily]
     [--volume-pace live|full_day] [--for-promotion] [--set PATH=VALUE ...]
@@ -191,8 +191,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     Prints the run id, status, trade count and DSR. The database is read in a read-only transaction.
     The slippage defaults to 20 bps; `--for-promotion` marks a run under the conventions live trades
     by, and is refused at a slippage of 0 (PR 62). A capped day's slots go in the estimated trigger
-    order (`--slot-order time`, PR 63; `rs`, the signal night's `rs_weighted` highest first, is the
-    other order a promotion run may use). `--ambiguous pessimistic` fills a raised stop the day's
+    order (`--slot-order time`, PR 63; `rs`, the signal night's `rs_weighted` highest first, and
+    `leader_rs`, an `early_leader` setup first and then `rs`, are the others a promotion run may
+    use). `--ambiguous pessimistic` fills a raised stop the day's
     low reached; a bar-less position is marked down after `--suspension-sessions` sessions (PR 64).
     Entries are sized from the sleeve's nightly allocation at `--sleeve-weight` (the policy's base
     weight by default; a research run of a sleeve the policy gives no weight sizes at

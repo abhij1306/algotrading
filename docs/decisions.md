@@ -87,6 +87,40 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   of the trend template, without the RS rank: a criterion sees no earlier night's ranks. A run
   keeps each instrument's earlier-date geometry across its nights (`EvalContext.memo`), so the
   count is not recomputed nightly; a live scan computes it afresh.
+- **S1 setups (owner 2026-10-30, Phase 1 of `docs/plans/s1-minervini-setups.md`).** Beside
+  `book_vcp` (Setup 1, unchanged) the hard criteria `book_cheat` (cheat_3c / low_cheat),
+  `book_cup_handle`, `book_power_play` and `book_primary_base` (`engine/criteria/setups.py`), each
+  rule its own parameter and failure reason and its own funnel gates, on `book`'s zigzag,
+  contractions, geometry rules, template and base count. Their tight area dries up on vr, the
+  volume over the mean of the 50 sessions before it (`book_vcp` keeps its fixed 50-session base
+  ending on the final contraction's first session). Shared criteria placed after a detector read
+  the levels it published: `stop_cap` (stop the playbook's stop buffer under the tight area's low,
+  at most 10% under the pivot), `overhead_supply` (rule B over 326-699 sessions back: the scan
+  window is 700 sessions live and in the backtest, `scan.scan_window`) and `setup_tags`
+  (shakeout, ath_pivot over the window, early_leader, stage; never fails; stage 3 and the cheat's
+  H0 uptrend read the template's price checks, no earlier RS rank being in the history). Power
+  play T is the highest high of the last 60 sessions; the detectors count the base number on the
+  book's default params (Setup 1 is dropped, so no S1 `book_vcp` to follow); the primary base's
+  age is the scan calendar's sessions since the instrument's first bar, gaps included, and a
+  first bar on the window's first session or before is no recent listing. A tight final
+  contraction confirms only once price leaves it, as in `book_vcp`. The plan's [mine] values are
+  parameter defaults, logged per signal (`mine` in each criterion's extras).
+- **S1 validity window (owner 2026-10-30).** A setup of a playbook with `valid_sessions` N,
+  named by (playbook, instrument, `pivot_date`), is valid D+1..D+N from the night D it was first
+  found (`hat_setup_window`, one row per setup and strategy version). Re-detection never extends
+  it, and once closed it is never armed again: expired, triggered (any signal of its row:
+  entered, skipped by the chase or gap rule, declined; or held; in the backtest also any skip
+  after the level broke but a volume or pace one, `loop.consumes`), cancelled (a close under the
+  final contraction's low less the stop buffer, a confirmed swing high above the pivot, no bar,
+  out of the universe) or replaced by a newer pivot. A regime-off night ends every open window,
+  live and in the backtest, and a setup found after it starts anew. An open setup not found again
+  is carried (levels re-read through its pivot bar, tags and RS rank evaluated again).
+  `one_setup_per_instrument` publishes one row per instrument (the first playbook in config
+  order) and every row records `setup_tags`; the other setups keep their windows. The window and
+  `valid_until` count the calendar's sessions. Each row's `criteria_results.setup` holds the
+  plan's watchlist fields; `setup_type` and `valid_until` are columns. Slot order `leader_rs`:
+  an early leader first, then `rs`. Entry trigger, chase and volume are the existing ones
+  (`price_breaks_level`, `max_chase` 2% on the 09:20 price, `volume_pace` 1.5).
 - **Breadth regime rule (owner 2026-10-26).** A strategy's regime gate may read market breadth
   instead of an index (`breadth_above`: `min_pct` 50, optional `off_below_pct` hysteresis,
   `smooth_days` 1): S1's longest drawdown ran through the 2018-2020 midcap bear while NIFTY 500
@@ -625,7 +659,10 @@ NSE sha in `results_events` (filings stored under an older ISIN of the same comp
 chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
 D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
 adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
-follow-up: read a stock's series as of each day for `series_in`, not today's.
+follow-up: read a stock's series as of each day for `series_in`, not today's. S1 setups Phase 2:
+the R1-R5 runs, the top-signal exit (F) and tennis-ball stop (G) variants, the setup and tag
+columns in the run's result files, the daily stage of open positions, and the shadow-day replay
+of a playbook with a validity window (it scans without the stored windows).
 
 ## Defaults awaiting owner confirmation
 

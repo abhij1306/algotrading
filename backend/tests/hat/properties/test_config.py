@@ -226,8 +226,8 @@ def test_close_vs_pivot_needs_vcp(
 @given(raw_configs())
 def test_playbook_shape(raw: dict) -> None:
     """PBT config.playbook_shape: a playbook is a setup, a trigger list, entry filters, one stop
-    rule and optionally its own universe and exit stack; the regime rule belongs to the bot, and
-    a playbook without its own universe or exits uses the bot's."""
+    rule and optionally its own universe, exit stack and validity window; the regime rule
+    belongs to the bot, and a playbook without its own universe or exits uses the bot's."""
     config = parse_config(raw)
     stored = config.to_json()
     assert config.playbooks
@@ -240,6 +240,7 @@ def test_playbook_shape(raw: dict) -> None:
         "stop",
         "universe",
         "exits",
+        "valid_sessions",
     }
     assert set(StrategyConfig.model_fields) >= {"regime", "exits", "playbooks", "universe"}
     leaked = copy.deepcopy(stored)

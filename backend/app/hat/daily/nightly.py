@@ -57,7 +57,7 @@ from ..engine.rescale import (
     rescale_open_positions,
 )
 from ..engine.rotation_live import plan_night
-from ..engine.scan import ScanInputs
+from ..engine.scan import SESSIONS_AHEAD, ScanInputs
 from ..engine.strategy.config import parse_config
 from ..engine.watchlist import scan_and_publish
 from ..events import record
@@ -76,7 +76,14 @@ from ..risk.kill_ops import sync_health
 from ..time import IST, as_utc, utc_now
 from .market import official_closes, scan_inputs
 from .nightly_ca import CaAdjust
-from .nightly_deps import NightlyDeps, TextSources, mcp_client, next_session, nightly_tri_source
+from .nightly_deps import (
+    NightlyDeps,
+    TextSources,
+    mcp_client,
+    next_session,
+    nightly_tri_source,
+    sessions_from,
+)
 
 __all__ = [
     "BANDS_NIGHTLY",
@@ -376,6 +383,7 @@ class Nightly:
             if target is None:
                 raise JobError("scan_no_next_session")
             excluded = excluded_for(session, day)
+            ahead = sessions_from(session, target, SESSIONS_AHEAD)
             inputs: dict[str, ScanInputs] = {}
             for bot in _active_bots(session):
                 index = _index_of(session, bot)
@@ -386,7 +394,8 @@ class Nightly:
                     if excluded and found.bars.height:
                         found = _without(found, excluded)
                     inputs[index] = found
-                published = scan_and_publish(session, bot.id, inputs[index], target, self._now())
+                found = copy.replace(inputs[index], sessions_ahead=ahead)
+                published = scan_and_publish(session, bot.id, found, target, self._now())
                 # a rotation ranks on the same inputs on its rebalance nights (`rotation_live`)
                 plan_night(session, bot.id, inputs[index], target, self._now())
                 session.commit()

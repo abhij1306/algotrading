@@ -244,7 +244,7 @@ def _params(playbook: Playbook, kind: str) -> dict[str, object]:
 
 def base_number(
     ctx: EvalContext,
-    series: book._Series,
+    series: book.Series,
     threshold: Sequence[float],
     h0: int,
     p: book.BookVcpParams,
@@ -271,7 +271,7 @@ def _base(
 ) -> Base | None:
     """The stock-day's base by `book_diagnostic` (None without an H0); with `full` the later
     gates too (D, E, F, G and close_vs_pivot, each on its own)."""
-    series = book._series(ctx)
+    series = book.series_of(ctx)
     if series is None:
         return None
     end = len(series.dates) - 1

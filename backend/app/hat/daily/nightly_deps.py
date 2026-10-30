@@ -71,6 +71,18 @@ def next_session(session: Session, day: date) -> date | None:
     return None if calendar is None else calendar.next_trading_day(day)
 
 
+def sessions_from(session: Session, day: date, count: int) -> tuple[date, ...]:
+    """`day` (a trading day) and the calendar's trading days after it, at most `count` in
+    all; fewer when the calendar ends first."""
+    calendar = session_calendar(session)
+    out: list[date] = []
+    found: date | None = day
+    while calendar is not None and found is not None and len(out) < count:
+        out.append(found)
+        found = calendar.next_trading_day(found)
+    return tuple(out)
+
+
 def nightly_tri_source(deps: NightlyDeps) -> IndexSource | None:
     """The ingest's TRI source, paced as the operator's backfill, on the runtime's sleep."""
     if deps.niftyindices is None:
