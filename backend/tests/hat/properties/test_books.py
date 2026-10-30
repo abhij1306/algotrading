@@ -92,7 +92,7 @@ def test_report_uses_the_backtest_metrics_on_the_same_inputs() -> None:
     )
     curve = book_curve(START, DAYS, fills, [], closes)
     assert report.metrics == book_metrics(
-        [BookTrade("A", D("1.9"), D("958"), D("42"), 2)],
+        [BookTrade("A", D("1.9"), D("958"), D("42"), 2, DAYS[2])],
         [(s.day, s.equity) for s in curve],
         curve,
         START,
@@ -132,3 +132,16 @@ def test_text_and_json_show_every_book() -> None:
     assert doc[0]["equity"] == "100000"
     assert doc[0]["trades"][0]["r"] == "-1"
     assert books_text(DAYS[3], []).splitlines()[-1] == "No book: no bot has an allocation yet."
+
+
+def test_loss_streak_is_counted_in_exit_order() -> None:
+    """Entered A (loss), B (win), C (loss); B exits last, so the two losses are a streak."""
+
+    def trade(r: str, entry: int, exit_: int) -> BookTrade:
+        return BookTrade("X", D(r), D(r) * 100, D("1"), exit_ - entry, DAYS[exit_])
+
+    trades = [trade("-1", 0, 1), trade("2", 0, 3), trade("-1", 1, 2)]
+    curve = [(d, START) for d in DAYS]
+    sessions = [BookSession(d, START, D(0), 0) for d in DAYS]
+    metrics = book_metrics(trades, curve, sessions, START, DAYS[0])
+    assert metrics["max_consecutive_losses"] == 2

@@ -197,7 +197,7 @@ def book_report(
     before = curve[-2].equity if len(curve) > 1 else start
     ordered = sorted(trades, key=lambda t: (t.entry, t.symbol, t.exit))
     metrics = book_metrics(
-        [BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold) for t in ordered],
+        [BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.exit) for t in ordered],
         [(s.day, s.equity) for s in curve],
         curve,
         start,
