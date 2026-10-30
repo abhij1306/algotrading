@@ -412,8 +412,11 @@ price times the shares bought (no stop to risk against); trades.csv ends with `r
 `rank_exit` and `score_exit` (empty for other playbooks' trades and for an exit the ranking did
 not decide). Exit reasons: `rotation_out` (ranked below the buffer), `rotation_not_eligible`
 (failed the universe stage or unscored), `rotation_market_filter`, `rotation_trim` (a trim's
-partial exit). Known gaps `rotation_fills_at_daily_open` and
-`rotation_sized_on_decision_close`.
+partial exit). Every rotation order fills at 09:20 (`engine/fill_0920.py`: the 09:15 bar's
+close, else the daily open moved by the measured median to 09:20); `run.json` metrics count them,
+`rotation_fills_0920` and `rotation_fills_estimated`. Known gaps
+`rotation_fills_0920_estimated_without_5m`, `rotation_sized_on_decision_close` and, while the
+median is not yet measured, `rotation_0920_estimate_provisional`.
 
 **by_year.** `trades` and `expectancy_r` (the trades exiting that year, beside a mark-to-market
 return, with no label) are replaced by fields named by their basis: `trades_entered` and
@@ -531,7 +534,7 @@ the runs are compared exactly up to the session before its exit and reported div
 | Event | The run's rule |
 | --- | --- |
 | The path through a daily bar | open, low, high, close (`FILL_PATH`): a stop and a target in one bar is a stop |
-| A buy-stop entry | the high breaking the level, one tick in (`level_break_estimated`); a gap over at the open (`gap_over_at_open`), refused beyond max chase |
+| A buy-stop entry | the high breaking the level, one tick in (`level_break_estimated`); a gap over the level at the open moved by the median to 09:20, at most the day's high (`gap_over_fills_0920_estimate`), refused beyond max chase |
 | The entry day's low before the break | max(low, min(open, level x (1 - ADR20/100))) (`entry_day_low_estimated`) |
 | A stop gapped through | the open |
 | A stop raised on the way up | holds through that day's dip unless the close is below it (`ambiguous: optimistic`, the default; counted in `ambiguous_days`) |
@@ -541,7 +544,7 @@ the runs are compared exactly up to the session before its exit and reported div
 | Close rules and close entries | the official close for live's pre-15:15 price (`close_rules_decided_on_official_close`); F&O expiry and index rebalance days tagged `auction_risk` (exits only) |
 | Circuits | read off the bar, no band table: an entry at the high within a tick of a 2/5/10/20% band is locked; no sale on a day locked down all day (O = H = L = C at the band), nor at a close that is the low at the band |
 | Suspension, delisting | no fill without a bar; the mark is the last close for 5 sessions, then 5% lower each; a delisting exits at its last close |
-| Rotation | fills at the daily open (`rotation_fills_at_daily_open`) |
+| Rotation | fills at 09:20: the 09:15 bar's close, else the open moved by the median to 09:20 (`rotation_fills_0920_estimated_without_5m`) |
 | Slippage | a flat 20 bps against every fill, no spread or impact model; entries above 5% of ADV are flagged, not refused |
 | Settlement | a sale's proceeds fund buys at once, at 100%, whatever the order of the day's fills (no T+1 hold; a broker gives same-day credit for delivery sales but the run does not time it within the day) |
 | Costs | the dated schedule, `costs.md` |

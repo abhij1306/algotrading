@@ -27,6 +27,7 @@ from app.paths import BARS5M_GAPS
 
 from ..costs import BacktestFills
 from ..data.bars5m_gaps import gap_spans, read_gaps, spans_digest
+from ..engine.fill_0920 import OPEN_TO_0920_MEASURED
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.strategy.config import Playbook, StrategyConfig
@@ -59,7 +60,7 @@ __all__ = [
     "ENTRY_DAY_LOW_ESTIMATED",
     "EP_TRIGGER_ESTIMATED",
     "ESTIMATE_GAPS",
-    "GAP_OVER_AT_OPEN",
+    "GAP_OVER_ESTIMATED",
     "GAP_PLAYBOOKS",
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
@@ -126,7 +127,9 @@ LEVEL_BREAK_ESTIMATED = "trigger_is_level_break_only"
 # (the daily estimate always; a 5-minute session too under `volume_pace: full_day`)
 VOLUME_PACE_ESTIMATED = "volume_pace_on_full_day_volume"
 ENTRY_DAY_LOW_ESTIMATED = "entry_day_low_estimated"  # the pre-break low is the adr20 estimate
-GAP_OVER_AT_OPEN = "gap_over_fills_at_open"  # live fills at the first tick after the open
+# a daily-estimate gap over the level fills at the open moved to 09:20 (`fill_0920`): live's
+# first trade comes after the trigger window opens
+GAP_OVER_ESTIMATED = "gap_over_fills_0920_estimate"
 # a pre-open playbook's trigger (opening-range break, early volume) estimated from the daily
 # bar with the constants calibrated on the 5-minute years (`intraday.EP_ESTIMATE`)
 EP_TRIGGER_ESTIMATED = "episodic_pivot_trigger_estimated"
@@ -141,7 +144,7 @@ ESTIMATE_GAPS = (
     LEVEL_BREAK_ESTIMATED,
     VOLUME_PACE_ESTIMATED,
     ENTRY_DAY_LOW_ESTIMATED,
-    GAP_OVER_AT_OPEN,
+    GAP_OVER_ESTIMATED,
     EP_TRIGGER_ESTIMATED,
     CATALYST_NOT_EVALUATED,
     ANALYST_BEAT_NOT_EVALUATED,
@@ -210,10 +213,17 @@ CO_SLEEVE_GAPS = ("co_sleeve_window_overlaps_member_in_sample",)
 # from the 1D Rate Index less its expense ratio where its dividends are not known (the ranges in
 # `overlay.liquidbees_tr_proxy`), ETF trades on the stock cost model (equity delivery STT on every
 # ETF, LIQUIDBEES included).
-# Reported by a run with a rotation strategy (`strategy.config.Rotation`): its orders fill at the
-# stored daily open (the pre-open auction's price) plus the run's slippage, and are sized on the
-# account's equity at the decision close, not marked at that open.
-ROTATION_GAPS = ("rotation_fills_at_daily_open", "rotation_sized_on_decision_close")
+# Reported by a run with a rotation strategy (`strategy.config.Rotation`): its orders fill at 09:20
+# (`rotation.fill_0920`), at the 09:15 bar's close where the session's five-minute bars may be
+# read and else at the daily open moved by the measured median to 09:20 (the run counts each,
+# `rotation_fills_0920`, `rotation_fills_estimated`), plus the run's slippage, and are sized on
+# the account's equity at the decision close, not marked at 09:20. While that median is not yet
+# measured on the data (`rotation.OPEN_TO_0920_MEASURED`), the estimate is provisional.
+ROTATION_GAPS = (
+    "rotation_fills_0920_estimated_without_5m",
+    "rotation_sized_on_decision_close",
+    *(() if OPEN_TO_0920_MEASURED else ("rotation_0920_estimate_provisional",)),
+)
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",

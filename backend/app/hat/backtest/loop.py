@@ -175,7 +175,17 @@ from ..data.bars import Bar as DataBar
 from ..data.bars5m_gaps import in_gap
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
-from ..engine import entries, exits, lifecycle, positions, rotation, shadow, trigger, watchlist
+from ..engine import (
+    entries,
+    exits,
+    fill_0920,
+    lifecycle,
+    positions,
+    rotation,
+    shadow,
+    trigger,
+    watchlist,
+)
 from ..engine.confidence import BACKTEST_CONFIDENCE
 from ..engine.live_entry import EP_UNIVERSE, ep_gate, ep_stock_log, gap_floor, session_open
 from ..engine.portfolio import regime as regime_v1
@@ -279,7 +289,7 @@ from .spec import (
     ENTRY_BARS_5M,
     ENTRY_DAY_LOW_ESTIMATED,
     EP_TRIGGER_ESTIMATED,
-    GAP_OVER_AT_OPEN,
+    GAP_OVER_ESTIMATED,
     LEVEL_BREAK_ESTIMATED,
     REGIME_MULT_ONE,
     VOLUME_PACE_ESTIMATED,
@@ -620,6 +630,11 @@ class _Run:
         }
         self.tr_closes = TrCloses(data.bars, self.days) if self.books else None
         self.rotation_dividends = _ZERO
+        # each rotation fill by what its 09:20 price was read from (`fill_0920.REAL`, `ESTIMATED`)
+        self.rotation_fills: dict[str, int] = {}
+        self._fill_sources: dict[tuple[str, date], str] = {}
+        self._firsts_day: date | None = None
+        self._firsts: dict[str, DataBar | None] = {}
         # the account's equity each night's allocation read: a portfolio run's global open-risk
         # cap is of it, as live's (`portfolio.jobs`); a one-strategy run keeps its sleeve's
         # capital there (the known gap `single_sleeve_caps`)
@@ -911,12 +926,17 @@ class _Run:
             if self.overlay is not None:
                 self.overlay.dividend(day, credit)
         book.see(lambda i: None if (b := self.view.bar(i, day)) is None else (b.high, b.low))
+        pending = [n for n, h in book.holdings.items() if h.exit is not None]
+        if pending:
+            self._prefetch_first(pending, day)
         book.sell_pending(day, lambda i: self._quote(i, day, "sell"), self._symbol(day))
         rules = leg.config.rotation
         if prev is None or rules is None or not rotation.is_rebalance(prev, day, rules.rebalance):
+            self._count_fills(book, day)
             return
         allocation = leg.allocations.get(day)
         if allocation is None:
+            self._count_fills(book, day)
             return
         plan = self._rotation_plan(book, leg, prev, day)
         funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
@@ -927,10 +947,12 @@ class _Run:
             return self._free_cash() + credit
 
         market = Market(
+            # sized on the price at 09:20 (the buy side's, `rotation.fill_0920`), as traded
             opens={
-                name: bar.open
+                name: price
                 for name in {*plan.target, *book.holdings}
                 if (bar := self.view.bar(name, day)) is not None
+                and (price := self._sizing_price(name, day, bar)) is not None
             },
             sell=lambda i: self._quote(i, day, "sell"),
             buy=lambda i: self._quote(i, day, "buy"),
@@ -943,6 +965,7 @@ class _Run:
         # the allocator's weight over the equity it allocated (`allocation.capital` unrounded)
         equity = self.account_equity[day]
         book.rebalance(day, plan, equity * allocation.final_weight, market)
+        self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
 
@@ -963,6 +986,7 @@ class _Run:
             memo=leg.scan_memo,
         )
         passers = universe_passers(leg.config, inputs)
+        self._prefetch_first([*passers, *book.holdings], day)  # their prices at 09:20
         self.view.as_of(prev)  # the total-return closes through `prev`, known at its close
         closes = self.tr_closes.window(passers, self.index[prev], rotation.window_rows(rules))
         gate_on = regime_allows_longs(leg.config.regime, inputs.regime_closes, inputs.breadth)
@@ -977,25 +1001,86 @@ class _Run:
         )
 
     def _quote(self, instrument_id: str, day: date, side: str) -> Quote:
-        """The price a rotation order in `instrument_id` fills at on `day`'s open, else None and
-        why not: no bar (`no_bar`), a sale on a session pinned at the lower band
-        (`lower_circuit`), a buy at the upper band at the open or with the circuit state
-        unknown (`upper_circuit`, live fails closed), a buy on the name's demerger exit session
-        or factor-pending day (`demerger_pending`, `factor_pending`)."""
+        """The price a rotation order in `instrument_id` fills at on `day` at 09:20
+        (`fill_0920.fill_0920`: the 09:15 bar's close where its five-minute session may be read,
+        `_first_bar`, else the open moved by the median to 09:20), else None and why not: no
+        bar (`no_bar`), a sale pinned at the lower band (`lower_circuit`: the 09:15 bar, else
+        the whole day), a buy at the upper band (`upper_circuit`: the 09:15 bar's close at its
+        high and the band, else the open at the day's high; an unknown circuit state too, live
+        fails closed), a buy on the name's demerger exit session or factor-pending day
+        (`demerger_pending`, `factor_pending`). What the price was read from is kept for the
+        run's counts (`_fill_sources`)."""
         bar = self.view.bar(instrument_id, day)
         if bar is None:
             return None, "no_bar"
+        first = self._first_bar(instrument_id, day)
+        price, source = fill_0920.fill_0920(
+            day, side, None if first is None else (first,), bar.open
+        )
+        self._fill_sources[(instrument_id, day)] = source
         if side == "sell":
-            if self._lower_locked(instrument_id, day, bar):
+            if self._lower_locked_0920(instrument_id, day, bar, first):
                 return None, "lower_circuit"
-            return bar.open, None
+            return price, None
         if (instrument_id, day) in self.data.demerger_exits:
             return None, SKIP_DEMERGER_PENDING
         if instrument_id in self.view.pending_on(day):
             return None, SKIP_FACTOR_PENDING
-        if self._locked(instrument_id, bar.open, bar.high, day) is not False:
+        locked = (
+            self._locked(instrument_id, bar.open, bar.high, day)
+            if first is None
+            else self._locked(instrument_id, first.close, first.high, day)
+        )
+        if locked is not False:
             return None, "upper_circuit"
-        return bar.open, None
+        return price, None
+
+    def _sizing_price(self, instrument_id: str, day: date, bar: Bar) -> Decimal:
+        """The price a rebalance sizes `instrument_id` on: its buy-side price at 09:20."""
+        first = self._first_bar(instrument_id, day)
+        return fill_0920.fill_0920(day, "buy", None if first is None else (first,), bar.open)[0]
+
+    def _lower_locked_0920(
+        self, instrument_id: str, day: date, bar: Bar, first: DataBar | None
+    ) -> bool:
+        """Whether a sale at 09:20 finds the name pinned at its lower band: its 09:15 bar one
+        price at the band, else (no five-minute session) the whole day (`_lower_locked`)."""
+        if first is None:
+            return self._lower_locked(instrument_id, day, bar)
+        ohlc = (first.open, first.high, first.low, first.close)
+        if not first.open == first.high == first.low == first.close:
+            return False
+        prev_close = self.view.prev_close(instrument_id, day)
+        return lower_circuit_locked(ohlc, prev_close, self.view.tick(instrument_id, day)) is True
+
+    def _first_bar(self, instrument_id: str, day: date) -> DataBar | None:
+        """The 09:15 five-minute bar of `instrument_id` on `day` on the run's price basis, when
+        its session may be read (`_session_bars`: it fits its daily bar, lacks no refused
+        bucket, lies in no coverage gap); None otherwise. Read once per name and day."""
+        if self._firsts_day != day:
+            self._firsts_day, self._firsts = day, {}
+        if instrument_id not in self._firsts:
+            self._prefetch_first({instrument_id}, day)
+        return self._firsts.get(instrument_id)
+
+    def _prefetch_first(self, names: Collection[str], day: date) -> None:
+        """Read the 09:15 bars of `names` on `day` in one pass of the day's file."""
+        if self._firsts_day != day:
+            self._firsts_day, self._firsts = day, {}
+        wanted = {n for n in names if n not in self._firsts}
+        if not wanted:
+            return
+        sessions = self._session_bars(day, wanted)
+        for name in wanted:
+            found = fill_0920.price_0920(day, sessions.get(name, ()))
+            self._firsts[name] = None if found is None else found[1]
+
+    def _count_fills(self, book: RotationBook, day: date) -> None:
+        """Count the book's fills of `day`'s 09:20 by what their price was read from."""
+        for fill in book.fills_on(day):
+            source = self._fill_sources.get((fill.instrument_id, day))
+            if source is not None:
+                self.rotation_fills[source] = self.rotation_fills.get(source, 0) + 1
 
     def _symbol(self, day: date) -> Any:  # noqa: ANN401 - a callable
         return lambda instrument_id: symbol_on(self.data, instrument_id, day)
@@ -1303,8 +1388,8 @@ class _Run:
             self._passed(row.playbook, MAX_CHASE)
         if not at_close:
             self.estimated.update((LEVEL_BREAK_ESTIMATED, ENTRY_DAY_LOW_ESTIMATED))
-            if price == bar.open:
-                self.estimated.add(GAP_OVER_AT_OPEN)
+            if bar.open > level:
+                self.estimated.add(GAP_OVER_ESTIMATED)
         basis = BASIS_CLOSE if at_close else BASIS_DAILY
         plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close, None, basis)
         rank = trigger_rank(bar.open, level, self.spec.conventions.entry_fill_rule)
@@ -1712,7 +1797,8 @@ class _Run:
     def _fill(self, row: _Row, bar: Bar, day: date, level: Decimal) -> Decimal | str | None:
         """The entry fill of the row's `level` under the run's entry fill rule, None when the
         level did not break, or the skip reason when there is no tick to penetrate by
-        (HAT-BT-020)."""
+        (HAT-BT-020). A gap over the level fills at 09:20, not at the open
+        (`fill_0920.gap_over_fill`)."""
         rule = self.spec.conventions.entry_fill_rule
         # The tick matters only to a penetration from below; read it only then.
         tick = None
@@ -1720,6 +1806,10 @@ class _Run:
             tick = self.view.tick(str(row.instrument_id), day)
             if tick is None:
                 return SKIP_BAD_INPUT  # no tick to penetrate by (nor to plan a stop on)
+        if bar.open > level:
+            # a gap over: never the 09:15 open, the estimated price at 09:20 (`fill_0920`), at
+            # most the day's high
+            return fill_0920.gap_over_fill(bar.open, bar.high)
         return entry_fill(bar.open, bar.high, level, tick, rule)
 
     def _close_fill(
@@ -2386,6 +2476,9 @@ class _Run:
         metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
         metrics["dividend_income"] = str(self.dividend_cash + self.rotation_dividends)
         metrics["dividend_credits"] = self.dividend_credits
+        if self.books:
+            metrics["rotation_fills_0920"] = self.rotation_fills.get(fill_0920.REAL, 0)
+            metrics["rotation_fills_estimated"] = self.rotation_fills.get(fill_0920.ESTIMATED, 0)
         overlay: dict[str, Any] = {}
         if self.overlay is not None and self.spec.overlay is not None:
             overlay = {

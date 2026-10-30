@@ -21,6 +21,9 @@ first.
   in shadow, its virtual position a lot of the holding. A sale with no usable price waits for
   the next session's job (`pending_sales`). The outcome is recorded as `rotation.rebalanced`.
 
+Its prices are the live last trade at 09:20 or after, the definition the backtest and the
+replay share (`engine/fill_0920.py`: the last trade before 09:20, the 09:15 bar's close).
+
 Paper only: real rotation orders are not built (no stop for the broker's protective order, no
 sale card), so the caller routes shadow whatever mode the bot asks for and says so. A rotation
 holding takes no slot or open risk (`snapshot._NOT_ROTATION`) and has no exit stack (its config

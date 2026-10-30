@@ -206,6 +206,25 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `momentum-rotation` is the research pick (riskadj, top 20, monthly, buffer 40, ADV20 >= Rs 10
   cr, close >= 50, 240 bars). Configs without the block keep their canonical JSON and hash.
 
+- **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
+  backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
+  sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that
+  gaps over its level fills at 09:20 too (the 5-minute replay and live never trigger before
+  09:20:02, the first bar's close). The price at 09:20 is the last trade before it: the close of
+  the 09:15 five-minute bar (live's last price at 09:20 is that close; the 09:20 bar's open is a
+  trade after it). Without that bar (before the 5-minute store's 2021-10-26 start, a name
+  without bars, a session the backtest refuses) it is the daily open moved against the order by
+  the median move from the open to 09:20, buy side and sell side, measured on NIFTY 500
+  member-days liquid as a rotation buys them (ADV20 >= Rs 10 cr, close >= 50) over
+  2021-10-26..2024-12-31 (`scripts/research/open_to_0920.py`). One rule for all
+  (`engine/fill_0920.py`), read by the backtest and the shadow-day replay; circuit, demerger and
+  factor-pending refusals are judged at that price (the 09:15 bar, else the day as before). A
+  run counts its rotation fills at real 09:20 prices and estimated ones (`rotation_fills_0920`,
+  `rotation_fills_estimated`). **Measured values pending:** until the script has run on the
+  data the estimate is a provisional 0.10% each side (`OPEN_TO_0920_MEASURED = False`; runs
+  report `rotation_0920_estimate_provisional`). Hard-stop exits that gap through at the open
+  still fill at the open (`fills.stop_fill`), not part of this rule.
+
 ## Data
 
 - **Tradable series: EQ and BE.** BE (trade-for-trade, delivery only) suits CNC swing trades, so

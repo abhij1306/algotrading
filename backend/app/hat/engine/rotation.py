@@ -15,6 +15,8 @@ and top-ups at whole shares, skipping a change under the threshold.
 ranks on that close and selects at the next open, where it knows what it can buy. `orders`,
 `sale_reason` and `buy_share` are the rebalance's own rules, shared the same way, and
 `lot_sales` splits a sale over a live holding's lots (a top-up is a lot of its own).
+
+Every rotation order trades at 09:20, never at the open: its price is `engine/fill_0920.py`'s.
 """
 
 from __future__ import annotations

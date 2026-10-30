@@ -1164,3 +1164,45 @@ def test_fyers_login__remove_profile_never_raises(tmp_path: Path) -> None:
     assert fyers_login.remove_profile(
         str(tmp_path / "never-made"), rmtree=fyers_login.shutil.rmtree
     )
+
+
+open_0920 = _script("research/open_to_0920.py")
+
+
+def test_open_to_0920__medians_per_side_and_never_favourable() -> None:
+    found = open_0920.adverse_medians([0.004, 0.001, -0.002, 0.003, 0.0])
+    assert found["count"] == 5
+    assert found["buy_side_median"] == 0.001
+    assert found["sell_side_median"] == -0.001
+    assert found["suggested"] == {"buy": 0.001, "sell": 0.0}  # a sale's median helps it: 0
+    assert open_0920.adverse_medians([]) == {"count": 0}
+
+
+def test_open_to_0920__rebalance_sessions_are_each_months_first() -> None:
+    days = [date(2024, 1, 30), date(2024, 1, 31), date(2024, 2, 1), date(2024, 2, 2)]
+    assert open_0920.rebalance_sessions(days) == {date(2024, 1, 30), date(2024, 2, 1)}
+
+
+def test_open_to_0920__liquidity_reads_the_sessions_before() -> None:
+    liquid = open_0920.Liquidity(Decimal(100), Decimal(50))
+    for _ in range(19):
+        liquid.feed([("a", Decimal(60), Decimal(150)), ("b", Decimal(40), Decimal(500))])
+    assert not liquid.liquid("a")  # 19 sessions: too few
+    liquid.feed([("a", Decimal(60), Decimal(150)), ("b", Decimal(40), Decimal(500))])
+    assert liquid.liquid("a")
+    assert not liquid.liquid("b")  # under the price floor
+    assert not liquid.liquid("z")
+
+
+def test_open_to_0920__moves_read_fitting_sessions_only() -> None:
+    from app.hat.data.bars import Bar
+    from app.hat.time import IST
+
+    day = date(2024, 2, 1)
+    first = datetime.combine(day, datetime.min.time().replace(hour=9, minute=15), tzinfo=IST)
+    fits = (Bar("a", first, Decimal(100), Decimal(103), Decimal(99), Decimal(102), 10),)
+    off = (Bar("b", first, Decimal(150), Decimal(151), Decimal(149), Decimal(150), 10),)
+    opens = {"a": Decimal(100), "b": Decimal(100)}
+    assert open_0920.moves_of(day, {"a": fits, "b": off}, opens, ["a", "b", "c"]) == [
+        pytest.approx(0.02)
+    ]

@@ -3,7 +3,7 @@ difference, its cause, the facts it reads and the exit check on each side's scal
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, time
 from decimal import Decimal
 
 import polars as pl
@@ -24,7 +24,7 @@ from app.hat.daily.replay import (
     facts_of,
     merged,
     no_later,
-    prices_on,
+    prices_0920_of,
     rotation_night,
 )
 from app.hat.engine.exits import PositionState
@@ -232,10 +232,19 @@ def test_merged_keeps_one_row_per_instrument_and_session() -> None:
     assert merged(first, pl.DataFrame()) is first
 
 
-def test_prices_on_reads_the_price_basis_close() -> None:
-    assert prices_on(_bars([10.0, 11.0], raw=5.5), DAY) == {"i": D("5.5")}
-    assert prices_on(_bars([10.0, 11.0]), DAY) == {"i": D(11)}
-    assert prices_on(pl.DataFrame(), DAY) == {}
+def test_both_sides_size_on_the_same_0920_prices() -> None:
+    from app.hat.data.bars import Bar
+    from app.hat.engine.fill_0920 import OPEN_TO_0920, estimated_0920
+    from app.hat.time import IST
+
+    first = datetime.combine(DAY, time(9, 15), tzinfo=IST)
+    readable = (Bar("a", first, D(100), D(102), D(99), D(101), 10),)
+    off_basis = (Bar("b", first, D(150), D(151), D(149), D(150), 10),)  # 50% off its daily open
+    opens = {"a": D(100), "b": D(100), "c": D(50)}
+    found = prices_0920_of(DAY, {"a": readable, "b": off_basis}, opens)
+    assert found["a"] == D(101)  # the 09:15 bar's close
+    assert found["b"] == estimated_0920(D(100), "buy", OPEN_TO_0920)  # refused: the estimate
+    assert found["c"] == estimated_0920(D(50), "buy", OPEN_TO_0920)  # no bars: the estimate
 
 
 def test_no_later_refuses_a_frame_past_the_day() -> None:
