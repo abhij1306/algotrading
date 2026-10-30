@@ -4,7 +4,7 @@ changes a normal run. In-sample 2016-01-01..2021-12-31 only.
 
     venv/bin/python scripts/research/s1_setups_diag.py sweeps --out DIR
     HAT_DATA_ROOT=<data> venv/bin/python scripts/research/s1_setups_diag.py loo \\
-        --log backtests/s1-diag-loo.log [--out FILE]
+        --log backtests/s1-diag-loo.log
 
 `sweeps` writes three variants files (each run with `python -m app.hat.backtest --version <v>
 --universe <u> --from 2016-01-01 --to 2021-12-31 --variants FILE`):
@@ -593,7 +593,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     sweeps.add_argument("--out", type=Path, required=True)
     loo = sub.add_parser("loo", help="the leave-one-out table of a logged sweep")
     loo.add_argument("--log", type=Path, required=True)
-    loo.add_argument("--out", type=Path)
     args = parser.parse_args(argv)
     if args.command == "sweeps":
         for path in write_sweeps(args.out):
@@ -604,10 +603,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if "shadow" not in runs:
         print("no complete shadow run in the log", file=sys.stderr)
         return 1
-    text = loo_report(runs, root)
-    if args.out is not None:
-        inside_cwd(args.out).write_text(text)
-    print(text)
+    print(loo_report(runs, root))
     return 0
 
 
