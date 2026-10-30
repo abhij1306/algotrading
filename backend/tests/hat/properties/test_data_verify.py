@@ -1219,6 +1219,22 @@ def test_bars5m_gaps_refuse_by_coverage(tmp_path: Path) -> None:
         bars5m_gaps.read_gaps(path)
 
 
+def test_bars5m_gaps_digest_follows_the_spans_not_the_layout() -> None:
+    """A run's conventions record the gaps it replayed under (`spans_digest`): the same spans in
+    another order give the same digest, another span another. Harm: two runs under different
+    gap lists recorded alike, or a reordered file changing every run's digest."""
+    from app.hat.data import bars5m_gaps
+
+    a = {
+        "*": ((date(2024, 3, 2), date(2024, 3, 2)),),
+        "INE1": ((date(2026, 8, 3), date(2026, 10, 28)),),
+    }
+    b = dict(reversed(list(a.items())))
+    assert bars5m_gaps.spans_digest(a) == bars5m_gaps.spans_digest(b)
+    c = {**a, "INE1": ((date(2026, 8, 3), date(2026, 10, 27)),)}
+    assert bars5m_gaps.spans_digest(a) != bars5m_gaps.spans_digest(c)
+
+
 def test_d7_etf_factors_come_from_nses_unit_actions() -> None:
     # item 10: the factor is NSE's, not the store's own
     text = (

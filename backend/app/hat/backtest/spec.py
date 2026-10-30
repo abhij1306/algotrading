@@ -23,7 +23,10 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from app.paths import BARS5M_GAPS
+
 from ..costs import BacktestFills
+from ..data.bars5m_gaps import gap_spans, read_gaps, spans_digest
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.strategy.config import Playbook, StrategyConfig
@@ -337,6 +340,12 @@ class RunConventions:
             "trigger_proxy": TRIGGER_5M if self.entry_bars == ENTRY_BARS_5M else TRIGGER_PROXY,
             # which sessions replay their 5-minute bars (`intraday.on_basis`, `bars5m_gaps`)
             "replay_rule": REPLAY_RULE if self.entry_bars == ENTRY_BARS_5M else None,
+            # the known gaps it refused sessions by (`bars5m_gaps.spans_digest`)
+            **(
+                {"bars5m_gaps": spans_digest(gap_spans(read_gaps(BARS5M_GAPS)))}
+                if self.entry_bars == ENTRY_BARS_5M
+                else {}
+            ),
             # normalised, so 20 and 20.0 bps record (and hash) alike
             "slippage_bps": format(abs(fills.slippage_bps).normalize(), "f"),  # -0 is 0
             # the version and the digest of each dated file in force in the run's window
