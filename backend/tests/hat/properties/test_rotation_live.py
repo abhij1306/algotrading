@@ -14,8 +14,14 @@ import pytest
 
 from app.hat.daily.entries import sold_gain
 from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE, PRICE_UNKNOWN
-from app.hat.engine.rotation import SELL, TOP_UP, TRIM, Order, Plan, book_equity
-from app.hat.engine.rotation_live import Rebalanced, closes_window, priced_targets, rebalance_orders
+from app.hat.engine.rotation import SELL, TOP_UP, TRIM, Order, Plan, book_equity, targets
+from app.hat.engine.rotation_live import (
+    Rebalanced,
+    closes_window,
+    priced_targets,
+    rebalance_orders,
+    waits_for_prices,
+)
 from app.hat.engine.strategy.config import Rotation
 from app.hat.risk.decision import ROTATION_BUY, decide
 from app.hat.risk.kill import KillState
@@ -227,3 +233,25 @@ def test_a_name_outside_its_band_is_passed_over_as_unbuyable() -> None:
     assert target == ("a", "c")
     assert unpriced == []
     assert quote("a") == D(10)
+
+
+CUTOFF = datetime.combine(TRADE_DAY, time(9, 45), tzinfo=IST)
+
+
+def test_a_rebalance_waits_for_prices_only_until_the_cutoff() -> None:
+    before = datetime.combine(TRADE_DAY, time(9, 30), tzinfo=IST)
+    assert waits_for_prices(["b"], before, CUTOFF)
+    assert not waits_for_prices(["b"], CUTOFF, CUTOFF)  # at the cutoff: trade the rest
+    assert not waits_for_prices(["b"], datetime.combine(TRADE_DAY, time(9, 46), tzinfo=IST), CUTOFF)
+    assert not waits_for_prices([], before, CUTOFF)  # every name priced: nothing to wait for
+
+
+def test_after_the_cutoff_an_unpriced_name_is_passed_over_as_one_with_no_bar() -> None:
+    ranking = [("a", 4.0), ("b", 3.0), ("c", 2.0), ("d", 1.0)]
+    live, _, _, unpriced = priced_targets(
+        ranking, {"d": 5}, RULES, gate_on=True, price=_quotes({"b": (None, PRICE_STALE)})
+    )
+    # the backtest's selection with b unbuyable (no bar at the open): the same shared rule
+    backtest, _ = targets(ranking, {"d": 5}, RULES, gate_on=True, can_buy=lambda n: n != "b")
+    assert live == backtest
+    assert unpriced == ["b"]

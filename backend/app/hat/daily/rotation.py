@@ -10,16 +10,18 @@ real book's): its job is recorded `real_orders_not_built`, its waiting sales wai
 owner is told (`rotation.shadow_only`); a rebalance that could not size (no allocation for the
 night) is told too (`rotation.skipped`), and so is every buy not made (`rotation.buy_refused`).
 A rebalance that reaches a name it may buy with no tick yet, or a stale one, or runs on a stale
-feed, writes nothing for its bot (no lower-ranked name takes its place); the job fails
-`rotation_unpriced` and runs again each minute until `REBALANCE_UNTIL` (`rotation.unpriced`, told
-once). Each bot is its own transaction, and a bot whose job already ran today
-(`rotation.rebalanced`) is not run again.
+feed, writes nothing for its bot (no lower-ranked name takes its place) until `PRICES_WAIT_UNTIL`
+(09:45, with the open): the job fails `rotation_unpriced` and runs again each minute
+(`rotation.unpriced`, told once). After it such a name is passed over as the backtest passes over
+a name with no bar, the rest trades, and `rotation.unpriced` names what was skipped. Each bot is
+its own transaction, and a bot whose job already ran today (`rotation.rebalanced`) is not run
+again.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -43,7 +45,7 @@ from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..notify import Notifier
 from ..ops.jobs import JobError, JobResult, SessionFactory
-from ..time import utc_now
+from ..time import IST, utc_now
 from .entries import LiveContexts
 from .gates import CalendarSource
 from .prices import LivePrices
@@ -53,6 +55,7 @@ __all__ = [
     "ALERT_SHADOW_ONLY",
     "ALERT_SKIPPED",
     "ALERT_UNPRICED",
+    "PRICES_WAIT_UNTIL",
     "REBALANCE_AT",
     "REBALANCE_UNTIL",
     "ROTATION_REBALANCE",
@@ -67,8 +70,11 @@ ALERT_SKIPPED = "rotation.skipped"
 ALERT_UNPRICED = "rotation.unpriced"
 ALERT_BUY_REFUSED = "rotation.buy_refused"
 UNPRICED = "rotation_unpriced"
-# The job retries an unpriced rebalance until then; past it the job fails (`job.failed`).
-REBALANCE_UNTIL = time(12, 0)
+# A rebalance waits for its names' first ticks until then (moved with the session's open); after
+# it a name still unpriced is passed over as a name with no bar and the rest trades. The job's
+# window ends a little later, so its first run after the cutoff trades.
+PRICES_WAIT_UNTIL = time(9, 45)
+REBALANCE_UNTIL = time(10, 0)
 REAL_NOT_BUILT = "real_orders_not_built"
 
 
@@ -173,8 +179,15 @@ class Rotations:
                 price=price,
                 context=lambda: self._contexts.entry_context(session, bot_id, now),
                 now=now,
+                wait_until=self._wait_until(night.trade_date),
             )
         )
+
+    def _wait_until(self, day: date) -> datetime:
+        """`PRICES_WAIT_UNTIL` on `day`, moved with its session's open."""
+        calendar = self._calendar()
+        shift = calendar.open_shift(day) if calendar is not None else timedelta(0)
+        return datetime.combine(day, PRICES_WAIT_UNTIL, tzinfo=IST) + shift
 
     def _tell(self, bot_id: uuid.UUID, day: date, asked: str, done: Rebalanced) -> None:
         bot = str(bot_id)
@@ -183,6 +196,12 @@ class Rotations:
             return
         if done.skipped is not None:
             self._notifier.alert(ALERT_SKIPPED, day, {"bot_id": bot, "reason": done.skipped})
+        if done.unpriced:
+            self._notifier.alert(
+                ALERT_UNPRICED,
+                day,
+                {"bot_id": bot, "skipped": ",".join(done.unpriced)[:200], "traded": "rest"},
+            )
         if done.refused:
             refused = ",".join(f"{name}:{why}" for name, why in sorted(done.refused.items()))
             self._notifier.alert(

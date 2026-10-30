@@ -196,8 +196,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   cash at once) and buys each name as a shadow signal through `evaluate_signal` (`rotation_buy`,
   refused unless the rotation playbook's and virtual: the kills, a pause, the market, feed and
   quality checks, the free cash; a top-up is a lot of its own). A name it may buy with no tick
-  yet, or a stale feed, holds the whole rebalance back (retried each minute to 12:00, alerted
-  `rotation.unpriced`) rather than buy a lower-ranked name; every buy not made is alerted
+  yet, or a stale feed, holds the whole rebalance back until 09:45 (with the open; retried each
+  minute, alerted `rotation.unpriced`) rather than buy a lower-ranked name; after it a name still
+  unpriced is passed over as the backtest passes over a name with no bar and the rest trades; every buy not made is alerted
   `rotation.buy_refused`; a waiting sale of a name back in the target is off. A bot whose mode is confirm or auto does not trade
   and is alerted `rotation.shadow_only`: real rotation orders need a stopless protective path and
   a sale card, not built. A rotation version may be a promotion run, so it can be frozen and run

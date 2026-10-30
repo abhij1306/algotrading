@@ -83,6 +83,7 @@ __all__ = [
     "rebalanced_on",
     "record_rebalanced",
     "rotation_config",
+    "waits_for_prices",
     "waiting_sales",
 ]
 
@@ -301,6 +302,7 @@ class Rebalanced:
     # the holdings whose sale found no price, with the reason they are sold: the next job's
     waiting: dict[str, str] = field(default_factory=dict)
     target: tuple[str, ...] = ()  # the plan's target list (a waiting sale of one is off)
+    unpriced: list[str] = field(default_factory=list)  # passed over after the wait for prices
     refused: dict[str, str] = field(default_factory=dict)  # buys not made, and why
 
     def absorb(self, rebalanced: Rebalanced) -> None:
@@ -312,6 +314,7 @@ class Rebalanced:
         self.refused.update(rebalanced.refused)
         self.target = rebalanced.target
         self.skipped = rebalanced.skipped
+        self.unpriced = list(rebalanced.unpriced)
         for name in self.target:
             self.waiting.pop(name, None)
 
@@ -404,6 +407,7 @@ def rebalance(
     price: Price,
     context: Callable[[], SignalContext],
     now: datetime,
+    wait_until: datetime,
 ) -> Rebalanced:
     """Trade the rebalance `night` decided at the open of its trade date (module docstring),
     on paper. `price` is an instrument's (text id) usable live price, or None and the refusal's
@@ -411,11 +415,13 @@ def rebalance(
     and its free cash among it), read again after the sales.
 
     The capital is the book's equity on the live prices (`rotation.book_equity`, the backtest's
-    basis: cash plus the holdings marked). A name the selection reaches with no tick or a stale
-    one, or a stale feed, raises `RotationUnpricedError` before anything is written, so the job
-    tries again rather than buy a lower-ranked name in its place; a name outside the day's band
-    cannot be bought now and is passed over, as the backtest passes over one locked at its upper
-    band."""
+    basis: cash plus the holdings marked). Until `wait_until` a name the selection reaches with
+    no tick or a stale one, or a stale feed, raises `RotationUnpricedError` before anything is
+    written, so the job tries again rather than buy a lower-ranked name in its place
+    (`waits_for_prices`); from then on such a name is passed over as the backtest passes over a
+    name with no bar, the rest trades and the names are kept in `unpriced`. A name outside the
+    day's band cannot be bought now and is passed over, as the backtest passes over one locked
+    at its upper band."""
     lock_bot(session, bot_id)
     done = Rebalanced(night.trade_date)
     bot = configs_of(session).get(Bot, bot_id)
@@ -435,10 +441,10 @@ def rebalance(
         ranking, held, rules, gate_on=night.gate_on, price=price
     )
     first = context()
-    if first.feed_stale is True:
-        raise RotationUnpricedError(["feed"])
-    if unpriced:
-        raise RotationUnpricedError(unpriced)
+    missing = ["feed", *unpriced] if first.feed_stale is True else list(unpriced)
+    if waits_for_prices(missing, now, wait_until):
+        raise RotationUnpricedError(missing)
+    done.unpriced = missing  # passed over: the backtest's name with no bar
     done.target = target
     chosen = rotation.Plan(night.night, ranking, target, filtered=filtered)
     prices = {n: p for n in {*target, *held} if (p := quote(n)) is not None}
@@ -473,6 +479,14 @@ def rebalance(
             done.row(name, "hold", None, 0, prices.get(name))
     _buy_all(session, bot_id, night.trade_date, buys, prices, context(), now, done)
     return done
+
+
+def waits_for_prices(unpriced: Sequence[str], now: datetime, wait_until: datetime) -> bool:
+    """Whether a rebalance holds back for `unpriced` (the names its selection reached with no
+    tick or a stale one): only before `wait_until`, the cutoff a tick of a trading name comes
+    by. After it a name still unpriced is taken as not trading (halted, illiquid), passed over
+    as the backtest passes over a name with no bar, and the rest trades."""
+    return bool(unpriced) and now < wait_until
 
 
 def priced_targets(
@@ -595,6 +609,7 @@ def record_rebalanced(
             "rows": done.rows,
             "waiting": done.waiting,
             "refused": done.refused,
+            "unpriced": done.unpriced,
         },
         bot_id=bot_id,
         occurred_at=now,
