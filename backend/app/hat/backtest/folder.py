@@ -309,7 +309,8 @@ def publish(
 ) -> Path:
     """Write the run's folder: everything into a hidden temporary folder beside it, `run.json`
     validated first (`backtest_result_invalid`, nothing published), then one rename. `docs` are
-    the folder's other JSON files by name (`JSON_DOCS`: the run and data audits, the evidence)."""
+    the folder's other JSON files by name (`JSON_DOCS`: the run and data audits, the evidence,
+    the ledger)."""
     folder = run_dir(root, run_id)
     if folder is None:
         raise BacktestError("backtest_bad_run_id")
