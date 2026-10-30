@@ -115,12 +115,16 @@ class Heartbeats:
         for name in fresh:
             since = beats[name].astimezone(IST).strftime("%H:%M:%S")
             logger.error("periodic loop %s stalled since %s IST", name, since)
+            delivered = False
             try:
-                self._notifier.alert(
+                delivered = self._notifier.alert(
                     PERIODIC_STALLED, trade_date_of(now), {"loop": name, "since": since}
                 )
             except Exception:
                 logger.exception("alert %s for loop %s not sent", PERIODIC_STALLED, name)
+            if not delivered:  # told again at the next check
+                with self._lock:
+                    self._alerted.discard(name)
         return late
 
 

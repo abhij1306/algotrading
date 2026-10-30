@@ -98,6 +98,7 @@ CHAIN_EXEMPT = {
     "hat_telegram_message": "keyed by chat_id; no FK to a user",
     "hat_command_log": "keyed by chat_id; no FK to a user",
     "hat_telegram_cursor": "service state of the one allowlisted chat, keyed by name",
+    "hat_heartbeat": "service state of the one runtime, keyed by name",
 }
 
 

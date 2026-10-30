@@ -215,7 +215,8 @@ def classify_place_reply(
 
 class CircuitBreaker:
     """Opens after `threshold` failures in a row and stays open for `recovery_sec`; one success
-    closes it. Thread-safe."""
+    closes it. `down_for` is how long the calls have failed since they first reached
+    `threshold` in a row (the outage the session watch alerts). Thread-safe."""
 
     def __init__(
         self,
@@ -229,6 +230,7 @@ class CircuitBreaker:
         self._lock = Lock()
         self.failures = 0
         self.open_until = 0.0
+        self.down_since: float | None = None
 
     def is_open(self) -> bool:
         with self._lock:
@@ -238,18 +240,29 @@ class CircuitBreaker:
         with self._lock:
             self.failures = 0
             self.open_until = 0.0
+            self.down_since = None
+
+    def down_for(self) -> float:
+        """Seconds since the calls reached `threshold` failures in a row with no success since;
+        0.0 while they do not."""
+        with self._lock:
+            return 0.0 if self.down_since is None else self._clock() - self.down_since
 
     def record_failure(self) -> None:
         with self._lock:
             self.failures += 1
             if self.failures >= self.threshold:
                 self.open_until = self._clock() + self.recovery_sec
+                if self.down_since is None:
+                    self.down_since = self._clock()
 
     def trip(self) -> None:
         """Open the circuit now, as `threshold` failures in a row would."""
         with self._lock:
             self.failures = max(self.failures, self.threshold)
             self.open_until = self._clock() + self.recovery_sec
+            if self.down_since is None:
+                self.down_since = self._clock()
 
 
 PROCESS_BREAKER = CircuitBreaker()
@@ -582,6 +595,10 @@ class GuardedBroker:
         self.breaker = breaker if breaker is not None else CircuitBreaker()
         # None sends without a budget (a test double); production passes the process budget
         self.budget = budget
+
+    def unreachable_for(self) -> float:
+        """Seconds the broker's calls have failed in a row (`CircuitBreaker.down_for`)."""
+        return self.breaker.down_for()
 
     def write_refusal(self) -> str | None:
         """The code a write would be refused with now, unsent (`broker.write_refusal`)."""

@@ -1,0 +1,10 @@
+# Every five minutes, from boot on.
+[Unit]
+Description=HAT health watch, every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

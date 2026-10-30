@@ -57,6 +57,7 @@ from ..models import (
     HatAnnouncement,
     HatApproval,
     HatEvent,
+    HatFill,
     HatOrder,
     HatPosition,
     HatSignal,
@@ -204,6 +205,20 @@ def _position_of(session: Session, event: HatEvent) -> HatPosition | None:
     return None
 
 
+def _order_progress(session: Session, event: HatEvent) -> tuple[int | None, int | None]:
+    """(shares filled so far, shares ordered) of a fill's order; (None, None) for another
+    event."""
+    if event.event_type != "order.filled" or event.aggregate_type != "order":
+        return None, None
+    order = session.get(HatOrder, event.aggregate_id)
+    if order is None:
+        return None, None
+    filled = session.scalar(
+        select(func.coalesce(func.sum(HatFill.qty), 0)).where(HatFill.order_id == order.id)
+    )
+    return int(filled or 0), int(order.qty)
+
+
 def _position_message(session: Session, event: HatEvent) -> Outbound | None:
     position = _position_of(session, event)
     if position is None or position.is_virtual:
@@ -220,12 +235,15 @@ def _position_message(session: Session, event: HatEvent) -> Outbound | None:
         dividends = Decimal(result.dividends) if result is not None else None
     else:
         r = reads.r_so_far(Decimal(position.avg_entry), Decimal(position.initial_stop), price)
+    filled, ordered = _order_progress(session, event)
     view = render.PositionEventView(
         symbol=symbol_of(session, position.instrument_id),
         qty=qty if isinstance(qty, int) and not isinstance(qty, bool) else None,
         price=price,
         r_so_far=r,
         dividends=dividends,
+        filled=filled,
+        ordered=ordered,
     )
     return Outbound(
         event.event_type, position.id, render.position_event_text(event.event_type, view)

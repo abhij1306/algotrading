@@ -1,0 +1,14 @@
+# The health watch (docs/runbook.md, Health watch). Installed with scripts/install_watch_timer.sh,
+# which fills in @REPO@ and @DATA_ROOT@. The database and Telegram settings come from the repo's
+# .env (`operator_settings`); HAT_ENABLED there turns on the runtime heartbeat check.
+[Unit]
+Description=HAT health watch
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Environment=HAT_DATA_ROOT=@DATA_ROOT@
+ExecStart=@REPO@/scripts/hat_watch.sh
+Nice=5
+MemoryMax=512M
+TimeoutStartSec=2min

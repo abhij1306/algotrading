@@ -153,6 +153,9 @@ class FyersHatBroker:
         budget = self._broker.budget
         return budget is not None and budget.day_spent()
 
+    def unreachable_for(self) -> float:
+        return self._broker.unreachable_for()
+
     def write_refusal(self) -> str | None:
         return self._broker.write_refusal()
 

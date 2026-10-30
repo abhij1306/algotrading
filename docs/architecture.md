@@ -20,7 +20,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `risk` | Risk policy versions, sizing, caps, exposure ladder, kill switches, drawdown, modes, `evaluate_signal` |
 | `execution` | `HatBroker` and its adapters (Fyers `fyers_*`, Zerodha `kite_*`: payloads, transport, session, tokens, login, IPv4 pin), router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
-| `ops` | Scheduler, job runner, partitions, retention, runtime lock |
+| `ops` | Scheduler, job runner, partitions, retention, runtime lock, the out-of-process health watch (`watch`) |
 | `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
 | `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`), promotion criteria and review (`criteria`, `review`). `engine` and `risk` import only `spec` and `evidence` |
 | `configs` | The config records (`records`: strategies, versions, risk policy versions, broker accounts, bots, regime models, criterion types), their file store (`store`) and a session's unit of work over them (`unit.configs_of`) |
@@ -121,7 +121,8 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
 - **hat_state** (`app.base.StateBase`, `DB_STATE_NAME`, default `hat_state`; same server and
   credentials): the trading and runtime state. Watchlist, signal, approval, order, fill, position,
   trade result, holding baseline, kill switches, mode changes, exposure, regime state, allocations,
-  events (`hat_event` monthly-partitioned), job runs, broker sessions, Telegram, snapshots.
+  events (`hat_event` monthly-partitioned), job runs, broker sessions, Telegram, snapshots, the
+  runtime's heartbeat (`hat_heartbeat`).
 - **Data root and data repo**: what lives under `HAT_DATA_ROOT` and beside it is `docs/data-root.md`;
   the private data repo holds the store manifests and reference CSVs (`app.hat.data.record`, pushed
   by the daily update) and the snapshot releases (`scripts/hat_snapshot.py`; runbook, Data record
@@ -196,7 +197,11 @@ housekeeping (session watch, fill sync, approval expiry, reconciliation every 5 
 entries, positions opened after live.prepare priced and subscribed, a failed feed-health kill
 write retried); announcements. Each loop, the scheduler's jobs and the trigger writes run on
 their own threads, never the loop's default pool. A stalled loop alerts `periodic.stalled`. Broker calls have timeouts and
-a circuit breaker; every DB transaction runs under a 120 s `statement_timeout`.
+a circuit breaker (failing two minutes in a row: `broker.unreachable`); every DB transaction runs
+under a 120 s `statement_timeout`. The scheduler stamps `hat_heartbeat` every tick; the host's
+health watch (`ops/watch.py`, a 5-minute systemd timer, runbook) alerts a stale heartbeat, a
+database down, a low disk, a failed or late daily data update and a failed verify check, once
+per event.
 
 ## Verification and CI
 

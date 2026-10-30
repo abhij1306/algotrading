@@ -100,24 +100,27 @@ def test_breaker_follows_its_model(
     threshold: int, recovery: float, steps: list[tuple[str, float]]
 ) -> None:
     """The breaker is open exactly from the `threshold`-th failure in a row until `recovery`
-    seconds later, one success closes it at once, and a second breaker never
-    moves with the first."""
+    seconds later, one success closes it at once, its outage (`down_for`) runs from that first
+    `threshold`-th failure until a success, and a second breaker never moves with the first."""
     clock = Tick()
     breaker = CircuitBreaker(threshold, recovery, clock)
     other = CircuitBreaker(threshold, recovery, clock)
     failures, open_until = 0, 0.0
+    down_since: float | None = None
     for kind, amount in steps:
         if kind == "fail":
             breaker.record_failure()
             failures += 1
             if failures >= threshold:
                 open_until = clock.now + recovery
+                down_since = clock.now if down_since is None else down_since
         elif kind == "ok":
             breaker.record_success()
-            failures, open_until = 0, 0.0
+            failures, open_until, down_since = 0, 0.0, None
         else:
             clock.now += amount
         assert breaker.is_open() == (clock.now < open_until)
+        assert breaker.down_for() == (0.0 if down_since is None else clock.now - down_since)
         assert other.is_open() is False
         assert other.failures == 0
 

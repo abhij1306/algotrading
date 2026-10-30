@@ -106,6 +106,7 @@ __all__ = [
     "ALERT_ENTRY_NOT_PLACED",
     "ALERT_ENTRY_UNRESOLVED",
     "ALERT_ORDER_REJECTED",
+    "ALERT_ORDER_UNCONFIRMED",
     "MAX_ENTRY_REJECTIONS",
     "PRICE_AT_OR_BELOW_STOP",
     "ExecutionRouter",
@@ -121,6 +122,8 @@ MAX_ENTRY_REJECTIONS = 2
 ALERT_ORDER_REJECTED = "order.rejected"
 ALERT_ENTRY_NOT_PLACED = "entry.not_placed"
 ALERT_ENTRY_UNRESOLVED = "entry.unresolved"  # HAT-BRK-102: never sent again, left to the sync
+# an entry the broker did not answer: settled by its tag (reconcile, the fill sync), told once
+ALERT_ORDER_UNCONFIRMED = "order.unconfirmed"
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
 PRICE_AT_OR_BELOW_STOP = "price_at_or_below_stop"  # the live price is through the entry's stop
@@ -268,6 +271,7 @@ class ExecutionRouter:
         self._issuer = issuer
         # signals whose placement raised after their commit, for the next resume (PR 52)
         self._stranded: set[uuid.UUID] = set()
+        self._unconfirmed: set[str] = set()  # the tags `order.unconfirmed` was raised for
         self._stranded_lock = threading.Lock()
         # one placement at a time per account: the trigger path, a Take and the periodic resume
         # share this router, and two placements of one signal that both read no open tag would
@@ -553,11 +557,14 @@ class ExecutionRouter:
             if self._release_unsent(session, tag):
                 return True, self._not_placed(session, signal, code, now)
             logger.warning("entry %s outcome unknown after %s; left to reconcile", tag, code)
+            self._alert_unconfirmed(signal, tag)
             return True, previous
         except UnresolvedOrderError:
             logger.warning("entry %s of unknown outcome not sent again; left to the fill sync", tag)
             self._alert(ALERT_ENTRY_UNRESOLVED, signal, {"tag": tag})
             return True, previous
+        if sent.status == "unconfirmed":
+            self._alert_unconfirmed(signal, tag)
         if sent.status != "rejected":
             return True, sent
         self._alert(ALERT_ORDER_REJECTED, signal, {"tag": tag, "code": sent.code})
@@ -628,6 +635,15 @@ class ExecutionRouter:
             self._alert(ALERT_ENTRY_NOT_PLACED, signal, {"reason": reason})
         else:
             session.rollback()
+
+    def _alert_unconfirmed(self, signal: HatSignal, tag: str) -> None:
+        """`order.unconfirmed` for an entry whose outcome is unknown, once per tag: a resumed
+        entry that reads the same tag back unconfirmed is not told again."""
+        with self._stranded_lock:
+            if tag in self._unconfirmed:
+                return
+            self._unconfirmed.add(tag)
+        self._alert(ALERT_ORDER_UNCONFIRMED, signal, {"tag": tag})
 
     def _alert(self, code: str, signal: HatSignal, detail: dict[str, str]) -> None:
         day: date = signal.trade_date or trade_date_of(signal.triggered_at)
