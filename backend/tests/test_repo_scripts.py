@@ -49,6 +49,7 @@ ep_b7 = _script("research/s2_ep_intraday_results.py")
 ep_audit = _script("research/s2_ep_audit.py")
 overlay = _script("data/overlay_etf.py")
 truncation = _script("research/bt_truncation.py")
+setups_audit = _script("research/s1_setups_audit.py")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1240,3 +1241,123 @@ def test_open_to_0920__members_are_read_by_chain() -> None:
         "chain",
         "y",
     }
+
+
+# ---------------------------------------------------------------------------------------------
+# s1_setups_audit (S1 Phase 3)
+
+
+def _path(*legs: tuple[int, float]) -> list[float]:
+    """Closes along straight legs: each (bars, close at its end) from the last close."""
+    closes = [legs[0][1]]
+    for bars, to in legs[1:]:
+        start = closes[-1]
+        closes += [start + (to - start) * (k + 1) / bars for k in range(bars)]
+    return closes
+
+
+def _series(closes: list[float], spread: float = 0.005):  # noqa: ANN202 - the script's Series
+    days = [date(2020, 1, 1) + timedelta(days=n) for n in range(len(closes))]
+    high = [c * (1 + spread) for c in closes]
+    low = [c * (1 - spread) for c in closes]
+    return setups_audit.Series(days, high, low, closes, [1000.0] * len(closes))
+
+
+def test_setups_audit__a_cheat_marks_h0_c_and_the_pause() -> None:
+    # up to H0 at bar 60, down 30% to C at bar 80, back to 85 by bar 100, flat 6 bars
+    series = _series(_path((1, 50.0), (60, 100.0), (20, 70.0), (20, 85.0), (6, 85.5)))
+    params = setups_audit.BookCheatParams()
+    found = setups_audit.markers("book_cheat", series, params)
+    assert (found.h0, found.c) == (60, 80)
+    end = len(series.dates) - 1
+    assert found.tight is not None
+    assert found.tight.end == end
+    assert found.tight.depth_pct <= Decimal(6)
+    assert found.pivot == found.tight.high
+    assert found.stop(Decimal("0.5")) == found.tight.low * Decimal("0.995")
+    assert found.dryup == (Decimal(1), Decimal(1))  # flat volume: every vr is 1
+    assert found.contractions[0].start == 60
+    assert found.note == ""
+
+
+def test_setups_audit__a_failed_handle_still_marks_the_area_it_judged() -> None:
+    # the lip is the last bar: a handle of one session
+    series = _series(_path((1, 50.0), (60, 100.0), (20, 70.0), (25, 95.0)))
+    found = setups_audit.markers("book_cup_handle", series, setups_audit.BookCupHandleParams())
+    assert (found.h0, found.c) == (60, 80)
+    assert found.note == "handle: handle_too_short"
+    end = len(series.dates) - 1
+    assert found.tight is not None
+    assert (found.tight.start, found.tight.end) == (end, end)
+
+
+def test_setups_audit__a_missing_piece_is_noted_not_marked() -> None:
+    flat = _series([100.0] * 120)
+    found = setups_audit.markers("book_power_play", flat, setups_audit.BookPowerPlayParams())
+    assert found.note.startswith("no thrust")
+    assert found.tight is None
+    assert found.pivot is None
+    assert found.stop(Decimal("0.5")) is None
+    rising = _series(_path((1, 50.0), (60, 100.0)))
+    found = setups_audit.markers("book_primary_base", rising, setups_audit.BookPrimaryBaseParams())
+    assert found.note == "no base"  # the highest high is the last bar
+    with pytest.raises(ValueError, match="unknown detector"):
+        setups_audit.markers("book_vcp", flat, None)
+
+
+def test_setups_audit__a_primary_base_starts_at_its_highest_high() -> None:
+    series = _series(_path((1, 50.0), (40, 100.0), (10, 85.0), (10, 98.0), (8, 92.0), (5, 97.0)))
+    found = setups_audit.markers("book_primary_base", series, setups_audit.BookPrimaryBaseParams())
+    assert found.h0 == 40
+    assert found.contractions[0].start == 40
+    assert found.tight == found.contractions[-1]
+
+
+def test_setups_audit__the_full_day_ratio_and_adv50() -> None:
+    assert setups_audit.full_day_ratio([100.0] * 50 + [150.0]) == pytest.approx(1.5)
+    assert setups_audit.full_day_ratio([100.0] * 50) is None  # not 51 volumes
+    assert setups_audit.full_day_ratio([0.0] * 50 + [10.0]) is None
+    assert setups_audit.full_day_ratio([float("nan")] + [100.0] * 50) is None
+    means = setups_audit.adv([10.0] * 50 + [20.0, 30.0], days=50)
+    assert means[:50] == [None] * 50
+    assert means[50] == pytest.approx(10.0)
+    assert means[51] == pytest.approx(10.2)
+    assert setups_audit.adv([1.0, None, 1.0, 1.0], days=2) == [None, None, None, None]
+
+
+def test_setups_audit__the_draw_is_seeded_and_one_per_key() -> None:
+    items = [("a", 1), ("a", 2), ("b", 3), ("c", 4), ("d", 5)]
+    first = setups_audit.draw(items, 3, 7, key=lambda x: x[0])
+    assert first == setups_audit.draw(items, 3, 7, key=lambda x: x[0])
+    assert len(first) == 3
+    assert len({k for k, _ in first}) == 3
+    assert first == sorted(first, key=items.index)  # in the items' order
+    assert setups_audit.draw(items[:2], 15, 7) == items[:2]  # all of a small pool
+    assert setups_audit.draw(items, 9, 7, key=lambda x: x[0]) == [
+        i for i in items if i in setups_audit.draw(items, 9, 7, key=lambda x: x[0])
+    ]
+    assert len(setups_audit.draw(items, 9, 7, key=lambda x: x[0])) == 4  # 4 keys
+
+
+def test_setups_audit__a_near_miss_names_its_threshold() -> None:
+    cheat = setups_audit.BookCheatParams()
+    assert setups_audit.threshold_of("no_pause", cheat) == "a 5-15 session range <= 6.0%"
+    assert setups_audit.threshold_of("pause_in_upper_third", cheat) == (
+        "pause high position <= 0.67"
+    )
+    play = setups_audit.BookPowerPlayParams()
+    assert setups_audit.threshold_of("final_depth_too_deep", play) == ("final contraction <= 8.0%")
+    assert setups_audit.threshold_of("no_volume_dryup", play) == "mean vr < 0.7"
+    assert setups_audit.threshold_of("something_else", play) == "something_else"
+
+
+def test_setups_audit__later_bars_join_on_the_nights_scale() -> None:
+    night = _series([100.0, 110.0])
+    later = _series([50.0, 55.0, 60.0])  # halved by a later split; one more bar
+    joined = setups_audit.stitch(night, later)
+    assert joined.dates == night.dates + later.dates[2:]
+    assert joined.close == pytest.approx([100.0, 110.0, 120.0])
+    assert joined.volume == [1000.0] * 3
+    assert setups_audit.head(joined, 2) == night
+    moved = replace(later, dates=[d + timedelta(days=9) for d in later.dates])
+    assert setups_audit.stitch(night, moved) == night  # no shared night: nothing joined
