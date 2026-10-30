@@ -223,7 +223,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
 - **Versions and `known_on`.** Every write of a corporate action appends a version in the same
   transaction (`hat_corporate_action_version`, append-only); `hat_corporate_action` is the
   hindsight projection, checked every night by `ca.adjust` (alert `corporate_action.projection`). Each action records when its value became knowable (`known_on`; NULL when
-  unknown, never guessed). A backtest neither scans nor enters a name on a session where no
+  unknown, never guessed); the owner's correction always carries one (a factor without its date
+  is refused, a dividend's amount is known at its ex-date), and D2 fails any value the series
+  applies undated. A backtest neither scans nor enters a name on a session where no
   version was available or the available one differs from the series' (`factor_pending`); a
   version available later never changes what a backtest reads before it. A correction that
   re-dates `known_on` later appends a version available from the later date and withdraws

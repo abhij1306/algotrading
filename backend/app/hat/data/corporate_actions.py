@@ -450,11 +450,16 @@ class Correction:
 
 def correction_known(ex_date: date, known_on: date | None, *, price_neutral: bool) -> Known:
     """When a corrected value became knowable (CA5): the line's `known_on`, never before the
-    ex-date (`correction`); without one, a price-neutral row at the ex-date open (it changes no
-    price) and a factor not at all: the owner's value is never dated by guess."""
+    ex-date (`correction`); without one, a price-neutral row, a dividend's amount included, at
+    the ex-date open (`default_known`: the amount is announced before it, so fixing a misread
+    of it brings no new fact). A price-changing factor without one is refused
+    (`known_on_required`): the owner's factor is never dated by guess, nor stored undated,
+    which would hold its name factor-pending from the ex-date on (`ca_versions.pending_days`)."""
     if known_on is not None:
         return Known(max(ex_date, known_on), CORRECTION)
-    return at_ex_open(ex_date) if price_neutral else UNKNOWN
+    if not price_neutral:
+        raise ActionCorrectionError("known_on_required")
+    return at_ex_open(ex_date)
 
 
 def check_correction(correction: Correction) -> tuple[str, Decimal] | None:
@@ -525,7 +530,8 @@ def correct_action(
     `owner_vacated`). A replacement whose key another stored row already
     holds with the same factor deletes the corrected row (the right fact is stored); with
     another factor it is refused (`action_key_taken`). Refused too: an unknown ISIN
-    (`instrument_not_found`), no such action (`action_not_found`) or `check_correction`'s codes.
+    (`instrument_not_found`), no such action (`action_not_found`), `check_correction`'s codes or
+    a factor without a date (`known_on_required`, `correction_known`).
     The adjusted view reads the change at the next features run (its digest covers the
     factors). A `cash` correction sets a dividend's amount, which the total-return series and the
     backtest and shadow credits read; a later import never rewrites it (its key is the owner's,
@@ -557,11 +563,6 @@ def correct_action(
         ledger.vacate(row, available=vacated, text=note)
     else:
         new_type, factor = replacement
-        known = correction_known(
-            correction.ex_date,
-            correction.known_on,
-            price_neutral=new_type in PRICE_NEUTRAL_TYPES and correction.cash is None,
-        )
         holder = (
             session.scalar(
                 select(HatCorporateAction).where(
@@ -577,14 +578,28 @@ def correct_action(
             raise ActionCorrectionError("action_key_taken")
         if holder is not None and correction.cash is not None:
             raise ActionCorrectionError("action_key_taken")  # the amount is the holder's
+        if holder is not None and holder.known_on is None:  # the kept factor must be dated
+            correction_known(
+                correction.ex_date,
+                correction.known_on,
+                price_neutral=new_type in PRICE_NEUTRAL_TYPES,
+            )
         if holder is not None:
             ledger.vacate(row, available=vacated, text=note)
             if correction.known_on is not None:  # else the stored fact keeps its own date
+                known = correction_known(
+                    correction.ex_date, correction.known_on, price_neutral=True
+                )
                 dated = {"known_on": known.on, "known_basis": known.basis}
                 ledger.accept(holder, dated, text=note, published_on=correction.known_on)
             after = {**_state(holder), "kept_stored": True}
         else:
             # a new type vacates the old key (`Ledger.accept`)
+            known = correction_known(
+                correction.ex_date,
+                correction.known_on,
+                price_neutral=new_type in PRICE_NEUTRAL_TYPES,
+            )
             ledger.accept(
                 row,
                 _replaced(row, new_type, factor, correction, known),

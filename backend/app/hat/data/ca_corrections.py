@@ -8,9 +8,12 @@ The list is a TSV file in the admin folder, one correction per line, with column
 - `cash` (CA4): a dividend's rupees per share, on a `replace` or `add` line of type `dividend`
   with factor 1;
 - `known_on` (CA5): the date the corrected value was public, which the stored row keeps
-  (`correction_known`: never before the ex-date; without it a factor is not dated and its name
-  stays factor-pending in a backtest, `ca_known`). A `replace` with the stored factor and a
-  `known_on` dates a stored row.
+  (`correction_known`: never before the ex-date). A line that writes a price-changing factor
+  (`replace`, `add`, `move` of a split, bonus, other or demerger) needs one, else the list is
+  refused (`known_on_required`): an undated factor would hold its name factor-pending in a
+  backtest from the ex-date on. A dividend's amount without one is known at the ex-date open
+  (NSE announces it before; the fix of a misread brings no new fact). A `replace` with the
+  stored factor and a `known_on` dates a stored row.
 
 
 - `replace`: the stored (isin, ex_date, type) row takes `factor` (and `cash`; `correct_action`);
@@ -104,7 +107,7 @@ def parse_list(text: str) -> list[Item]:
     """The list's lines (a header line first, `#` lines ignored). A line that does not read
     refuses the list: a factor where the op takes none or none where it needs one, a move
     without a new date, a bad date or op, a cash amount that is not positive or on an op other
-    than `replace` or `add`."""
+    than `replace` or `add`, a price-changing factor without a `known_on`."""
     reader = csv.reader(io.StringIO(text), delimiter="\t")
     rows = [(n, r) for n, r in enumerate(reader, start=1) if r and not r[0].startswith("#")]
     header = tuple(c.strip() for c in rows[0][1]) if rows else ()
@@ -135,21 +138,22 @@ def parse_list(text: str) -> list[Item]:
         demerger = kind == TYPE_DEMERGER
         if demerger and op != "add":
             raise CorrectionListError("bad_type", line)
-        items.append(
-            Item(
-                line,
-                op,
-                isin,
-                _date(ex, line),
-                TYPE_OTHER if demerger else kind,
-                factor,
-                _date(new_ex, line) if new_ex else None,
-                note,
-                cash,
-                _date(known_on, line) if known_on else None,
-                demerger,
-            )
+        item = Item(
+            line,
+            op,
+            isin,
+            _date(ex, line),
+            TYPE_OTHER if demerger else kind,
+            factor,
+            _date(new_ex, line) if new_ex else None,
+            note,
+            cash,
+            _date(known_on, line) if known_on else None,
+            demerger,
         )
+        if op != "delete" and item.action_type not in PRICE_NEUTRAL_TYPES and not item.known_on:
+            raise CorrectionListError("known_on_required", line)  # `correction_known`
+        items.append(item)
     return items
 
 
@@ -196,7 +200,7 @@ def add_action(
     )
     if taken is not None:
         raise ActionCorrectionError("action_key_taken")
-    known = correction_known(ex_date, known_on, price_neutral=False)
+    known = correction_known(ex_date, known_on, price_neutral=action_type in PRICE_NEUTRAL_TYPES)
     row = HatCorporateAction(
         instrument_id=instrument.id,
         ex_date=ex_date,

@@ -82,6 +82,9 @@
    (`OUTVOTED`, counted); two kinds disagreeing with none agreeing fails
    (`split_bonus_factor_contradicted`, as does the open disagreeing with none agreeing: the factor
    is shown wrong).
+6. Dated values: every event the series applies has its value's `available_on`
+   (`undated_values`): one without fails (`ca_value_undated`), as a backtest would never scan
+   its name again after the ex-date.
 Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
@@ -109,9 +112,10 @@ from ...money import exact
 from ...time import IST
 from ..audit import FAIL, JUMP_PCT, PASS, WARN, action_shaped, check_result, finding, jumps
 from ..ca_import import PULL_NOTE, pull_date
+from ..ca_versions import select as select_version
 from ..isin import ordinary_equity
 from ..lineage import issuer
-from . import covered, dated, seeded_sample
+from . import covered, dated, seeded_sample, spanning
 from .context import Context
 from .exceptions import Exceptions, read_exceptions
 from .filings import Announcement, read_announcements
@@ -119,6 +123,8 @@ from .filings import Announcement, read_announcements
 if TYPE_CHECKING:
     import duckdb
     import polars as pl
+
+    from ..point_in_time import Event
 
 FACTOR_TOLERANCE = Fraction(1, 1000)  # relative; HAT's MCP bonus factors are rounded to 4 places
 RIGHTS_TOLERANCE = Fraction(2, 100)  # of the discount 1 - factor: P is one close, rounded
@@ -1807,6 +1813,23 @@ def _stored_against_market(
     return bhavcopy, evidence, findings
 
 
+def undated_values(events: Iterable[Event], symbol_of: Mapping[str, str]) -> dict[str, Any]:
+    """`ca_value_undated`, FAIL: an event the series applies (`point_in_time.series`) whose
+    value, its accepted version of highest precedence, has no `available_on`. A backtest holds
+    its name factor-pending from the ex-date on (`ca_versions.pending_days`), so it is never
+    scanned again: the finding spans the earliest such ex-date on. The owner's correction dates
+    it (`correct-actions` with `known_on`); not exceptable."""
+    undated = sorted(
+        (e.ex_date, f"{symbol_of.get(e.chain_id, e.chain_id)} {e.ex_date} {e.action_type}")
+        for e in events
+        if (top := select_version(e.versions, None)) is not None and top.available_on is None
+    )
+    if not undated:
+        return finding("ca_value_undated", PASS, [])
+    found = finding("ca_value_undated", FAIL, [item for _, item in undated])
+    return spanning(found, undated[0][0], date.max)
+
+
 def _stored(ctx: Context, start: date, end: date) -> list[StoredAction]:  # pragma: no cover
     """The stored corporate actions with an ex-date from `start` to `end`."""
     return [
@@ -1823,6 +1846,7 @@ def _stored(ctx: Context, start: date, end: date) -> list[StoredAction]:  # prag
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     from ..chains import chains, stored_adjustment, stored_links  # noqa: PLC0415
+    from ..point_in_time import series  # noqa: PLC0415
 
     findings: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
@@ -1908,6 +1932,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             _stored_against_market(ctx, con, stored, heads, exceptions)
         )
         findings += market
+    symbols = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
+    findings.append(undated_values(series(ctx.session), symbols))
     summary["excepted"] = exceptions.summary()
     result = check_result("D2", summary, [*findings, *exceptions.findings()])
     return result if coverage is None else covered(result, *coverage)

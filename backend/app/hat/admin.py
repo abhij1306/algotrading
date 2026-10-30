@@ -73,7 +73,9 @@ Commands, in first-deploy order:
                                               replaces or deletes one stored corporate-action
                                               factor (a conflict alert, a misparsed bonus; D1),
                                               or sets a dividend's cash per share (CA4);
-                                              --known-on: when the value was public (CA5)
+                                              --known-on: when the value was public (CA5;
+                                              a factor needs it, a dividend defaults to its
+                                              ex-date)
     correct-actions --list TSV [--apply]      the owner's reviewed list of such corrections
                                               (replace, delete, move, add; CA2; optional
                                               `cash` (CA4) and `known_on` (CA5) columns), one
