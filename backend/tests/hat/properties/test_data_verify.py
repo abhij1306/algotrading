@@ -523,7 +523,7 @@ def test_d2_a_wrong_or_missing_action_fails_and_an_owner_deletion_warns() -> Non
 
 
 def test_d2_moves_are_classed_by_what_explains_them() -> None:
-    move = {"ex_date": True, "move_pct": 20.02, "raw_move_pct": -85.0}
+    move = {"ex_date": True, "move_pct": 20.02, "raw_move_pct": -85.0, "pinned": True}
     assert adjustments.classify_move(move, False, 100.0) == "ex_date_circuit"
     assert adjustments.classify_move(move | {"move_pct": 51.0}, False, 100.0) == "ex_date_jump"
     plain = {"ex_date": False, "move_pct": -50.0, "raw_move_pct": -50.0}
@@ -532,12 +532,14 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
     crash = plain | {"move_pct": -30.0, "raw_move_pct": -30.0}
     assert adjustments.classify_move(crash, True, 100.0) == "results"
     assert adjustments.classify_move(crash, False, 100.0) == "unexplained"
-    band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98}  # a 20% band's upper circuit
+    # a 20% band's upper circuit: closed at the day's high
+    band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98, "pinned": True}
     assert adjustments.classify_move(band, False, 100.0) == "circuit"
     # 20% on 6.60 is 7.92, traded at the next tick, 7.95: a band's move of 20.45%
-    tick = plain | {"move_pct": 20.45, "raw_move_pct": 20.45}
+    tick = plain | {"move_pct": 20.45, "raw_move_pct": 20.45, "pinned": True}
     assert adjustments.classify_move(tick, False, 6.60) == "circuit"
     assert adjustments.classify_move(tick, False, 418.10) == "unexplained"
+    assert adjustments.classify_move(move | {"pinned": False}, False, 100.0) == "ex_date_jump"
     # a day the median stock fell 11%: a 30% fall that day is the market's, a rise is not
     assert adjustments.classify_move(crash, False, 100.0, market=-11.0) == "market"
     assert adjustments.classify_move(crash, False, 100.0, market=-2.0) == "unexplained"
@@ -603,6 +605,23 @@ def test_d2_second_source_reads_the_chains_current_instrument() -> None:
         ("new", "TRENT", "NSE:TRENT-EQ"),
         ("gone", "CORPBANK", None),
     ]
+
+
+def test_d2_circuit_needs_the_close_held_at_the_band() -> None:
+    # ZENITHBIR 2011-06-24: prev 6.60, high = close = 7.95 (the band's 7.92 at the next tick)
+    zen = {"ex_date": False, "move_pct": 20.45, "raw_move_pct": 20.45}
+    zen["pinned"] = adjustments.pinned(20.45, close=7.95, high=7.95, low=6.70)
+    assert zen["pinned"]
+    assert adjustments.classify_move(zen, False, 6.60) == "circuit"
+    # RPOWER 2019-05-03: prev 5.35, close 6.45 (+20.56%) after a high of 6.65 (+24.3%): F&O,
+    # no band held it
+    rpower = {"ex_date": False, "move_pct": 20.56, "raw_move_pct": 20.56}
+    rpower["pinned"] = adjustments.pinned(20.56, close=6.45, high=6.65, low=5.40)
+    assert not rpower["pinned"]
+    assert adjustments.classify_move(rpower, False, 5.35) == "unexplained"
+    # a fall held at the lower band closes at the day's low; SAIL 2024-06-04 closed above it
+    assert adjustments.pinned(-20.0, close=80.0, high=99.0, low=80.0)
+    assert not adjustments.pinned(-20.02, close=133.05, high=164.90, low=124.80)
 
 
 def test_d2_dividends_count_against_the_chains_series() -> None:

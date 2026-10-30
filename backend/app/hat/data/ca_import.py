@@ -56,7 +56,6 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..money import exact
-from ..time import IST
 from .ca_apply import (
     KIND_DEMERGER,
     Context,
@@ -260,6 +259,28 @@ def name_key(name: str) -> str:
 
 def _cell(value: object) -> str:
     return ("" if value is None else str(value)).strip()[:TEXT_MAX]
+
+
+PULL_NOTE = "README.md"  # the pull's own note beside its files: "Collected 24-Oct-2026."
+_COLLECTED = re.compile(r"^Collected (\d{1,2}-[A-Za-z]{3}-\d{4})\b", re.MULTILINE)
+
+
+def collected_on(note: str) -> date | None:
+    """The day an NSE pull was collected, from its note's `Collected DD-Mon-YYYY` line."""
+    found = _COLLECTED.search(note)
+    if found is None:
+        return None
+    try:
+        return datetime.strptime(found.group(1), "%d-%b-%Y").date()  # noqa: DTZ007 - a date
+    except ValueError:
+        return None
+
+
+def pull_date(folder: Path) -> date | None:  # pragma: no cover - a file
+    """The day the NSE pull in `folder` was collected, as its note (`PULL_NOTE`) records it;
+    never a file's modification time, which a copy or a restore resets. None without one."""
+    note = folder / PULL_NOTE
+    return collected_on(note.read_text("utf-8")) if note.is_file() else None
 
 
 def read_file(path: Path) -> dict[str, list[dict[str, str]]]:
@@ -605,8 +626,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     from ..time import utc_now
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
+    pulled = pull_date(path.parent)  # rights are priced at the face value as of the pull
+    if pulled is None:
+        sys.stderr.write(f"refused: ca_pull_date_missing ({PULL_NOTE} beside the file)\n")
+        return 2
     with HatDataSessionLocal() as session:
-        pulled = datetime.fromtimestamp(path.stat().st_mtime, IST).date()  # the file's pull
         outcomes = evaluate(session, store, tables, pulled)
         if args.apply:
             journal = {"source": SOURCE_FILE, "file_sha256": digest(path)}

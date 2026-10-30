@@ -89,10 +89,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - databa
                 "WHERE broker = 'fyers'"
             )
         )
+        heads = chains(stored_links(session))
         sample = fyers_sample(
-            second_source_sample(symbols, nifty500_members(ctx)),
+            second_source_sample(symbols, nifty500_members(ctx), heads),
             symbols,
-            chains(stored_links(session)),
+            heads,
             broker,
         )
     folder = ctx.reference_dir("fyers")
