@@ -256,6 +256,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   still warm the indicators up. That is all a run reads before its first session: the lookback
   reads bars and features, which rank all ordinary equity, never the index, so membership before
   2016 serves no backtest and the data verify (D3) warns on those sessions, never fails.
+- **D2's second source is Fyers' daily history** (owner, 2026-10-30: Yahoo is not reliable; it
+  refused this host for hours). The price basis' calendar-year price return is compared with
+  Fyers' (split- and bonus-adjusted, no dividends) within 2 points, for 2022 to 2025: Fyers
+  serves daily history about five years back. Dividends stay judged against NSE's amounts, and
+  a stock Fyers does not list (delisted) is listed, not compared.
 - **Industry history (orchestrator, 2026-10-26).** One taxonomy: the `Industry` column of NSE's
   current NIFTY 500 list. Each instrument chain takes its industry from the NIFTY 500 list
   snapshots that list one of its ISINs in that taxonomy (the lists from 2022; the 2010-2020
