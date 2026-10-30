@@ -50,14 +50,14 @@
    move within `RESULTS_DAYS` of a results announcement and a move the way of a market-wide day
    (`MARKET_PCT`) are explained; the rest warn, listed, each reviewed one with its cause from
    `D2_EXCEPTIONS`.
-3. Second source (with `--fetch`, else what is kept): `SAMPLE_SIZE` NIFTY 500 stocks, seeded,
-   each calendar year's total return on `bars_daily` (adjusted) against Yahoo Finance's
-   adjusted close (monthly bars, split- and dividend-adjusted; no login), kept under
-   `verify_reference/yahoo/`. Yahoo's known limits: its own dividend method and occasional missed
-   or misdated actions, no demerger adjustment, history under today's symbol only, and it
-   rate-limits (HTTP 429) a client that asks often. A year off by more than
-   `SECOND_SOURCE_PP` percentage points warns, as does a symbol with no answer; no answer at
-   all fails (the second source did not run).
+3. Second source (what `verify.fyers` kept): `SAMPLE_SIZE` NIFTY 500 stocks, seeded, each
+   read as its chain's current instrument; each calendar year of `SECOND_SOURCE_YEARS`, the
+   price return on `bars_daily_cap` (the price basis: no dividends) against Fyers' daily closes
+   (`verify_reference/fyers/`). Fyers adjusts splits and bonuses up to the day it is asked, not
+   dividends, rights or demergers, and serves only symbols it lists now, so a delisted stock has
+   no series; dividends stay judged against NSE's amounts (1.). A year off by more than
+   `SECOND_SOURCE_PP` percentage points warns, as does a stock with no Fyers symbol or no kept
+   answer; no stock compared fails (the second source did not run).
 Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
@@ -71,7 +71,7 @@ import re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -88,7 +88,6 @@ from . import covered, dated, seeded_sample
 from .context import Context
 from .exceptions import Exceptions, read_exceptions
 from .filings import Announcement, read_announcements
-from .references import reference_file
 
 if TYPE_CHECKING:
     import duckdb
@@ -101,6 +100,10 @@ RESULTS_DAYS = 3  # a results announcement up to this many days before a move ex
 SAMPLE_SIZE = 100
 SAMPLE_SEED = 20261029
 SECOND_SOURCE_PP = 2.0
+# The calendar years compared with Fyers: the owner asked for 2016..2025, but Fyers serves daily
+# history about five years back only (asked on 2026-10-30: 2021-11-02 answered, 2021-10-25
+# refused), so the first whole year with a base (the last close of the December before) is 2022.
+SECOND_SOURCE_YEARS = (2022, 2025)
 CIRCUIT_BANDS = (5.0, 10.0, 20.0)  # NSE's price bands, percent
 CIRCUIT_SLACK = 0.25  # percentage points: a band's move after the tick rounding
 TICK = 0.05  # rupees: NSE's largest equity tick; a band's price is rounded to it
@@ -119,10 +122,6 @@ COST_SPLIT_GAP = Fraction(10, 100)  # a stored factor this far from the parent's
 FUND_PREFIX = "INF"  # mutual-fund units (ETFs): not stocks, not judged
 NON_EQUITY = frozenset({"preference", "debentures", "warrants"})
 PRICE_TYPES = ("split", "bonus")
-YAHOO_URL = (
-    "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}.NS"
-    "?period1={start}&period2={end}&interval=1mo&events=div%2Csplit"
-)
 _REF_DATE = "%d-%b-%Y"
 
 
@@ -1183,23 +1182,33 @@ def _market_moves(frame: pl.DataFrame) -> dict[date, float]:  # pragma: no cover
 # --- the second source --------------------------------------------------------------------------
 
 
-def yahoo_year_returns(data: bytes) -> dict[int, float]:
-    """Each calendar year's return from a Yahoo chart answer's monthly adjusted closes (the
-    last month's over the year before's last month)."""
-    doc = json.loads(data)
-    result = ((doc.get("chart") or {}).get("result") or [None])[0]
-    if not result:
-        return {}
-    stamps = result.get("timestamp") or []
-    offset = int((result.get("meta") or {}).get("gmtoffset") or 0)  # bars start at local midnight
-    adj = (((result.get("indicators") or {}).get("adjclose") or [{}])[0]).get("adjclose") or []
-    last: dict[int, float] = {}
-    for stamp, value in zip(stamps, adj, strict=False):
-        if value is not None:
-            last[datetime.fromtimestamp(stamp + offset, UTC).year] = float(
-                value
-            )  # months are in order
-    return {y: 100 * (last[y] / last[y - 1] - 1) for y in sorted(last) if y - 1 in last}
+def fyers_request(symbol: str, year: int, base: bool = False) -> tuple[str, dict[str, str]]:
+    """The kept file's name and the Fyers history request of `symbol`'s daily candles in one
+    calendar year (a daily request spans at most 366 days), or for the `base` year only its
+    December: its last close is the first year's base."""
+    request = {
+        "symbol": symbol,
+        "resolution": "D",
+        "date_format": "1",
+        "range_from": f"{year}-12-01" if base else f"{year}-01-01",
+        "range_to": f"{year}-12-31",
+        "cont_flag": "1",
+    }
+    return f"{symbol.removeprefix('NSE:')}_{year}.json", request
+
+
+def fyers_answered(answer: Mapping[str, Any]) -> bool:
+    """A history answer to keep: candles (`ok`), or `no_data` for a year without any."""
+    return answer.get("s") in ("ok", "no_data")
+
+
+def fyers_closes(data: bytes) -> list[tuple[date, float]]:
+    """(IST date, close) of each daily candle in a kept Fyers answer."""
+    out = []
+    for row in json.loads(data).get("candles") or []:
+        if isinstance(row, list) and len(row) >= 5:
+            out.append((datetime.fromtimestamp(int(row[0]), IST).date(), float(row[4])))
+    return out
 
 
 def year_returns(points: Iterable[tuple[date, float]]) -> dict[int, float]:
@@ -1218,7 +1227,7 @@ def compare_returns(
         {
             "year": y,
             "hat_pct": round(ours[y], 2),
-            "yahoo_pct": round(theirs[y], 2),
+            "fyers_pct": round(theirs[y], 2),
             "gap_pp": round(ours[y] - theirs[y], 2),
         }
         for y in sorted(set(ours) & set(theirs))
@@ -1226,8 +1235,8 @@ def compare_returns(
     ]
 
 
-_TR_SQL = """
-SELECT date, CAST(close AS DOUBLE) FROM bars_daily
+_PRICE_SQL = """
+SELECT date, CAST(close AS DOUBLE) FROM bars_daily_cap
 WHERE instrument_id = ? AND date BETWEEN ? AND ? ORDER BY date
 """
 
@@ -1239,13 +1248,20 @@ def second_source_sample(symbols: Mapping[str, str], members: Iterable[str]) -> 
     return seeded_sample(pool, SAMPLE_SIZE, SAMPLE_SEED)
 
 
-def yahoo_request(symbol: str, start: date, end: date) -> tuple[str, str]:
-    """The kept file's name and the URL of `symbol`'s monthly chart for the window's years (from
-    the December before the first, so the first whole year has a base)."""
-    first = int(datetime(start.year - 1, 12, 1, tzinfo=UTC).timestamp())
-    last = int(datetime(end.year, 1, 31, tzinfo=UTC).timestamp())
-    url = YAHOO_URL.format(symbol=symbol.replace("&", "%26"), start=first, end=last)
-    return f"{symbol}_{start.year}_{end.year}.json", url
+def fyers_sample(
+    sample: Iterable[str],
+    symbols: Mapping[str, str],
+    heads: Mapping[str, tuple[str, int]],
+    broker: Mapping[str, str],
+) -> list[tuple[str, str, str | None]]:
+    """Each sampled instrument as (its chain's current instrument, that one's symbol, its Fyers
+    symbol or None): the price basis carries the chain's current id, and Fyers names a stock by
+    the symbol it trades under now."""
+    out = []
+    for instrument in sample:
+        current = heads.get(instrument, (instrument, 0))[0]
+        out.append((current, symbols.get(current, symbols[instrument]), broker.get(current)))
+    return out
 
 
 def nifty500_members(ctx: Context) -> dict[str, list[tuple[date, date | None]]]:
@@ -1262,22 +1278,36 @@ def _second_source(
     ctx: Context,
     con: duckdb.DuckDBPyConnection,
     members: Mapping[str, Sequence[tuple[date, date | None]]],
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - the network  # noqa: ANN401
+    heads: Mapping[str, tuple[str, int]],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
     symbols = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
-    sample = second_source_sample(symbols, members)
-    first_year, last_year = ctx.start.year + 1, ctx.end.year - 1  # whole years only
-    compared, off, missing = 0, [], []
+    broker = dict(
+        ctx.rows(
+            "SELECT CAST(instrument_id AS TEXT), broker_symbol FROM hat_broker_symbol "
+            "WHERE broker = 'fyers'"
+        )
+    )
+    sample = fyers_sample(second_source_sample(symbols, members), symbols, heads, broker)
+    first_year = max(SECOND_SOURCE_YEARS[0], ctx.start.year + 1)  # whole years only
+    last_year = min(SECOND_SOURCE_YEARS[1], ctx.end.year - 1)
+    folder = ctx.reference_dir("fyers")
+    compared, off, missing, unlisted = 0, [], [], []
     gaps: list[float] = []
-    for instrument in sample:
-        symbol = symbols[instrument]
-        name, url = yahoo_request(symbol, ctx.start, ctx.end)
-        data = reference_file(ctx, "yahoo", name, url, valid=lambda d: b'"result":[' in d)
-        theirs = yahoo_year_returns(data) if data else {}
+    for instrument, symbol, fyers in sample:
+        if fyers is None:
+            unlisted.append(symbol)
+            continue
+        theirs_points: list[tuple[date, float]] = []
+        for year in range(first_year - 1, last_year + 1):
+            path = folder / fyers_request(fyers, year, base=year < first_year)[0]
+            if path.is_file():
+                theirs_points += fyers_closes(path.read_bytes())
+        theirs = year_returns(theirs_points)
         if not theirs:
             missing.append(symbol)
             continue
         points = con.execute(
-            _TR_SQL, [instrument, date(ctx.start.year - 1, 1, 1), ctx.end]
+            _PRICE_SQL, [instrument, date(first_year - 1, 1, 1), date(last_year, 12, 31)]
         ).fetchall()
         rows = compare_returns(year_returns(points), theirs, first_year, last_year)
         compared += len(rows)
@@ -1286,21 +1316,29 @@ def _second_source(
     off.sort(key=lambda r: -abs(r["gap_pp"]))
     gaps.sort()
     summary = {
-        "source": "Yahoo Finance chart API, monthly adjusted close (no login)",
+        "source": (
+            "Fyers daily history (split- and bonus-adjusted to the day fetched; no dividends, "
+            "rights or demergers) against the price basis bars_daily_cap; dividends are judged "
+            "against NSE's amounts instead"
+        ),
         "sample": len(sample),
+        "years": f"{first_year}..{last_year}",
         "stock_years_compared": compared,
         "median_gap_pp": round(gaps[len(gaps) // 2], 3) if gaps else None,
         "p90_gap_pp": round(gaps[int(len(gaps) * 0.9)], 3) if gaps else None,
         "within_pp": SECOND_SOURCE_PP,
         "years_off": len(off),
+        "symbols_not_at_fyers": len(unlisted),
         "symbols_without_answer": len(missing),
     }
     findings = []
     if off:
         findings.append(finding("second_source_year_off", WARN, off))
+    if unlisted:
+        findings.append(finding("second_source_not_at_fyers", WARN, unlisted))
     if missing:
         findings.append(finding("second_source_missing", WARN, missing))
-    if sample and len(missing) == len(sample):
+    if sample and not compared:
         findings.append(finding("second_source_not_run", FAIL, [summary["source"]]))
     return summary, findings
 
@@ -1389,10 +1427,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         ctx.note("D2: no --ca-data folder; factors unchecked and moves not explained by results")
         findings.append(finding("reference_missing", FAIL, ["ca-data"]))
     with ctx.store.connect(stored_adjustment(ctx.session)) as con:
-        paid = dividends_by_chain(stored, chains(stored_links(ctx.session)))
+        heads = chains(stored_links(ctx.session))
+        paid = dividends_by_chain(stored, heads)
         summary["moves"], move_findings = _moves(ctx, con, announcements, members, paid, exceptions)
         findings += move_findings
-        summary["second_source"], second = _second_source(ctx, con, members)
+        summary["second_source"], second = _second_source(ctx, con, members, heads)
         findings += second
     summary["excepted"] = exceptions.summary()
     result = check_result("D2", summary, [*findings, *exceptions.findings()])

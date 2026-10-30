@@ -412,7 +412,7 @@ pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_uni
 `dividends/ca_*.json`, `results_announcements_*`), each demerger factor against the company's
 published cost-of-acquisition split (`d2_cost_splits.csv` beside the exceptions; a book-value
 apportionment, so a far one warns), the adjusted series' moves over 20% and a seeded sample of
-yearly total returns against Yahoo Finance; D3 NIFTY 500 membership vs the
+yearly price returns (2022-2025, the depth Fyers serves) against Fyers' daily history; D3 NIFTY 500 membership vs the
 parsed notices and archived lists (`--notices`: `changes_parsed.json`, `overrides.json`); D4 the
 5-minute bars vs the Kotak raw files (`--kotak`: the refused days classified, and a seeded sample
 of stored days compared bar by bar); D5 results `public_at` vs NSE's dissemination times
@@ -439,11 +439,11 @@ check without its reference fails
 (`reference_missing` and the like); a span a reference does not reach fails or limits the
 check's coverage, never warns. `--fetch` downloads a missing public reference file once, two
 seconds apart, into `verify_reference/<group>/`, each file written once (NSE archives, the
-closed-day probes as one new file per run, Wayback captures, niftyindices, Yahoo); without it only kept files are read. The full window
-(2011-06-22 to the last bar) takes about 20 minutes. Yahoo refuses a client that asks
-often (HTTP 429) for hours: `python -m app.hat.data.verify.yahoo [--hours H]` asks D2's sample
-one symbol every 20 seconds, waits 15 minutes doubling to 2 hours after a refusal, and keeps each
-answer once, so a rerun resumes; run it before D2 when its sample is not yet kept.
+closed-day probes as one new file per run, Wayback captures, niftyindices); without it only kept files are read. The full window
+(2011-06-22 to the last bar) takes about 20 minutes. D2's Fyers sample is downloaded apart,
+after a Fyers login from the app (it never logs in or refreshes the token): `python -m
+app.hat.data.verify.fyers` asks one request every 6 seconds into `verify_reference/fyers/`, keeps
+each answer once and stops at the first refusal, so a rerun asks only what is missing.
 
 The report (`verify.json`, `verify.md`) goes to `HAT_DATA_ROOT/audits/verify-<date>/` (a run of
 fewer checks or a shorter window: `verify-<date>-<checks>-<from>-<to>/`; `--report` names a folder

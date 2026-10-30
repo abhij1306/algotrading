@@ -18,13 +18,13 @@ from app.hat.data.verify import (
     adjustments,
     bars5m,
     filings,
+    fyers,
     membership,
     rawbars,
     references,
     series,
     sessions,
     snapshot,
-    yahoo,
 )
 from app.hat.data.verify.adjustments import RefAction, StoredAction
 from app.hat.data.verify.exceptions import Excepted, Exceptions, read_exceptions
@@ -557,42 +557,49 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
 
 
 def test_d2_second_source_returns_by_calendar_year() -> None:
-    # Yahoo's monthly bars start at local midnight: 1 Jan 2023 IST is 31 Dec 2022 UTC
-    months = [datetime(2021, 12, 1), datetime(2022, 12, 1), datetime(2023, 1, 1)]
-    stamps = [int(m.replace(tzinfo=IST).timestamp()) for m in months]
+    # Fyers' daily candles are stamped at IST midnight; the base is the December before
+    days = [date(2021, 12, 31), date(2022, 6, 30), date(2022, 12, 30)]
+    stamps = [int(datetime(d.year, d.month, d.day, tzinfo=IST).timestamp()) for d in days]
     answer = {
-        "meta": {"gmtoffset": 19800},
-        "timestamp": stamps,
-        "indicators": {"adjclose": [{"adjclose": [100, 110, 99]}]},
+        "s": "ok",
+        "candles": [[t, 1, 1, 1, c, 9] for t, c in zip(stamps, [100, 90, 110], strict=True)],
     }
-    data = json.dumps({"chart": {"result": [answer]}}).encode()
-    returns = adjustments.yahoo_year_returns(data)
-    assert set(returns) == {2022, 2023}
-    assert round(returns[2022], 6) == 10
-    assert round(returns[2023], 6) == -10
+    closes = adjustments.fyers_closes(json.dumps(answer).encode())
+    assert [d for d, _ in closes] == days
+    theirs = adjustments.year_returns(closes)
+    assert round(theirs[2022], 6) == 10
     ours = adjustments.year_returns([(date(2021, 12, 31), 50.0), (date(2022, 12, 30), 56.0)])
-    rows = adjustments.compare_returns(ours, {2022: 10.0}, 2022, 2022)
-    assert rows == [{"year": 2022, "hat_pct": 12.0, "yahoo_pct": 10.0, "gap_pp": 2.0}]
-    # a 404's "no such symbol" is an answer: kept, and read as no returns
-    missing = b'{"chart":{"result":null,"error":{"code":"Not Found"}}}'
-    assert adjustments.yahoo_year_returns(missing) == {}
-    assert yahoo.keepable(yahoo.Answer(404, missing))
-    assert not yahoo.keepable(yahoo.Answer(429, b"Too Many Requests"))
-    assert not yahoo.keepable(yahoo.Answer(200, b"<html>"))
+    rows = adjustments.compare_returns(ours, theirs, 2022, 2022)
+    assert rows == [{"year": 2022, "hat_pct": 12.0, "fyers_pct": 10.0, "gap_pp": 2.0}]
+    # "no_data" is an answer (kept, no closes); an error is not
+    assert adjustments.fyers_answered({"s": "no_data", "candles": []})
+    assert adjustments.fyers_closes(b'{"s":"no_data","candles":[]}') == []
+    assert not adjustments.fyers_answered({"s": "error", "code": -50})
 
 
-def test_d2_second_source_backs_off_on_refusals() -> None:
-    assert yahoo.backoff_s(1, None) == yahoo.BACKOFF_S
-    assert yahoo.backoff_s(2, None) == 2 * yahoo.BACKOFF_S
-    assert yahoo.backoff_s(10, None) == yahoo.BACKOFF_MAX_S
-    assert yahoo.backoff_s(3, 120.0) == 120.0  # the server's Retry-After
-    assert yahoo.backoff_s(1, 1.0) == yahoo.INTERVAL_S  # never faster than the pace
-    assert yahoo.retry_after_s("300") == 300.0
-    assert yahoo.retry_after_s("Wed, 21 Oct 2026 07:28:00 GMT") is None
-    name, url = adjustments.yahoo_request("M&M", date(2011, 6, 22), date(2026, 10, 29))
-    assert name == "M&M_2011_2026.json"
-    assert "M%26M.NS" in url
-    assert "interval=1mo" in url
+def test_d2_second_source_requests() -> None:
+    name, request = adjustments.fyers_request("NSE:M&M-EQ", 2023)
+    assert name == "M&M-EQ_2023.json"
+    assert (request["range_from"], request["range_to"]) == ("2023-01-01", "2023-12-31")
+    assert request["resolution"] == "D"
+    _, base = adjustments.fyers_request("NSE:M&M-EQ", 2021, base=True)
+    assert base["range_from"] == "2021-12-01"  # only the base's December
+    first, last = adjustments.SECOND_SOURCE_YEARS
+    asked = fyers.requests_for(["NSE:A-EQ"])
+    assert len(asked) == last - first + 2
+    assert asked[0][1]["range_from"] == f"{first - 1}-12-01"
+
+
+def test_d2_second_source_reads_the_chains_current_instrument() -> None:
+    # an old ISIN of a chain is read as the chain's current instrument and its Fyers symbol;
+    # a delisted stock has no Fyers symbol
+    symbols = {"old": "TRENT", "new": "TRENT", "gone": "CORPBANK"}
+    heads = {"old": ("new", 1)}
+    broker = {"new": "NSE:TRENT-EQ"}
+    assert adjustments.fyers_sample(["old", "gone"], symbols, heads, broker) == [
+        ("new", "TRENT", "NSE:TRENT-EQ"),
+        ("gone", "CORPBANK", None),
+    ]
 
 
 def test_d2_dividends_count_against_the_chains_series() -> None:
