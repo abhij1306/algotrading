@@ -21,7 +21,7 @@ surface; the owner's setup acts go through the admin CLI (`admin.py`).
 | `execution` | `HatBroker` and its adapters (Fyers `fyers_*`, Zerodha `kite_*`: payloads, transport, session, tokens, login, IPv4 pin), router, order submit and tags (`submit`), stop placement (`protect`, `stop_plans`), GTT upkeep, trade management (`manage`), fill sync (`fills`), position desk, reconciliation, mode gates |
 | `telegram` | Bot API client, long poll, commands, approval cards, notifier, reports |
 | `ops` | Scheduler, job runner, partitions, retention, runtime lock, the out-of-process health watch (`watch`) |
-| `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`) |
+| `daily` | `HatRuntime` (start, recover, stop), the frozen `Assembly` and job table (`assembly.daily_jobs`), periodic loops, live-day and nightly job bodies (`nightly`, `ca.adjust` in `nightly_ca`, their inputs `nightly_deps`), the live and paper books' report (`books`, on the backtest's `standard.book_metrics`) |
 | `backtest` | Day loop, evidence for the gates (`RunMetrics`), fills, deflated Sharpe, run folders (`folder`, `standard`, `trials`), promotion criteria and review (`criteria`, `review`). `engine` and `risk` import only `spec` and `evidence` |
 | `configs` | The config records (`records`: strategies, versions, risk policy versions, broker accounts, bots, regime models, criterion types), their file store (`store`) and a session's unit of work over them (`unit.configs_of`) |
 | `models`, `api`, `read` | SQLAlchemy `hat_*` models; read-only dashboard and broker login routes (`broker_auth`); the read model the dashboard and Telegram share (no writer import) |
@@ -196,6 +196,7 @@ cut-off and the trigger window's end follow its continuous-trading end (15 minut
 close, for NSE's closing auction), and watchlist.expire and trade.end_session its close.
 | 18:00 on | the nightly chain |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
+| 23:45 | telegram.books: the live and paper books (after ca.adjust) |
 
 Each job has a deadline (`JOB_DEADLINES`); failing, missing or overrunning it raises one URGENT
 alert. Periodic loops (`daily/periodic.py`, every 5 s): live exits and intraday drawdown kills;
@@ -233,7 +234,8 @@ Routes: `GET /`, `GET /ping`; the Fyers login under `/api/hat/auth/fyers` (`GET 
 /url`, `POST /token`, `POST /disconnect`; no callback: paste the `auth_code`), and the same four
 under `/api/hat/auth/zerodha` (paste Kite's `request_token`; `status` says which broker is active); the read-only
 dashboard under `/api/hat` (`/status`, `/watchlist`, `/signals`, `/positions`,
-`/allocations`, `/events`), polled every 15 s by the panels `frontend/app/hat/page.tsx` composes;
+`/allocations`, `/events`; `/books`, the live and paper books, polled every 5 min), polled every
+15 s by the panels `frontend/app/hat/page.tsx` composes;
 the backtests under `/api/hat/backtests` (`/runs`, `/runs/{run_id}` and
 `/runs/{run_id}/files/{name}` read the run folders; `/options`, `/jobs`, and `POST` to start a
 research run or a sweep as a job: the backtest command line in a child process, one at a time,

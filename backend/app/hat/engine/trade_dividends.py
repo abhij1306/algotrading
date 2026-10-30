@@ -36,8 +36,10 @@ from .rescale import EVENT_RESCALED
 
 __all__ = [
     "Step",
+    "dividend_credits",
     "held_at_start",
     "position_dividends",
+    "positions_dividend_credits",
     "shadow_dividend_cash",
     "trade_dividends",
     "trades_dividends",
@@ -73,19 +75,26 @@ def held_at_start(steps: Iterable[Step], day: date) -> int:
     return max(held, 0)
 
 
+def dividend_credits(
+    steps: Sequence[Step], dividends: Iterable[tuple[date, Decimal]], through: date
+) -> list[tuple[date, Decimal]]:
+    """Each credit the position's shares earned from `dividends` ((ex-date, cash per share))
+    going ex on or before `through`, dated on its ex-date; none for a day it held no shares."""
+    out = []
+    for ex_date, cash in sorted(dividends):
+        if ex_date <= through:
+            credit = dividend_credit(held_at_start(steps, ex_date), cash)
+            if credit:
+                out.append((ex_date, credit))
+    return out
+
+
 def position_dividends(
     steps: Sequence[Step], dividends: Iterable[tuple[date, Decimal]], through: date
 ) -> Decimal:
     """The cash the position's shares earned from `dividends` ((ex-date, cash per share)) going
     ex on or before `through`."""
-    return sum(
-        (
-            dividend_credit(held_at_start(steps, ex_date), cash)
-            for ex_date, cash in dividends
-            if ex_date <= through
-        ),
-        ZERO,
-    )
+    return sum((credit for _, credit in dividend_credits(steps, dividends, through)), ZERO)
 
 
 def _steps(session: Session, ids: Sequence[uuid.UUID]) -> dict[uuid.UUID, list[Step]]:
@@ -144,6 +153,25 @@ def trades_dividends(
     steps = _steps(session, [p[0] for p in held])
     out = {
         position_id: position_dividends(steps.get(position_id, []), paid[instrument], through)
+        for position_id, instrument, through in held
+    }
+    return {k: v for k, v in out.items() if v}
+
+
+def positions_dividend_credits(
+    session: Session, positions: Sequence[tuple[uuid.UUID, uuid.UUID, date]]
+) -> dict[uuid.UUID, list[tuple[date, Decimal]]]:
+    """The dated credits (`dividend_credits`) each of `positions` ((position, instrument,
+    through)) earned; a position that earned none is left out."""
+    if not positions:
+        return {}
+    paid = _dividends(session, {instrument for _, instrument, _ in positions})
+    held = [p for p in positions if paid.get(p[1])]
+    if not held:
+        return {}
+    steps = _steps(session, [p[0] for p in held])
+    out = {
+        position_id: dividend_credits(steps.get(position_id, []), paid[instrument], through)
         for position_id, instrument, through in held
     }
     return {k: v for k, v in out.items() if v}

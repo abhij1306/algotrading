@@ -126,6 +126,8 @@ exits; values are typed at runtime, never printed or logged.
 `$ADMIN --help` and `app/hat/admin.py` list every command. Each is one transaction printing JSON;
 a refusal prints `refused: <code>`, exits 2 and writes nothing. Input files are names inside
 `<HAT_DATA_ROOT>/admin/`. `$ADMIN show` lists strategies, versions and sleeves with ids.
+`$ADMIN books [--date YYYY-MM-DD]` prints each bot's live and paper book through that session
+(read-only; Live and paper books).
 Strategies, versions, the risk policy versions, broker accounts and sleeves are config files
 (`<HAT_DATA_ROOT>/admin/config/<kind>/<id>/<rev>.json`, the revision in force in
 `<kind>/in_force.json`, every earlier pointer in `<kind>/pointers/`); the commands are the only
@@ -634,6 +636,22 @@ every date (`inputs_changed`); `features --full` does the same at once. The writ
 lineage and symbol history share the `hat_reference_data` advisory lock; `features` does not take
 it, so run it after they finish.
 
+### Live and paper books
+
+Each bot's real positions (`live`) and shadow ones (`paper`) are one book each, from its first
+allocation with capital (`capital`, or the sleeve's nominal `virtual_capital` for paper), marked
+at the official closes, each dividend credited on its ex-date as the backtest does (`daily/books.py`). The report: equity and the day's P&L, realised P&L
+(net, with dividends) and unrealised, costs, the invested share (today's and the mean; idle cash
+is a failure), each closed trade's R, and the Backtest Result Standard's headline metrics
+(`standard.book_metrics`, the code a run's `run.json` uses, so `win_pct`, `expectancy_r`,
+`max_dd_pct`, `invested_pct`, `cost_share_pct` and the rest compare one to one with the
+strategy's evidence run) against the NIFTY 500 TRI. Telegram sends it at 23:45 IST after
+`ca.adjust` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
+books` show it on demand. It leads with the return against the TRI over the book's sessions;
+CAGR, MAR, Sharpe and Sortino show from 252 sessions (n/a before). A partial sale's gain is
+realised when it fills, as the shadow book's free cash counts it; a position closed with no
+trade result yet is listed under its book.
+
 ## Alerts and failures
 
 Every alert ends with a `Do:` line, what to do (`telegram/render.py:ACTIONS`); the entries
@@ -663,7 +681,8 @@ list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
   (Data verification).
 - **`watch.check_error`**: one check raised (its name and error type); the others ran.
 - **`watch.state_unwritable`** (URGENT, once until a save works): `ops/watch.json` cannot be
-  written, so the watch tells nothing else; free the disk or fix `ops/`.
+  written, so the watch tells nothing else; free the disk or fix `ops/`. With hat_state down
+  too, the run exits 1 and `hat-watch-failed` sends `watch.failed` (at most once a day).
 - **`watch.failed`** (URGENT, once per failure spell): a run failed outright; when it could not
   send that itself, the `OnFailure=` unit `hat-watch-failed` does, at most once a day.
 

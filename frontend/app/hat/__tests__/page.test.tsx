@@ -143,6 +143,48 @@ const EVENTS = [
   },
 ];
 
+const BOOKS = {
+  as_of: "2026-10-20",
+  books: [
+    {
+      bot: "s1",
+      kind: "paper",
+      as_of: "2026-10-20",
+      period_start: "2026-10-01",
+      sessions: 14,
+      start_capital: "100000",
+      equity: "101250.5",
+      day_pnl: "320.25",
+      realised: "800",
+      realised_today: "0",
+      unrealised: "450.5",
+      fees: "120.75",
+      fees_today: "0",
+      position_value: "40100",
+      invested_pct: 39.6,
+      benchmark_return_pct: 0.8,
+      metrics: { trades: 3, expectancy_r: 0.42, total_return_pct: 1.25, win_pct: 66.6667 },
+      positions: [
+        {
+          symbol: "TCS",
+          qty: 10,
+          avg_entry: "4000",
+          initial_stop: "3800",
+          current_stop: "3875.5",
+          mark: "4012.25",
+          value: "40122.5",
+          unrealised: "102.5",
+          open_r: "0.06125",
+          opened: "2026-10-15",
+          realised: "0",
+        },
+      ],
+      trades: [],
+      missing_results: [],
+    },
+  ],
+};
+
 const ROUTES: Record<string, Route> = {
   "/api/hat/status": () => Response.json(STATUS),
   "/api/hat/allocations": () => Response.json(ALLOCATIONS),
@@ -150,6 +192,7 @@ const ROUTES: Record<string, Route> = {
   "/api/hat/positions": () => Response.json(POSITIONS),
   "/api/hat/events": () => Response.json(EVENTS),
   "/api/hat/signals": () => Response.json(SIGNALS),
+  "/api/hat/books": () => Response.json(BOOKS),
 };
 
 function stubBackend(routes: Record<string, Route>) {
@@ -296,6 +339,30 @@ describe("HatPage", () => {
     expect(screen.getAllByRole("alert")).toEqual([banner]);
     // The stale values stay on screen, dimmed.
     expect(within(positions).getByText("3,950.25").closest(".opacity-60")).not.toBeNull();
+  });
+
+  it("shows each book with its P&L, invested share and return against the TRI", async () => {
+    stubBackend(ROUTES);
+    renderPage();
+
+    const books = await screen.findByRole("region", { name: "Books" });
+    expect(await within(books).findByText("1,01,250.50")).toBeInTheDocument();
+    expect(within(books).getByText("39.60%")).toBeInTheDocument();
+    expect(within(books).getByText("1.25%")).toBeInTheDocument();
+    expect(within(books).getByText("0.80%")).toBeInTheDocument();
+    expect(within(books).getByText("paper")).toBeInTheDocument();
+  });
+
+  it("opens a book's details with each open position's mark and stop", async () => {
+    stubBackend(ROUTES);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Details of the paper book of s1" }));
+
+    const drawer = await screen.findByRole("dialog", { name: "s1 · paper" });
+    const open = within(drawer).getByText(/4,012\.25/);
+    expect(open.textContent).toContain("stop 3,875.50");
+    expect(within(drawer).getByText(/CAGR, MAR, Sharpe, Sortino from 252/)).toBeInTheDocument();
   });
 
   it("opens a signal's details in a drawer", async () => {

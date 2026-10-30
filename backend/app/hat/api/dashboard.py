@@ -3,7 +3,9 @@
 Every route is a GET that reads Postgres and changes nothing: Telegram is the control surface
 (kill, re-arm, mode, flatten), the dashboard only shows. `/status` reports what the database
 holds now: bots with their mode and manage-only reasons, the kill switches, the latest regime,
-today's broker sessions, today's job runs and the latest `feed.stale` of the day.
+today's broker sessions, today's job runs and the latest `feed.stale` of the day. `/books` is
+each live and paper book through the last finished session (`daily.books`, on the official
+closes in the bar store).
 
 Money, weights and scores are exact decimals and leave as strings, never floats. A failed read
 answers a fixed message; database text never reaches the client.
@@ -30,6 +32,9 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from ...database import get_db
+from ...paths import HAT_DATA_ROOT
+from ..daily import books as daily_books
+from ..data.store import DATASET_BARS, DataStore
 from ..engine.confidence import stored_basis
 from ..engine.portfolio.regime import RegimeState
 from ..events import recorded_for
@@ -478,6 +483,129 @@ def _events(session: Session, limit: int) -> list[EventView]:
     ]
 
 
+class BookPositionView(BaseModel):
+    symbol: str
+    qty: int
+    avg_entry: str
+    initial_stop: str
+    current_stop: str
+    mark: str | None
+    value: str
+    unrealised: str
+    open_r: str | None
+    opened: date
+    realised: str
+
+
+class BookTradeView(BaseModel):
+    symbol: str
+    entry: date
+    exit: date
+    hold: int
+    exit_reason: str
+    net_pnl: str
+    fees: str
+    r: str
+
+
+class BookView(BaseModel):
+    """One live or paper book: money as exact strings; `metrics` the Backtest Result
+    Standard's headline metrics, as a run's `run.json` holds them."""
+
+    bot: str
+    kind: str
+    as_of: date
+    period_start: date
+    sessions: int
+    start_capital: str
+    equity: str
+    day_pnl: str
+    realised: str
+    realised_today: str
+    unrealised: str
+    fees: str
+    fees_today: str
+    position_value: str
+    invested_pct: float | None
+    benchmark_return_pct: float | None
+    metrics: dict[str, float | int | bool | str | None]
+    positions: list[BookPositionView]
+    trades: list[BookTradeView]
+    missing_results: list[str]
+
+
+class BooksResponse(BaseModel):
+    as_of: date
+    books: list[BookView]
+
+
+def _text(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def _book(r: daily_books.BookReport) -> BookView:
+    return BookView(
+        bot=r.bot,
+        kind=r.kind,
+        as_of=r.as_of,
+        period_start=r.period_start,
+        sessions=r.sessions,
+        start_capital=str(r.start_capital),
+        equity=str(r.equity),
+        day_pnl=str(r.day_pnl),
+        realised=str(r.realised),
+        realised_today=str(r.realised_today),
+        unrealised=str(r.unrealised),
+        fees=str(r.fees),
+        fees_today=str(r.fees_today),
+        position_value=str(r.position_value),
+        invested_pct=r.invested_pct,
+        benchmark_return_pct=r.benchmark_return_pct,
+        metrics=dict(r.metrics),
+        positions=[
+            BookPositionView(
+                symbol=p.symbol,
+                qty=p.qty,
+                avg_entry=str(p.avg_entry),
+                initial_stop=str(p.initial_stop),
+                current_stop=str(p.current_stop),
+                mark=_text(p.mark),
+                value=str(p.value),
+                unrealised=str(p.unrealised),
+                open_r=_text(p.open_r),
+                opened=p.opened,
+                realised=str(p.realised),
+            )
+            for p in r.positions
+        ],
+        trades=[
+            BookTradeView(
+                symbol=t.symbol,
+                entry=t.entry,
+                exit=t.exit,
+                hold=t.hold,
+                exit_reason=t.exit_reason,
+                net_pnl=str(t.net_pnl),
+                fees=str(t.fees),
+                r=str(t.r),
+            )
+            for t in r.trades
+        ],
+        missing_results=list(r.missing_results),
+    )
+
+
+def _books(db: Session, now: datetime) -> BooksResponse:
+    """The books through the last stored session on or before today (IST)."""
+    store = DataStore(HAT_DATA_ROOT)
+    today = trade_date_of(now)
+    stored = [d for d in store.days(DATASET_BARS) if d <= today]
+    as_of = stored[-1] if stored else today
+    return BooksResponse(
+        as_of=as_of, books=[_book(r) for r in daily_books.read_books(db, store, as_of)]
+    )
+
+
 # --- routes ------------------------------------------------------------------------------------
 
 
@@ -515,3 +643,10 @@ def hat_allocations(db: Db) -> AllocationsResponse:
 def hat_events(db: Db, limit: Limit = DEFAULT_LIMIT) -> list[EventView]:
     """The latest events of the log, newest first."""
     return _read("events", lambda: _events(db, limit))
+
+
+@router.get("/books", responses=ERRORS)
+def hat_books(db: Db, now: Now) -> BooksResponse:
+    """Each live and paper book through the last stored session: P&L, costs, invested share,
+    trades' R and the headline metrics against the NIFTY 500 TRI."""
+    return _read("books", lambda: _books(db, now))

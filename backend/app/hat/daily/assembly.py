@@ -456,7 +456,7 @@ def build(
         calendar=calendar,
         rotations=rotations,
     )
-    reports = Reports(client, sf, links=parts.links, clock=clock)
+    reports = Reports(client, sf, links=parts.links, clock=clock, store=parts.store)
     telegram = TelegramService(
         client,
         sf,
