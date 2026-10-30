@@ -6,8 +6,9 @@ estimates it (`time`, the default): a gap over (an entry at the open) triggers a
 before any break during the day, and the others break in ascending order of the distance from the
 open to the level, (level - open) / open. Ties keep the watchlist's score order. `score` (the
 PR 12 rule, the highest score first), `rs` (the relative strength score `rs_weighted` of the
-signal night, highest first; one without it last) and `random:K` (a permutation of the score
-order fixed by K and the day) are variants for sensitivity runs. The rule is recorded in the
+signal night, highest first; one without it last), `leader_rs` (the S1 setups' rule: a setup
+tagged `early_leader` first, then `rs`) and `random:K` (a permutation of the score order fixed by
+K and the day) are variants for sensitivity runs. The rule is recorded in the
 run's metrics and `config_digest`.
 
 These functions only order the candidates. Whether a candidate triggers and whether its entry
@@ -26,6 +27,7 @@ from typing import TypeVar
 from .fills import TOUCH
 
 __all__ = [
+    "SLOT_ORDER_LEADER_RS",
     "SLOT_ORDER_RANDOM",
     "SLOT_ORDER_RS",
     "SLOT_ORDER_SCORE",
@@ -38,6 +40,7 @@ __all__ = [
 SLOT_ORDER_TIME = "time"  # the default: the estimated trigger time
 SLOT_ORDER_SCORE = "score"  # the PR 12 rule: the watchlist score, highest first
 SLOT_ORDER_RS = "rs"  # `rs_weighted` of the signal night, highest first
+SLOT_ORDER_LEADER_RS = "leader_rs"  # an `early_leader` setup first, then `rs`
 SLOT_ORDER_RANDOM = "random"  # `random:K`: the score order permuted by the seed K and the day
 # one spelling per seed, so digests agree; ASCII digits only
 _RANDOM = re.compile(r"random:(0|[1-9]\d{0,8})", re.ASCII)
@@ -50,10 +53,10 @@ T = TypeVar("T")
 
 
 def is_slot_order(rule: str) -> bool:
-    """Whether `rule` is `time`, `score`, `rs` or `random:K` with K a whole number written
-    without leading zeros (below 10^9)."""
+    """Whether `rule` is `time`, `score`, `rs`, `leader_rs` or `random:K` with K a whole number
+    written without leading zeros (below 10^9)."""
     return (
-        rule in (SLOT_ORDER_TIME, SLOT_ORDER_SCORE, SLOT_ORDER_RS)
+        rule in (SLOT_ORDER_TIME, SLOT_ORDER_SCORE, SLOT_ORDER_RS, SLOT_ORDER_LEADER_RS)
         or _RANDOM.fullmatch(rule) is not None
     )
 
@@ -78,22 +81,26 @@ def order_slots(
     day: date,
     rank: Callable[[T], tuple[int, Decimal]],
     strength: Callable[[T], Decimal | None] = lambda _: None,
+    leader: Callable[[T], bool] = lambda _: False,
 ) -> list[T]:
     """`candidates` (in the watchlist's score order) in the order they take the slots under
     `rule` on `day`: `time` sorts them stably by `rank` (ties keep the score order), `score`
     keeps them, `rs` sorts them stably by `strength` (the signal night's `rs_weighted`) highest
-    first, those without one last, and `random:K` orders them by the SHA-256 of K, the day and
+    first, those without one last, `leader_rs` puts the `leader` ones (`early_leader`) first and
+    sorts each part as `rs` does, and `random:K` orders them by the SHA-256 of K, the day and
     each one's place in the score order, so a run is reproducible and one day's order does not
     depend on the days before it. An unknown rule raises ValueError."""
     if rule == SLOT_ORDER_TIME:
         return sorted(candidates, key=rank)
     if rule == SLOT_ORDER_SCORE:
         return list(candidates)
-    if rule == SLOT_ORDER_RS:
+    if rule in (SLOT_ORDER_RS, SLOT_ORDER_LEADER_RS):
+        led = rule == SLOT_ORDER_LEADER_RS
 
-        def strongest(candidate: T) -> tuple[bool, Decimal]:
+        def strongest(candidate: T) -> tuple[bool, bool, Decimal]:
+            first = not (led and leader(candidate))
             found = strength(candidate)
-            return (True, Decimal(0)) if found is None else (False, -found)
+            return (first, True, Decimal(0)) if found is None else (first, False, -found)
 
         return sorted(candidates, key=strongest)
     found = _RANDOM.fullmatch(rule)

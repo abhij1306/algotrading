@@ -25,8 +25,9 @@ the bot was opened on (`ScanInputs.used_pivots`). A setup is named by its pivot'
 from __future__ import annotations
 
 import math
+from bisect import bisect_right
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -38,14 +39,23 @@ from ..data.ticks import scaled_tick, tick_for_date
 from ..money import exact
 from .criteria import CONTRACTION_LOW, PIVOT, EvalContext
 from .criteria import book as book_criterion
+from .criteria import setups as setups_criterion
 from .criteria.base import Bars
+from .criteria.setup import RsRankParams, rs_rank
 from .regime_gate import regime_allows_longs
 from .stops import SeriesHistory, StopInputs, history_inputs, plan_stop_at_pivot
-from .strategy.config import Playbook, StopBelowFinalContractionLow, StrategyConfig
+from .strategy.config import (
+    PIVOT_SETUPS,
+    Playbook,
+    StopBelowFinalContractionLow,
+    StrategyConfig,
+)
 from .strategy.scoring import PlaybookEvaluation, StageOutcome, evaluate_playbook, evaluate_stage
-from .trigger import daily_level, needs_setup_level
+from .trigger import daily_level, needs_setup_level, watchlist_levels
 
 __all__ = [
+    "SESSIONS_AHEAD",
+    "EarlierRow",
     "ScanInputs",
     "ScanResult",
     "WatchRow",
@@ -70,7 +80,9 @@ class ScanInputs:
     the bot has an open position in (any state) and `used_pivots` the (instrument, pivot date) of
     every setup a position of the bot was opened on (`setup_taken`). `benchmark` holds the NIFTY
     500's `(date, close)` up to `as_of` and `memo` a run's cache across its nights
-    (`EvalContext`)."""
+    (`EvalContext`). `earlier` holds the rows published for the session `as_of` (`EarlierRow`),
+    and `sessions_ahead` the trading sessions from the trade date on (the valid-until date;
+    without them it is left empty)."""
 
     as_of: date
     members: Collection[str]
@@ -84,6 +96,19 @@ class ScanInputs:
     used_pivots: Collection[tuple[str, date]] = frozenset()
     benchmark: Sequence[tuple[date, float]] = ()
     memo: MutableMapping[Any, Any] | None = None
+    earlier: Sequence[EarlierRow] = ()
+    sessions_ahead: Sequence[date] = ()
+
+
+@dataclass(frozen=True)
+class EarlierRow:
+    """A row of the watchlist published for the session `as_of` (the night before), which a
+    playbook's validity window may carry on (`Playbook.valid_sessions`)."""
+
+    playbook: str
+    instrument_id: str
+    score: float
+    criteria_results: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -97,6 +122,8 @@ class WatchRow:
     pivot: Decimal | None = None
     planned_stop: Decimal | None = None
     adtr: Decimal | None = None
+    setup_type: str | None = None
+    valid_until: date | None = None
 
 
 @dataclass(frozen=True)
@@ -167,11 +194,15 @@ def setup_levels(playbook: Playbook, evaluation: PlaybookEvaluation) -> dict[str
 
 
 def criteria_results(
-    playbook: Playbook, evaluation: PlaybookEvaluation, pivot_on: date | None = None
+    playbook: Playbook,
+    evaluation: PlaybookEvaluation,
+    pivot_on: date | None = None,
+    setup: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The stored `criteria_results`: the stages in stage order, stopping at the first that
     failed (HAT-CRIT-010), the setup levels (`setup_levels`, text decimals, a level the setup
-    did not expose left out) and, when known, the setup's `pivot_date` (ISO)."""
+    did not expose left out), when known the setup's `pivot_date` (ISO) and its `setup`
+    summary (`setup_summary`)."""
     levels = {k: str(v) for k, v in setup_levels(playbook, evaluation).items()}
     results: dict[str, Any] = {
         "stages": [_stage_json(s) for s in evaluation.stages],
@@ -179,7 +210,74 @@ def criteria_results(
     }
     if pivot_on is not None:
         results["pivot_date"] = pivot_on.isoformat()
+    if setup:
+        results["setup"] = dict(setup)
     return results
+
+
+# What a setup summary copies from its criteria's extras: the shape and dry-up (a detector's
+# vr ratios or `book_vcp`'s), and the tags of `setup_tags`.
+SUMMARY_KEYS = (
+    "footprint",
+    "contraction_count",
+    "base_number",
+    "dryup_mean_vr",
+    "dryup_min_vr",
+    "dryup_mean_ratio",
+    "dryup_min_ratio",
+)
+TAG_KEYS = ("shakeout", "shakeout_undercut_pct", "ath_pivot", "early_leader", "stage")
+# The setup type a criterion's pass names when it does not say (`book_vcp`'s base is a VCP).
+SETUP_NAMES = {"book_vcp": "vcp"}
+
+
+def setup_type(evaluation: PlaybookEvaluation) -> str | None:
+    """The setup a passing evaluation found: the `setup` its detector named, else the first
+    passed pivot setup criterion's type (`SETUP_NAMES`); None without one."""
+    for stage in evaluation.stages:
+        if stage.stage != "setup":
+            continue
+        for outcome in stage.outcomes:
+            if not outcome.result.passed:
+                continue
+            named = outcome.result.extras.get("setup")
+            if isinstance(named, str):
+                return named
+            if outcome.type in PIVOT_SETUPS:
+                return SETUP_NAMES.get(outcome.type, outcome.type)
+    return None
+
+
+def setup_summary(
+    evaluation: PlaybookEvaluation,
+    ctx: EvalContext,
+    pivot: Decimal | None,
+    stop: Decimal | None,
+) -> dict[str, Any]:
+    """The watchlist fields of a setup (plan "Daily scan"): its type, pivot, stop and stop %,
+    the eligible RS rank, the shape and dry-up its criteria logged (`SUMMARY_KEYS`) and the tags
+    (`TAG_KEYS`); a field without a value is left out."""
+    out: dict[str, Any] = {}
+    kind = setup_type(evaluation)
+    if kind is not None:
+        out["setup_type"] = kind
+    if pivot is not None:
+        out["pivot"] = str(pivot)
+    if stop is not None:
+        out["stop"] = str(stop)
+        if pivot:
+            out["stop_pct"] = float((pivot - stop) / pivot * 100)
+    rs = rs_rank(ctx, RsRankParams(basis="eligible")).value
+    if rs is not None:
+        out["rs_rank"] = rs
+    for stage in evaluation.stages:
+        for outcome in stage.outcomes if stage.stage == "setup" else ():
+            if not outcome.result.passed:
+                continue
+            keys = TAG_KEYS if outcome.type == "setup_tags" else SUMMARY_KEYS
+            extras = _json_extras(outcome.result.extras)
+            out.update({k: extras[k] for k in keys if k in extras and k not in out})
+    return out
 
 
 def pivot_date(history: Bars, pivot: Decimal | None) -> date | None:
@@ -220,7 +318,7 @@ def _extra(evaluation: PlaybookEvaluation, key: str) -> Decimal | None:
 
 def _planned_stop(
     playbook: Playbook,
-    evaluation: PlaybookEvaluation,
+    contraction_low: Decimal | None,
     pivot: Decimal | None,
     ctx: EvalContext,
 ) -> Decimal | None:
@@ -233,7 +331,6 @@ def _planned_stop(
     if pivot is None or tick is None:
         return None
     rule = playbook.stop
-    contraction_low = _extra(evaluation, CONTRACTION_LOW)
     if isinstance(rule, StopBelowFinalContractionLow) and contraction_low is None:
         return None
     history = ctx.history
@@ -282,7 +379,8 @@ def _gate(criterion: str) -> str:
 
 def funnel_gates(playbook: Playbook) -> tuple[str, ...]:
     """The setup's gates in evaluation order: its enabled hard criteria, the trend template's
-    checks as one gate, `book_vcp` as its own gates (`book.GATES`), a repeated gate once."""
+    checks as one gate, `book_vcp` and the S1 setups as their own gates (`book.GATES`,
+    `setups.GATES`), a repeated gate once."""
     gates: list[str] = []
     criteria = sorted((i for i in playbook.setup.criteria if i.enabled), key=lambda i: i.order)
     for instance in criteria:
@@ -290,6 +388,8 @@ def funnel_gates(playbook: Playbook) -> tuple[str, ...]:
             continue
         if instance.type == "book_vcp":
             names = [gate for gate, _ in book_criterion.GATES]
+        elif instance.type in setups_criterion.GATES:
+            names = [gate for gate, _ in setups_criterion.GATES[instance.type]]
         else:
             names = [_gate(instance.type)]
         gates.extend(n for n in names if n not in gates)
@@ -309,6 +409,8 @@ def _stopped_gate(evaluation: PlaybookEvaluation) -> str | None:
         return "setup"
     if failed.type == "book_vcp":
         return book_criterion.gate_of(failed.result.reason)
+    if failed.type in setups_criterion.GATES:
+        return setups_criterion.gate_of(failed.type, failed.result.reason)
     return _gate(failed.type)
 
 
@@ -348,18 +450,194 @@ def _scan_playbook(
             _count(funnel, gates, "watchlist")
             continue
         _count(funnel, gates, None)
+        stop = _planned_stop(playbook, _extra(evaluation, CONTRACTION_LOW), pivot, ctx)
+        summary = setup_summary(evaluation, ctx, pivot, stop)
         rows.append(
             WatchRow(
                 playbook=playbook.name,
                 instrument_id=instrument_id,
                 score=evaluation.stages[-1].score,
-                criteria_results=criteria_results(playbook, evaluation, pivot_on),
+                criteria_results=criteria_results(playbook, evaluation, pivot_on, summary),
                 pivot=pivot,
-                planned_stop=_planned_stop(playbook, evaluation, pivot, ctx),
+                planned_stop=stop,
                 adtr=exact(adtr.get(instrument_id), floats=True),
+                setup_type=summary.get("setup_type"),
             )
         )
     return rows, funnel
+
+
+# --- the trigger validity window (S1 setups) --------------------------------------------------
+
+WINDOW = "window"
+# The sessions a scan's `sessions_ahead` needs: the longest validity window (`valid_sessions`).
+SESSIONS_AHEAD = 20
+_LEVEL_STEP = Decimal("0.000001")
+
+
+def found_on(criteria_results: Mapping[str, Any]) -> date | None:
+    """The night a windowed row's setup was first found."""
+    window = criteria_results.get(WINDOW)
+    value = window.get("found_on") if isinstance(window, Mapping) else None
+    return date.fromisoformat(value) if isinstance(value, str) else None
+
+
+def window_session(dates: Sequence[date], first: date) -> int:
+    """Which session of its window the next session is for a setup found on `first`: 1 + the
+    instrument's sessions after `first` through the scan date (`dates`, sorted)."""
+    return 1 + len(dates) - bisect_right(dates, first)
+
+
+def _in_window(row: WatchRow, first: date, session: int, total: int, *, carried: bool) -> WatchRow:
+    results = dict(row.criteria_results)
+    results[WINDOW] = {"found_on": first.isoformat(), "session": session, "sessions": total}
+    if carried:
+        results["carried"] = True
+    return replace(row, criteria_results=results)
+
+
+def windowed(
+    playbook: Playbook,
+    inputs: ScanInputs,
+    contexts: Mapping[str, tuple[EvalContext, StageOutcome]],
+    fresh: Sequence[WatchRow],
+    adtr: Mapping[str, Any],
+) -> list[WatchRow]:
+    """The playbook's rows under its validity window: a setup found on night D is valid for
+    the sessions D+1..D+`valid_sessions`. A row found again with the same `pivot_date` keeps
+    the night it was first found; a new pivot starts a new window. A setup of the night before
+    that the scan does not find again is carried on (`carry`) unless cancelled."""
+    total = playbook.valid_sessions
+    if total is None:
+        return list(fresh)
+    before = {r.instrument_id: r for r in inputs.earlier if r.playbook == playbook.name}
+    out: list[WatchRow] = []
+    for row in fresh:
+        first = inputs.as_of
+        earlier = before.get(row.instrument_id)
+        pivot_on = row.criteria_results.get("pivot_date")
+        if earlier is not None and pivot_on is not None:
+            if earlier.criteria_results.get("pivot_date") == pivot_on:
+                first = found_on(earlier.criteria_results) or first
+        session = window_session(contexts[row.instrument_id][0].history.dates, first)
+        if session <= total:
+            out.append(_in_window(row, first, session, total, carried=False))
+    found = {r.instrument_id for r in fresh}
+    for instrument_id in sorted(before.keys() - found):
+        carried = carry(playbook, inputs, contexts.get(instrument_id), before[instrument_id])
+        if carried is not None:
+            adtr_value = exact(adtr.get(instrument_id), floats=True)
+            out.append(replace(carried, adtr=adtr_value))
+    return out
+
+
+def carry(
+    playbook: Playbook,
+    inputs: ScanInputs,
+    found: tuple[EvalContext, StageOutcome] | None,
+    earlier: EarlierRow,
+) -> WatchRow | None:
+    """The night before's row of a setup the scan did not find again, for the next session,
+    or None when its window is over, the instrument has no bar tonight or fails the universe
+    stage, it is held or its pivot was used (`setup_taken`), or it is cancelled: tonight's
+    close below its stop, or a swing high above its pivot confirmed since it was found
+    (`setups.swing_high_above`). Its levels are read again on tonight's scale, through the
+    high of its `pivot_date` (a dividend rescales the history)."""
+    total = playbook.valid_sessions
+    results = earlier.criteria_results
+    first = found_on(results)
+    pivot_text = results.get("pivot_date")
+    if found is None or total is None or first is None or not isinstance(pivot_text, str):
+        return None
+    ctx, universe = found
+    history = ctx.history
+    pivot_on = date.fromisoformat(pivot_text)
+    session = window_session(history.dates, first)
+    if not universe.passed or session > total or pivot_on not in history.dates:
+        return None
+    if setup_taken(earlier.instrument_id, pivot_on, inputs.held, inputs.used_pivots):
+        return None
+    levels = watchlist_levels(results.get("levels", {}))
+    old_pivot = levels.get(PIVOT)
+    new_pivot = exact(history.high[history.dates.index(pivot_on)], floats=True)
+    if old_pivot is None or new_pivot is None:
+        return None
+    ratio = new_pivot / old_pivot
+    scaled = {
+        k: v if v is None or ratio == 1 else (v * ratio).quantize(_LEVEL_STEP)
+        for k, v in levels.items()
+    }
+    scaled[PIVOT] = new_pivot
+    pivot = daily_level(playbook, scaled)
+    stop = _planned_stop(playbook, scaled.get(CONTRACTION_LOW), pivot, ctx)
+    close = exact(history.close[-1], floats=True)
+    if stop is not None and close is not None and close < stop:
+        return None
+    series = book_criterion.series_of(ctx)
+    start = bisect_right(history.dates, first)
+    if series is None or setups_criterion.swing_high_above(series, start, new_pivot):
+        return None
+    out = dict(results)
+    out["levels"] = {k: str(v) for k, v in scaled.items() if v is not None}
+    setup = dict(results.get("setup") or {})
+    if setup:
+        setup.update({"pivot": str(pivot)} if pivot is not None else {})
+        setup.pop("stop", None)
+        setup.pop("stop_pct", None)
+        if stop is not None and pivot:
+            setup.update(stop=str(stop), stop_pct=float((pivot - stop) / pivot * 100))
+        out["setup"] = setup
+    row = WatchRow(
+        playbook=playbook.name,
+        instrument_id=earlier.instrument_id,
+        score=earlier.score,
+        criteria_results=out,
+        pivot=pivot,
+        planned_stop=stop,
+        setup_type=setup.get("setup_type"),
+    )
+    return _in_window(row, first, session, total, carried=True)
+
+
+def _valid_until(row: WatchRow, ahead: Sequence[date]) -> WatchRow:
+    """The row with its last valid session: the trade date, or under a validity window the
+    window's last session (None when `ahead` does not reach it)."""
+    window = row.criteria_results.get(WINDOW)
+    left = 0
+    if isinstance(window, Mapping):
+        left = int(window["sessions"]) - int(window["session"])
+    return replace(row, valid_until=ahead[left] if left < len(ahead) else None)
+
+
+def with_setup_tags(config: StrategyConfig, rows: Sequence[WatchRow]) -> list[WatchRow]:
+    """Each row's setup summary with `setup_tags`, every setup the night found for its
+    instrument; under `one_setup_per_instrument` only each instrument's first row is kept, by
+    playbook order in the config and a setup found tonight before a carried one."""
+    tags: dict[str, set[str]] = {}
+    for row in rows:
+        tags.setdefault(row.instrument_id, set()).add(row.setup_type or row.playbook)
+    order = {p.name: n for n, p in enumerate(config.playbooks)}
+    ranked = sorted(
+        rows,
+        key=lambda r: (
+            r.instrument_id,
+            order.get(r.playbook, len(order)),
+            bool(r.criteria_results.get("carried")),
+        ),
+    )
+    out: list[WatchRow] = []
+    kept: set[str] = set()
+    for row in ranked:
+        if config.one_setup_per_instrument and row.instrument_id in kept:
+            continue
+        kept.add(row.instrument_id)
+        setup = row.criteria_results.get("setup")
+        if isinstance(setup, Mapping):
+            results = dict(row.criteria_results)
+            results["setup"] = {**setup, "setup_tags": sorted(tags[row.instrument_id])}
+            row = replace(row, criteria_results=results)
+        out.append(row)
+    return out
 
 
 def _member_bars(inputs: ScanInputs, members: Sequence[str]) -> dict[str, Any]:
@@ -438,7 +716,11 @@ def scan_bot(config: StrategyConfig, inputs: ScanInputs) -> ScanResult:
         if playbook.preopen:
             continue
         found, counted = _scan_playbook(config, playbook, inputs, contexts, adtr)
+        if playbook.valid_sessions is not None:
+            found = windowed(playbook, inputs, contexts, found, adtr)
         rows.extend(found)
         funnel[playbook.name] = counted
+    rows = [_valid_until(row, inputs.sessions_ahead) for row in rows]
+    rows = with_setup_tags(config, rows)
     rows.sort(key=lambda r: (-r.score, r.playbook, r.instrument_id))
     return ScanResult(tuple(rows), True, len(per_instrument), funnel)

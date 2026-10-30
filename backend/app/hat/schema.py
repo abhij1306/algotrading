@@ -366,6 +366,9 @@ CREATE OR REPLACE TRIGGER hat_event_no_truncate
     "CREATE INDEX IF NOT EXISTS hat_mode_change_bot ON hat_mode_change (bot_id)",
     "CREATE INDEX IF NOT EXISTS hat_telegram_message_sent_at ON hat_telegram_message (sent_at)",
     "CREATE INDEX IF NOT EXISTS hat_command_log_received_at ON hat_command_log (received_at)",
+    # S1 setups: a database created before the columns (hat_state) gains them
+    "ALTER TABLE hat_watchlist_entry ADD COLUMN IF NOT EXISTS setup_type text",
+    "ALTER TABLE hat_watchlist_entry ADD COLUMN IF NOT EXISTS valid_until date",
 )
 
 PG_DDL: tuple[str, ...] = LIVE_DDL + STATE_DDL

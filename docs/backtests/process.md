@@ -320,7 +320,7 @@ line flag sets the same for one run or every variant.
 | Ladder off (one size from day one) | `flat_ladder: true` | `--flat-ladder` |
 | Ladder levels, open risk, cluster cap, entries and stopouts per day, cooldown, ADV cap, multiplier bounds | `policy_set: ['exposure_ladder.L2.max_positions=6', 'global_open_risk_pct=0.06', 'cooldown_sessions=5']` | `--set-policy`, `--cooldown-sessions` (wins over the policy's) |
 | A whole candidate policy | `policy: cand.yaml` | `--policy` |
-| Slot order of a capped day: `time` (default), `score`, `rs` (the signal night's `rs_weighted`, highest first; promotion allows `time` and `rs`), `random:K` | `slot_order: rs` | `--slot-order` |
+| Slot order of a capped day: `time` (default), `score`, `rs` (the signal night's `rs_weighted`, highest first), `leader_rs` (a setup tagged `early_leader` first, then `rs`; promotion allows `time`, `rs` and `leader_rs`), `random:K` | `slot_order: rs` | `--slot-order` |
 | Entry fill rule, ambiguous days, suspension markdown | `entry_fill: touch`, `ambiguous: pessimistic`, `suspension_sessions: 3` | `--entry-fill`, `--ambiguous`, `--suspension-sessions` |
 | Start capital | `start_capital: 2500000` | `--start-capital` |
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |

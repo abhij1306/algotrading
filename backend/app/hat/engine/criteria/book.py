@@ -390,7 +390,8 @@ TEMPLATE_CHECKS = (
 )
 
 
-def _sma(c: np.ndarray, length: int) -> np.ndarray:
+def sma_series(c: np.ndarray, length: int) -> np.ndarray:
+    """The simple moving average of `c` over `length` bars, NaN until the window is full."""
     out = np.full(len(c), np.nan)
     if len(c) >= length:
         sums = np.cumsum(np.insert(c, 0, 0.0))
@@ -414,7 +415,7 @@ def template_checks(
     the SMA200 is one check) in doubles, evaluable where every window is full, a check False
     where not; and whether the close is below its SMA200 (where that SMA exists)."""
     c = np.asarray(close, dtype=float)
-    fast, mid, slow = _sma(c, SMA_FAST), _sma(c, SMA_MID), _sma(c, SMA_SLOW)
+    fast, mid, slow = sma_series(c, SMA_FAST), sma_series(c, SMA_MID), sma_series(c, SMA_SLOW)
     slow_before = np.full(len(c), np.nan)
     slow_before[SMA_RISING_SESSIONS:] = slow[:-SMA_RISING_SESSIONS]
     low52 = _rolling(np.asarray(low, dtype=float), WINDOW_52W, highest=False)
@@ -502,12 +503,18 @@ def footprint(sessions: int, contractions: Sequence[Contraction]) -> str:
     """'<weeks>W <Depth_1>/<Depth_final> <count>T', weeks the base's sessions / 5 and depths
     in whole percent, each rounded half up (e.g. '8W 22/2 3T')."""
 
+    first, final = contractions[0].depth_pct, contractions[-1].depth_pct
+    return footprint_text(sessions, first, final, len(contractions))
+
+
+def footprint_text(sessions: int, first: Decimal, final: Decimal, count: int) -> str:
+    """'<weeks>W <first>/<final> <count>T', weeks `sessions` / 5 and the depths in whole
+    percent, each rounded half up."""
+
     def whole(value: Decimal) -> int:
         return int(value.quantize(Decimal(1), rounding=ROUND_HALF_UP))
 
-    weeks = whole(Decimal(sessions) / 5)
-    first, final = contractions[0].depth_pct, contractions[-1].depth_pct
-    return f"{weeks}W {whole(first)}/{whole(final)} {len(contractions)}T"
+    return f"{whole(Decimal(sessions) / 5)}W {whole(first)}/{whole(final)} {count}T"
 
 
 def shakeout(contractions: Sequence[Contraction]) -> bool:
@@ -520,7 +527,7 @@ def shakeout(contractions: Sequence[Contraction]) -> bool:
 
 
 @dataclass(frozen=True)
-class _Series:
+class Series:
     dates: list[date]
     high: list[float]
     low: list[float]
@@ -528,11 +535,11 @@ class _Series:
     volume: list[float | None]
 
 
-def _series(ctx: EvalContext) -> _Series | None:
+def series_of(ctx: EvalContext) -> Series | None:
     bars = ctx.history
     if not len(bars) or any(v is None for v in (*bars.high, *bars.low, *bars.close)):
         return None
-    return _Series(
+    return Series(
         bars.dates,
         [float(v) for v in bars.high if v is not None],
         [float(v) for v in bars.low if v is not None],
@@ -542,7 +549,7 @@ def _series(ctx: EvalContext) -> _Series | None:
 
 
 def _base_cache(
-    ctx: EvalContext, series: _Series, params: BookVcpParams
+    ctx: EvalContext, series: Series, params: BookVcpParams
 ) -> MutableMapping[date, tuple[date, date] | None]:
     """The run's cache of earlier dates' geometry for this instrument (a fresh map outside a
     run): date -> (H0 date, pivot bar date) or None, each computed once from the history the
@@ -561,7 +568,7 @@ def _base_cache(
 
 def _bases_since(
     ctx: EvalContext,
-    series: _Series,
+    series: Series,
     threshold: Sequence[float],
     start: int,
     end: int,
@@ -587,6 +594,22 @@ def _bases_since(
     return out
 
 
+def base_number(
+    ctx: EvalContext, series: Series, threshold: Sequence[float], h0: int, params: BookVcpParams
+) -> tuple[int, bool]:
+    """(the base number of the base starting at bar `h0` on the signal bar, stage2_start_unknown):
+    1 + the earlier bases of rule G counted since `count_start`."""
+    end = len(series.dates) - 1
+    evaluable, passes, below = template_passes(series.high, series.low, series.close)
+    start, unknown = count_start(evaluable, passes, below, end, params.stage2_fail_sessions)
+    earlier = 0
+    if start is not None:
+        bases = _bases_since(ctx, series, threshold, start, end, params)
+        current = series.dates[h0]
+        earlier = earlier_bases(bases, series.close, series.high, start, end, current)
+    return 1 + earlier, unknown
+
+
 def _pivot_bar(high: Sequence[float], final: Contraction) -> int:
     """The first bar of the final contraction whose high is its highest."""
     window = high[final.start : final.end + 1]
@@ -602,7 +625,7 @@ def book_vcp(ctx: EvalContext, params: BookVcpParams) -> CriterionResult:
     signal's log: `footprint`, the contractions, `shakeout`, the time compression, the dry-up
     ratios, the relative correction, `base_number` and `stage2_start_unknown`; or fails with the
     first rule broken (`GATES`)."""
-    series = _series(ctx)
+    series = series_of(ctx)
     if series is None:
         return no_data()
     end = len(series.dates) - 1
@@ -636,14 +659,7 @@ def book_vcp(ctx: EvalContext, params: BookVcpParams) -> CriterionResult:
     if idx_depth is not None and relative_fault(first_depth, idx_depth, params):
         return verdict(False, rc_ratio, "correction_too_deep_vs_index")
     # G: base count
-    evaluable, passes, below = template_passes(series.high, series.low, series.close)
-    start, unknown = count_start(evaluable, passes, below, end, params.stage2_fail_sessions)
-    earlier = 0
-    if start is not None:
-        bases = _bases_since(ctx, series, threshold, start, end, params)
-        current = series.dates[geo.h0]
-        earlier = earlier_bases(bases, series.close, series.high, start, end, current)
-    number = 1 + earlier
+    number, unknown = base_number(ctx, series, threshold, geo.h0, params)
     if params.max_base_number is not None and number > params.max_base_number:
         return verdict(False, float(number), "late_stage_base")
     sessions = end - geo.h0 + 1

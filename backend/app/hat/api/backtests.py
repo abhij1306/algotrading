@@ -168,7 +168,7 @@ class BacktestVariantStart(BaseModel):
     risk_pct: str | None = None  # a decimal fraction, e.g. "0.005"
     max_positions: int | None = None
     sleeve_weight: str | None = None  # a decimal in (0, 1]
-    slot_order: str | None = None  # time, score, rs or random:K
+    slot_order: str | None = None  # time, score, rs, leader_rs or random:K
 
 
 class BacktestStart(BaseModel):

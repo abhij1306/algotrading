@@ -42,7 +42,14 @@ GAP_UP = "gap_up"
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PLAYBOOK = "default"
 # The setup criteria that publish the pivot `close_vs_pivot` reads (HAT-CRIT-123).
-PIVOT_SETUPS = ("vcp", "book_vcp")
+PIVOT_SETUPS = (
+    "vcp",
+    "book_vcp",
+    "book_cheat",
+    "book_cup_handle",
+    "book_power_play",
+    "book_primary_base",
+)
 MAX_INSTANCES = 40
 RISK_KEY = re.compile(
     r"risk|capital|allocation|p_max|position|qty|quantity|leverage|drawdown|stopout"
@@ -537,6 +544,10 @@ class Playbook(Model):
     exits: list[ExitRule] | None = Field(
         default=None, min_length=1, max_length=20, exclude_if=lambda v: v is None
     )
+    # The trigger validity window (S1 setups): a setup found on night D stays on the watchlist
+    # for the sessions D+1..D+`valid_sessions` unless cancelled (`scan`); unset, a row is valid
+    # for the next session only and the scan finds it afresh each night.
+    valid_sessions: int | None = Field(default=None, ge=1, le=20, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Playbook:
@@ -641,6 +652,9 @@ class StrategyConfig(Model):
     # A rotation strategy (`Rotation`), which has no playbook and no exit rule. Left out of the
     # canonical form when unset, so the stored configs keep their hash.
     rotation: Rotation | None = Field(default=None, exclude_if=lambda v: v is None)
+    # One watchlist row per instrument a night (S1 setups): the first playbook's in config
+    # order, recording every setup found for it (`scan`).
+    one_setup_per_instrument: bool = Field(default=False, exclude_if=lambda v: not v)
 
     @model_validator(mode="after")
     def _check(self) -> StrategyConfig:

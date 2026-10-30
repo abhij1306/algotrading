@@ -157,7 +157,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from bisect import bisect_right
+from bisect import bisect_left, bisect_right
 from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
@@ -192,7 +192,7 @@ from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate
 from ..engine.portfolio.health import Health
 from ..engine.portfolio.universe import members_on
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.scan import ScanInputs, universe_passers
+from ..engine.scan import SESSIONS_AHEAD, ScanInputs, universe_passers
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
 from ..engine.strategy.config import Playbook, StopLowOfDay, StrategyConfig
 from ..models import (
@@ -779,6 +779,8 @@ class _Run:
             series=series,
             benchmark=self.benchmark[: bisect_right(self.benchmark_days, prev)],
             memo=self.leg.scan_memo,
+            # the calendar's sessions from `day` on (a validity window's last session)
+            sessions_ahead=self.days[bisect_left(self.days, day) :][:SESSIONS_AHEAD],
         )
         published = watchlist.scan_and_publish(
             self.session, self.bot_id, inputs, day, _at(prev, _AT_NIGHT)
@@ -1291,7 +1293,12 @@ class _Run:
         def strength(d: _Decision) -> Decimal | None:
             return self.view.feature(prev, str(d.row.instrument_id), "rs_weighted", rounded=False)
 
-        for n, found in enumerate(order_slots(decisions, rule, day, lambda d: d.rank, strength)):
+        def leader(d: _Decision) -> bool:
+            setup = d.row.criteria_results.get("setup")
+            return isinstance(setup, Mapping) and setup.get("early_leader") is True
+
+        ordered = order_slots(decisions, rule, day, lambda d: d.rank, strength, leader)
+        for n, found in enumerate(ordered):
             at = (
                 _at(day, _AT_ENTRY, n) if found.at is None else found.at + timedelta(microseconds=n)
             )

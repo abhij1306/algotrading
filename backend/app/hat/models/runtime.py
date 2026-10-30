@@ -106,6 +106,9 @@ class HatWatchlistEntry(StateBase):
     planned_stop = Column(Money)
     adtr = Column(Money)
     status = Column(Text, nullable=False)
+    # the S1 setup the row is (`scan.setup_type`) and its last valid session (`scan`)
+    setup_type = Column(Text)
+    valid_until = Column(Date)
 
 
 class HatSignal(StateBase):

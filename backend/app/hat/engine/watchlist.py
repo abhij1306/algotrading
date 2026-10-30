@@ -45,8 +45,8 @@ from ..money import require_exact
 from . import lifecycle
 from .botlock import lock_bot
 from .portfolio.universe_service import members_of
-from .scan import ScanInputs, ScanResult, scan_bot
-from .strategy.config import parse_config
+from .scan import EarlierRow, ScanInputs, ScanResult, scan_bot
+from .strategy.config import StrategyConfig, parse_config
 
 __all__ = ["EVENT_PUBLISHED", "Published", "bot_universe_members", "scan_and_publish"]
 
@@ -136,12 +136,40 @@ def _book(
     return held, used
 
 
+def _earlier(
+    session: Session, bot_id: uuid.UUID, config: StrategyConfig, day: date
+) -> tuple[EarlierRow, ...]:
+    """The rows the bot published for the session `day` of its playbooks with a validity window
+    (`Playbook.valid_sessions`), which the scan may carry on."""
+    windowed = [p.name for p in config.playbooks if p.valid_sessions is not None]
+    if not windowed:
+        return ()
+    rows = session.scalars(
+        select(HatWatchlistEntry).where(
+            HatWatchlistEntry.bot_id == bot_id,
+            HatWatchlistEntry.trade_date == day,
+            HatWatchlistEntry.playbook.in_(windowed),
+        )
+    )
+    return tuple(
+        EarlierRow(r.playbook, str(r.instrument_id), float(r.score), r.criteria_results or {})
+        for r in rows
+    )
+
+
 def _with_members(
     inputs: ScanInputs,
     members: frozenset[uuid.UUID],
     book: tuple[frozenset[str], frozenset[tuple[str, date]]],
+    earlier: tuple[EarlierRow, ...],
 ) -> ScanInputs:
-    return replace(inputs, members={str(m) for m in members}, held=book[0], used_pivots=book[1])
+    return replace(
+        inputs,
+        members={str(m) for m in members},
+        held=book[0],
+        used_pivots=book[1],
+        earlier=earlier,
+    )
 
 
 def _already_published(session: Session, bot_id: uuid.UUID, trade_date: date) -> bool:
@@ -166,9 +194,10 @@ def scan_and_publish(
 ) -> Published:
     """Scan `bot_id` as of `inputs.as_of` and publish the watchlist for `trade_date`.
 
-    `inputs.members` is replaced by the bot's universe on `inputs.as_of`, and `inputs.held` and
-    `inputs.used_pivots` by the bot's book (`_book`): the caller chooses neither. Idempotent per
-    (bot, trade date)."""
+    `inputs.members` is replaced by the bot's universe on `inputs.as_of`, `inputs.held` and
+    `inputs.used_pivots` by the bot's book (`_book`) and `inputs.earlier` by the rows it
+    published for `inputs.as_of` (`_earlier`): the caller chooses none. Idempotent per (bot,
+    trade date)."""
     lock_bot(session, bot_id)  # held to commit: a concurrent run waits, then sees our event
     bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.live_version_id is None:
@@ -183,7 +212,10 @@ def scan_and_publish(
         return Published(0, False, "no_universe")
     config = parse_config(version.config)
     members = _tradable_members(session, universe_id, inputs.as_of)
-    result: ScanResult = scan_bot(config, _with_members(inputs, members, _book(session, bot_id)))
+    earlier = _earlier(session, bot_id, config, inputs.as_of)
+    result: ScanResult = scan_bot(
+        config, _with_members(inputs, members, _book(session, bot_id), earlier)
+    )
     for row in result.rows:
         session.add(
             HatWatchlistEntry(
@@ -198,6 +230,8 @@ def scan_and_publish(
                 pivot=row.pivot,
                 planned_stop=row.planned_stop,
                 adtr=row.adtr,
+                setup_type=row.setup_type,
+                valid_until=row.valid_until,
                 status=lifecycle.WATCHLISTED,
             )
         )
