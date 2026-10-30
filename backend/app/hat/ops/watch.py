@@ -419,14 +419,13 @@ def findings(root: Path, now: datetime, runtime: bool) -> list[Finding]:
     """Every finding of this run, in a fixed order; each check on its own (`checked`)."""
     from app.database import state_database_name
 
-    state_up = False
+    answers = {"live": False, "state": False}
 
     def databases() -> list[Finding]:
-        nonlocal state_up
-        live, state_up = _answers(None), _answers(state_database_name())
+        answers.update(live=_answers(None), state=_answers(state_database_name()))
         return [
             Finding(DB_DOWN, f"{DB_DOWN}:{label}", {"database": label})
-            for label, up in (("live", live), ("state", state_up))
+            for label, up in answers.items()
             if not up
         ]
 
@@ -434,7 +433,7 @@ def findings(root: Path, now: datetime, runtime: bool) -> list[Finding]:
     found += checked("verify", lambda: verify_findings(_reports(root)))
     found += checked("disk", lambda: disk_findings(_usage({"data_root": root, "root": Path("/")})))
     found += checked("databases", databases)
-    if runtime and state_up:
+    if runtime and answers["state"]:
         found += checked("heartbeat", lambda: heartbeat_findings(_last_beat(), now))
     return found
 
