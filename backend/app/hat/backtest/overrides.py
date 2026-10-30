@@ -258,6 +258,18 @@ def _same(a: object, b: object) -> bool:
     return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
 
 
+def _leaves_unchanged(doc: Mapping[str, Any], path: str, value: object) -> bool:
+    """Whether setting `path` of the canonical config `doc` to `value`, alone, parses to the
+    same canonical config (a value the model normalises to the one in force among them); a set
+    the model refuses on its own is a change."""
+    alone = copy.deepcopy(dict(doc))
+    set_path(alone, path, value)
+    try:
+        return _same(parse_config(alone).to_json(), parse_config(doc).to_json())
+    except ConfigError:
+        return False
+
+
 @dataclass(frozen=True)
 class Overrides:
     """A run's overrides: config `sets` applied in order, a whole candidate `policy` and the
@@ -320,12 +332,12 @@ class Overrides:
             )
             code = "backtest_bad_override_path" if unknown else "backtest_override_invalid"
             raise OverrideError(code) from None
-        after = config.to_json()
-        for path in changed:
+        for (path, value), where in zip(self.sets, changed, strict=True):
             # a set that leaves its field as it was changes nothing (an appended item, or a field
-            # the canonical form had left out, has no earlier value)
-            old = get_path(before, path)
-            if old is not None and _same(old, get_path(after, path)):
+            # the canonical form had left out, has no earlier value); judged on `before` with
+            # that set alone, since parsing re-sorts list items and an index path may then name
+            # another item
+            if get_path(before, where) is not None and _leaves_unchanged(before, path, value):
                 raise OverrideError(NO_OP)
         return config
 

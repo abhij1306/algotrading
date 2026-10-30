@@ -189,6 +189,27 @@ def test_apply_config_changes_only_the_named_values() -> None:
             unchanged.apply_config(base)
 
 
+def test_a_set_on_an_item_parsing_moves_is_not_a_no_op() -> None:
+    # the appended book_vcp takes vcp's old order, so it sorts into vcp's old index: the vcp
+    # sets are judged on vcp, not on whatever item now sits at its index
+    criteria = "playbooks[default].setup.criteria"
+    config = Overrides(
+        sets=(
+            (f"{criteria}[vcp].enabled", False),
+            (f"{criteria}[vcp].order", 20),
+            (f"{criteria}[+]", {"type": "book_vcp", "stage": "setup", "mode": "hard", "order": 11}),
+        )
+    ).apply_config(seed_config("stage2-contraction-breakout"))
+    vcp = next(c for c in config.playbook("default").setup.criteria if c.type == "vcp")
+    assert (vcp.order, vcp.enabled) == (20, False)
+    # a set to the value in force is still refused
+    for path, value in ((f"{criteria}[vcp].order", 11), ("exits[time_stop].enabled", False)):
+        with pytest.raises(OverrideError, match="backtest_override_no_op"):
+            Overrides(sets=((path, value),)).apply_config(
+                seed_config("stage2-contraction-breakout")
+            )
+
+
 def test_apply_policy_and_record() -> None:
     version = policy_version()
     overrides = Overrides(risk_pct=D("0.0050"), max_positions=10)
