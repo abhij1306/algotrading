@@ -411,9 +411,11 @@ D1 daily bars vs the bhavcopy files under `raw/`; D2 corporate actions vs NSE's 
 pulls (`--ca-data`: `splits_bonus_*`, `rights_issues_*`, `demergers_*`, `etf_unit_actions_*`,
 `dividends/ca_*.json`, `results_announcements_*`), each demerger factor against the company's
 published cost-of-acquisition split (`d2_cost_splits.csv` beside the exceptions; a book-value
-apportionment, so a far one warns), each stored price factor against NSE's own base price that
-day (the bhavcopy's previous close; NSE keeps the raw close on nearly every ex-date, and a base
-it did adjust must agree), the adjusted series' moves over 20% (a band's only when the close is
+apportionment, so a far one warns), each stored price factor against the bhavcopy's previous
+close on the ex-session (raw on nearly every ex-date, so no evidence there and no check of a
+split or bonus factor; one that moved must agree), each split and bonus against the ex-date open,
+the volume either side, the results XBRL share count and screener's paid-up capital (warns on a
+disagreement, fails when none agrees and the open or two kinds disagree), the adjusted series' moves over 20% (a band's only when the close is
 held at the band) and a seeded sample of one stock per company, yearly price returns
 (2022-2025, the depth Fyers serves) against Fyers' daily history (fails under 70% of the sample
 or 250 stock-years compared). The pull's date is its note's `Collected DD-Mon-YYYY` line
