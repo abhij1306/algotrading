@@ -19,8 +19,8 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
-from ..criteria import CriterionResult, EvalContext, evaluate, get_type
-from ..criteria.base import RULE_BOOK_VCP, RULE_STOP_BUFFER
+from ..criteria import CriterionResult, EvalContext, evaluate
+from ..criteria.base import RULE_STOP_BUFFER
 from .config import Instance, Playbook, StopBelowFinalContractionLow, StrategyConfig
 
 EMPTY_SCORE = 1.0  # [OWNER-PENDING] docs silent: no scored criterion means only hard rules decide
@@ -157,13 +157,9 @@ def stop_buffer_pct(playbook: Playbook) -> float:
 def playbook_context(
     playbook: Playbook, ctx: EvalContext, levels: Mapping[str, float] | None = None
 ) -> EvalContext:
-    """`ctx` reading the playbook's own values (`EvalContext.rules`): its stop buffer and,
-    when it has one, its `book_vcp`'s params; with `levels` when given."""
-    rules: dict[str, Any] = {RULE_STOP_BUFFER: stop_buffer_pct(playbook)}
-    vcp = next((i for i in playbook.setup.criteria if i.type == RULE_BOOK_VCP), None)
-    if vcp is not None:
-        rules[RULE_BOOK_VCP] = get_type(RULE_BOOK_VCP).params.model_validate(vcp.params)
-    staged = ctx.with_rules(rules)
+    """`ctx` reading the playbook's own values (`EvalContext.rules`): its stop buffer; with
+    `levels` when given."""
+    staged = ctx.with_rules({RULE_STOP_BUFFER: stop_buffer_pct(playbook)})
     return staged if levels is None else staged.with_levels(levels)
 
 

@@ -49,7 +49,7 @@ from ..money import require_exact
 from . import lifecycle
 from .botlock import lock_bot
 from .portfolio.universe_service import members_of
-from .scan import OPEN, ScanInputs, ScanResult, SetupWindow, WindowKey, scan_bot
+from .scan import OPEN, ScanInputs, ScanResult, SetupWindow, WindowKey, scan_bot, window_key
 from .strategy.config import StrategyConfig, parse_config
 
 __all__ = ["EVENT_PUBLISHED", "Published", "bot_universe_members", "scan_and_publish"]
@@ -201,11 +201,10 @@ def _triggered(
         )
     )
     keys = {
-        (playbook, str(instrument_id), day)
+        window_key(playbook, str(instrument_id), results)
         for playbook, instrument_id, results in rows
-        if (day := _pivot_on(results)) is not None
     }
-    return frozenset(keys & armed.keys())
+    return frozenset(armed.keys() & keys)
 
 
 def _store_windows(
@@ -275,9 +274,9 @@ def scan_and_publish(
 
     `inputs.members` is replaced by the bot's universe on `inputs.as_of`, `inputs.held` and
     `inputs.used_pivots` by the bot's book (`_book`), `inputs.windows` by its setup windows
-    (`_windows`) and `inputs.triggered` by those a row of which triggered (`_triggered`): the
-    caller chooses none. The windows the scan changed are stored. Idempotent per (bot, trade
-    date)."""
+    (`_windows`); `inputs.triggered` gains those a row of which triggered (`_triggered`; the
+    backtest adds the triggers it skipped without a signal). The caller chooses no other. The
+    windows the scan changed are stored. Idempotent per (bot, trade date)."""
     lock_bot(session, bot_id)  # held to commit: a concurrent run waits, then sees our event
     bot = configs_of(session).get(Bot, bot_id)
     if bot is None or bot.live_version_id is None:
@@ -295,7 +294,7 @@ def scan_and_publish(
     since: date | None = inputs.bars["date"].min() if inputs.bars.height else None  # type: ignore[assignment]
     stored = _windows(session, bot_id, version.id, config, since)
     windows = [_setup_window(r) for r in stored.values()]
-    triggered = _triggered(session, bot_id, windows)
+    triggered = _triggered(session, bot_id, windows) | frozenset(inputs.triggered)
     result: ScanResult = scan_bot(
         config, _with_members(inputs, members, _book(session, bot_id), windows, triggered)
     )

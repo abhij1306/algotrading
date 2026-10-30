@@ -43,13 +43,18 @@ def ctx(
     benchmark: list[tuple[date, float]] = (),  # type: ignore[assignment]
     universe: pl.DataFrame | None = None,
     levels: dict[str, float] | None = None,
+    calendar: list[date] | None = None,
 ) -> EvalContext:
+    """`data`'s context; `calendar` the scan's sessions, by default the bars' dates after one
+    session before them (a window that starts before the listing)."""
+    dates = data["date"].to_list()
     found = EvalContext(
-        as_of=data["date"][-1],
+        as_of=dates[-1],
         instrument_id="i",
         bars=data,
         benchmark=benchmark,
         universe=universe,
+        calendar=[dates[0] - timedelta(days=1), *dates] if calendar is None else calendar,
     )
     return found.with_levels(levels or {})
 

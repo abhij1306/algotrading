@@ -192,7 +192,7 @@ from ..engine.portfolio.allocator import LIVE, Allocation, SleeveInput, allocate
 from ..engine.portfolio.health import Health
 from ..engine.portfolio.universe import members_on
 from ..engine.regime_gate import regime_allows_longs
-from ..engine.scan import SESSIONS_AHEAD, ScanInputs, universe_passers
+from ..engine.scan import SESSIONS_AHEAD, ScanInputs, WindowKey, universe_passers, window_key
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
 from ..engine.strategy.config import Playbook, StopLowOfDay, StrategyConfig
 from ..models import (
@@ -221,6 +221,8 @@ from .data import (
     symbol_on,
 )
 from .fillrules import (
+    SKIP_PACE_LOW,
+    SKIP_PACE_MISSING,
     breakout_volume_ok,
     close_lower_locked,
     first_trigger,
@@ -307,6 +309,15 @@ SKIP_DEMERGER_PENDING = "demerger_pending"  # the demerger exit session (`data/d
 SKIP_LOW_VOLUME = "breakout_volume_low"  # a close above the level on too little volume
 SKIP_NO_VOLUME = "breakout_volume_missing"  # the volumes the breakout volume test reads
 VOLUME_SKIPS = frozenset({SKIP_LOW_VOLUME, SKIP_NO_VOLUME})
+
+
+def consumes(reason: str) -> bool:
+    """Whether a skip after a row's level broke ends its setup's window (decisions.md "S1
+    validity window"): every skip but one on volume or the volume pace, without which live's
+    trigger never fires, so live writes no signal either."""
+    return reason not in VOLUME_SKIPS and reason not in (SKIP_PACE_LOW, SKIP_PACE_MISSING)
+
+
 # The day's gates of a watchlist row after the scan's (`scan.funnel_gates`), in order.
 TRIGGER_GATES = ("trigger", "breakout_volume", "stop", "max_chase")
 MAX_CHASE = "max_chase"
@@ -478,6 +489,8 @@ class _Leg:
     allocations: dict[date, Allocation | None] = field(default_factory=dict)
     ladder: LadderState = field(default_factory=LadderState)
     scan_memo: dict[Any, Any] = field(default_factory=dict)
+    # the setups whose trigger was skipped after the level broke (`_skip`), closed by the scan
+    consumed: set[WindowKey] = field(default_factory=set)
     funnel: dict[str, dict[str, int]] = field(default_factory=dict)
     ep_records: dict[tuple[date, str, str], ep_log.EpRecord] = field(default_factory=dict)
     regime_off_nights: int = 0
@@ -779,6 +792,7 @@ class _Run:
             series=series,
             benchmark=self.benchmark[: bisect_right(self.benchmark_days, prev)],
             memo=self.leg.scan_memo,
+            triggered=frozenset(self.leg.consumed),
             # the calendar's sessions from `day` on (a validity window's last session)
             sessions_ahead=self.days[bisect_left(self.days, day) :][:SESSIONS_AHEAD],
         )
@@ -1145,7 +1159,17 @@ class _Run:
         ).all()
         return sorted(rows, key=lambda r: (-r.score, r.playbook, str(r.instrument_id)))
 
-    def _skip(self, reason: str) -> None:
+    def _skip(self, reason: str, row: _Row | None = None) -> None:
+        """Count a skip; with the `row` whose level broke, a skip that ends its setup's window
+        (`consumes`) is kept for the next nights' scans (`ScanInputs.triggered`), as live's
+        signal of the skipped trigger closes it."""
+        key = (
+            None
+            if row is None
+            else window_key(row.playbook, str(row.instrument_id), row.criteria_results)
+        )
+        if key is not None and consumes(reason):
+            self.leg.consumed.add(key)
         self.skips[reason] = self.skips.get(reason, 0) + 1
         if self.today is not None:
             self.decisions.append((self.today, "skip", reason))
@@ -1361,7 +1385,7 @@ class _Run:
             self._passed(row.playbook, "trigger")  # broke, without a fill to take
             if price not in VOLUME_SKIPS:
                 self._passed(row.playbook, "breakout_volume")
-            self._skip(price)
+            self._skip(price, row)
             return None
         if price is None:
             return None  # the level did not break: the row expires at the session end
@@ -1377,14 +1401,14 @@ class _Run:
             else self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
         )
         if isinstance(lows, str):
-            self._skip(lows)
+            self._skip(lows, row)
             return None
         before, dip = lows
         daily = self._daily(playbook, instrument_id, day, prev)
         planned = self._stop(playbook, row, daily, price, before)
         stop = planned.stop
         if stop is None:
-            self._skip(planned.skip or SKIP_BAD_INPUT)
+            self._skip(planned.skip or SKIP_BAD_INPUT, row)
             return None
         self._passed(row.playbook, "stop")
         at = _at(day, _AT_CLOSE_ENTRY if at_close else _AT_ENTRY)
@@ -1530,7 +1554,7 @@ class _Run:
             if not preopen:
                 self._passed(row.playbook, "breakout_volume")
             if planned.entry is None or planned.level is None or planned.stop is None:
-                self._skip(planned.skip or SKIP_BAD_INPUT)
+                self._skip(planned.skip or SKIP_BAD_INPUT, row)
                 continue
             if not preopen:
                 self._passed(row.playbook, "stop")
@@ -1544,7 +1568,7 @@ class _Run:
             if planned.skip is None and (traded is None or traded > planned.entry):
                 # live's LIMIT rests at the trigger bar's close: no bar after the trigger traded
                 # at or below it, so nothing fills
-                self._skip(SKIP_LIMIT_NOT_REACHED)
+                self._skip(SKIP_LIMIT_NOT_REACHED, row)
                 continue
             criteria = tuple(
                 {"stage": stage, **outcome.to_json()}

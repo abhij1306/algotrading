@@ -25,12 +25,20 @@ from setups_series import (
 )
 
 from app.hat.backtest.data import MarketData, MarketView
+from app.hat.backtest.fillrules import SKIP_PACE_LOW, SKIP_PACE_MISSING
+from app.hat.backtest.loop import (
+    SKIP_LIMIT_NOT_REACHED,
+    SKIP_LOW_VOLUME,
+    SKIP_NO_VOLUME,
+    consumes,
+)
 from app.hat.backtest.slots import is_slot_order, order_slots
 from app.hat.engine import scan
 from app.hat.engine.criteria import REGISTRY, evaluate
 from app.hat.engine.criteria import setups as s
-from app.hat.engine.criteria.base import RULE_BOOK_VCP, RULE_STOP_BUFFER, EvalContext
+from app.hat.engine.criteria.base import RULE_STOP_BUFFER, EvalContext
 from app.hat.engine.criteria.book import Contraction, series_of
+from app.hat.engine.stops import SKIP_BAD_INPUT
 from app.hat.engine.strategy.config import StrategyConfig, parse_config
 from app.hat.engine.strategy.scoring import playbook_context, stop_buffer_pct
 
@@ -87,14 +95,11 @@ def test_stop_cap() -> None:
     assert evaluate("stop_cap", {}, outside).reason == "no_data"
 
 
-def test_playbook_context_reads_the_playbooks_own_values() -> None:
-    vcp = {"type": "book_vcp", "mode": "hard", "order": 1, "params": {"stage2_fail_sessions": 7}}
+def test_playbook_context_reads_the_playbooks_stop_buffer() -> None:
     playbook = S1_SETUPS["playbooks"][0]
-    own = {**playbook, "setup": {"criteria": [vcp]}, "stop": {**playbook["stop"], "buffer_pct": 1}}
+    own = {**playbook, "stop": {**playbook["stop"], "buffer_pct": 1}}
     config = parse_config({**S1_SETUPS, "playbooks": [own]})
-    rules = playbook_context(config.playbooks[0], _run(CHEAT, 15)).rules
-    assert rules[RULE_STOP_BUFFER] == 1
-    assert rules[RULE_BOOK_VCP].stage2_fail_sessions == 7
+    assert playbook_context(config.playbooks[0], _run(CHEAT, 15)).rules == {RULE_STOP_BUFFER: 1}
     other = {**playbook, "stop": {"rule": "pct_below_entry", "pct": 3}}
     plain = parse_config({**S1_SETUPS, "playbooks": [other]}).playbooks[0]
     assert playbook_context(plain, _run(CHEAT, 15)).rules == {RULE_STOP_BUFFER: 0.5}
@@ -279,17 +284,43 @@ def test_book_primary_base_passes() -> None:
     )
 
 
-def test_a_stock_back_from_a_suspension_is_no_recent_listing() -> None:
-    old = frame([50.0] * 600 + PRIMARY, quiet(10, 600 + len(PRIMARY)))
-    later = pl.col("date") >= old["date"][600]
-    resumed = old.with_columns(  # a 200-day suspension before the last 127 bars
-        pl.when(later).then(pl.col("date") + timedelta(days=200)).otherwise(pl.col("date"))
-    )
-    staged = ctx(resumed)
-    assert len(staged.history.dates) == len(PRIMARY)  # the series since the break
-    assert s.listed_sessions(staged) == 600 + len(PRIMARY)
+def _gapped(first: int, gap: int, calendar: list[date]) -> pl.DataFrame:
+    """PRIMARY's closes on `calendar` from session `first`, missing `gap` sessions after the
+    first 30 of them (a suspension)."""
+    sessions = calendar[first : first + 30] + calendar[first + 30 + gap :]
+    closes = ([50.0] * len(calendar) + PRIMARY)[-len(sessions) :]
+    return frame(closes, quiet(10, len(sessions))).with_columns(pl.Series("date", sessions))
+
+
+def test_listing_age_counts_the_calendars_sessions() -> None:
+    calendar = [date(2015, 1, 1) + timedelta(days=n) for n in range(700)]
+    # listed in 2010: its first bar in the window is the window's first session
+    old = _gapped(0, 250, calendar)
+    staged = ctx(old, calendar=calendar)
+    assert old.height == 450  # 450 bars would read as a recent listing
+    assert s.listed_sessions(staged) is None
     found = s.book_primary_base(staged, s.BookPrimaryBaseParams())
     assert (found.passed, found.reason) == (False, "not_a_recent_listing")
+    # listed inside the window, then suspended 250 sessions: 600 sessions old, not 350 bars
+    young = ctx(_gapped(100, 250, calendar), calendar=calendar)
+    assert s.listed_sessions(young) == 600
+    assert s.listed_sessions(ctx(old, calendar=[])) is None  # no calendar: fails closed
+
+
+def test_a_skip_after_the_break_ends_the_window() -> None:
+    """The backtest keeps the setup of a row skipped after its level broke (`loop.consumes`),
+    as live's signal of the skipped trigger closes it; a volume or pace skip is no trigger."""
+    for reason in (SKIP_LIMIT_NOT_REACHED, SKIP_BAD_INPUT, "stop_too_wide", "max_chase"):
+        assert consumes(reason)
+    for reason in (SKIP_LOW_VOLUME, SKIP_NO_VOLUME, SKIP_PACE_LOW, SKIP_PACE_MISSING):
+        assert not consumes(reason)
+    first = _first(BARS)
+    key = scan.window_key(first.playbook, first.instrument_id, first.criteria_results)
+    assert key == ("cheat", "a", date.fromisoformat(first.criteria_results["pivot_date"]))
+    assert scan.window_key("cheat", "a", {}) is None
+    window = _found(first, BARS["date"].max() - timedelta(1))
+    result = scan.scan_bot(CONFIG, _inputs(BARS, windows=[window], triggered={key}))
+    assert (_a(result), _windows(result)["cheat:a"]) == ([], scan.TRIGGERED)
 
 
 @pytest.mark.parametrize(

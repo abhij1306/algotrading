@@ -557,6 +557,14 @@ def _pivot_on(criteria_results: Mapping[str, Any]) -> date | None:
     return date.fromisoformat(value) if isinstance(value, str) else None
 
 
+def window_key(
+    playbook: str, instrument_id: str, criteria_results: Mapping[str, Any]
+) -> WindowKey | None:
+    """The setup a watchlist row is of (`SetupWindow.key`), None without a `pivot_date`."""
+    pivot_on = _pivot_on(criteria_results)
+    return None if pivot_on is None else (playbook, instrument_id, pivot_on)
+
+
 def _in_window(row: WatchRow, first: date, session: int, total: int, *, carried: bool) -> WatchRow:
     results = dict(row.criteria_results)
     results[WINDOW] = {"found_on": first.isoformat(), "session": session, "sessions": total}
@@ -864,6 +872,7 @@ def _contexts(
 ) -> dict[str, tuple[EvalContext, StageOutcome]]:
     """Each member's context (shared by the playbooks) and its universe stage."""
     out: dict[str, tuple[EvalContext, StageOutcome]] = {}
+    days = calendar(inputs)
     for instrument_id in sorted(per_instrument):
         ctx = EvalContext(
             as_of=inputs.as_of,
@@ -873,6 +882,7 @@ def _contexts(
             price_bands=inputs.price_bands.get(instrument_id, ()),
             benchmark=inputs.benchmark,
             memo=inputs.memo,
+            calendar=days,
         )
         out[instrument_id] = (ctx, evaluate_stage("universe", config.universe, ctx))
     return out

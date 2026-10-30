@@ -22,16 +22,15 @@ Detectors (each publishes `pivot`, `final_contraction_low` (the tight area's low
   the signal date `flag_sessions` long and at most `flag_depth_max_pct` deep, with
   `min_contractions` contractions (zigzag from T) each at most `depth_ratio_max` x the one
   before, the final at most `final_depth_max_pct`.
-- `book_primary_base` (Setup 5): only on `history_sessions` of history (the bars since the
-  first in the scan window, across series breaks: `listed_sessions`); H0 the highest high, the
-  base from it at least `base_min_sessions` long and at most `base_depth_max_pct` deep, with
-  `contractions` like a VCP's; close above the SMA50 from `sma50_min_history` sessions and the
-  eligible RS rank at least `rs_min` from `rs_min_history`.
+- `book_primary_base` (Setup 5): only on `history_sessions` of history (the scan calendar's
+  sessions since the instrument's first bar, across gaps: `listed_sessions`); H0 the highest
+  high, the base from it at least `base_min_sessions` long and at most `base_depth_max_pct`
+  deep, with `contractions` like a VCP's; close above the SMA50 from `sma50_min_history`
+  sessions and the eligible RS rank at least `rs_min` from `rs_min_history`.
 
-A detector counts the base number by the playbook's `book_vcp` params when it has one
-(`EvalContext.rules`), else the book's defaults. The tight area's dry-up (`area_dryup`): each
-session's volume over ADV50, the mean of the 50 sessions before it (`volume_ratio`); the mean
-below `dryup_mean_max` and one session below `dryup_session_max`.
+A detector counts the base number by the book's default params. The tight area's dry-up
+(`area_dryup`): each session's volume over ADV50, the mean of the 50 sessions before it
+(`volume_ratio`); the mean below `dryup_mean_max` and one session below `dryup_session_max`.
 
 Shared criteria, placed after a detector in its playbook and reading the levels it published:
 `stop_cap` (the stop, the playbook's stop buffer below the tight area's low, at most `max_pct`
@@ -42,6 +41,7 @@ template use doubles, as `book` does.
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -55,7 +55,6 @@ from pydantic import Field, model_validator
 
 from .base import (
     REASON_OK,
-    RULE_BOOK_VCP,
     RULE_STOP_BUFFER,
     CriterionResult,
     EvalContext,
@@ -276,11 +275,8 @@ def _with_base_number(
     ctx: EvalContext, series: Series, threshold: Sequence[float], h0: int, log: dict[str, Any]
 ) -> CriterionResult:
     """Pass with `log` and the book's base number of the base from `h0` (a log, no rule), by
-    the playbook's own `book_vcp` params when it has one, else the book's defaults."""
-    params = ctx.rules.get(RULE_BOOK_VCP, _SWINGS)
-    if params is not _SWINGS:
-        threshold = swing_thresholds(series.high, series.low, series.close, params)
-    number, unknown = base_number(ctx, series, threshold, h0, params)
+    the book's default params."""
+    number, unknown = base_number(ctx, series, threshold, h0, _SWINGS)
     log["base_number"] = number
     log["stage2_start_unknown"] = unknown
     return CriterionResult(True, 1.0, log["tight_depth_pct"], REASON_OK, log)
@@ -670,11 +666,16 @@ def primary_gate_fault(
     return None
 
 
-def listed_sessions(ctx: EvalContext) -> int:
-    """The instrument's bars through `as_of` since its first in the window (its listing, when
-    younger than the window), across series breaks: a stock back from a long suspension is no
-    recent listing."""
-    return ctx.bars.filter(pl.col("date") <= ctx.as_of).height
+def listed_sessions(ctx: EvalContext) -> int | None:
+    """The scan calendar's sessions (`EvalContext.calendar`) from the instrument's first bar
+    through `as_of`, whatever it missed (a suspension, days without a trade); None when that
+    first bar is on or before the calendar's first session (listed before the window, so no
+    recent listing) or there is no calendar."""
+    calendar = ctx.calendar
+    dates = ctx.bars.filter(pl.col("date") <= ctx.as_of)["date"]
+    if not calendar or dates.is_empty() or dates.min() <= calendar[0]:
+        return None
+    return len(calendar) - bisect_left(calendar, dates.min())
 
 
 def book_primary_base(ctx: EvalContext, params: BookPrimaryBaseParams) -> CriterionResult:
@@ -685,8 +686,8 @@ def book_primary_base(ctx: EvalContext, params: BookPrimaryBaseParams) -> Criter
         return no_data()
     end = len(series.dates) - 1
     history = listed_sessions(ctx)
-    if not params.history_sessions[0] <= history <= params.history_sessions[1]:
-        return verdict(False, float(history), "not_a_recent_listing")
+    if history is None or not params.history_sessions[0] <= history <= params.history_sessions[1]:
+        return verdict(False, None if history is None else float(history), "not_a_recent_listing")
     h0 = series.high.index(max(series.high))
     if h0 >= end:
         return verdict(False, None, "no_base")

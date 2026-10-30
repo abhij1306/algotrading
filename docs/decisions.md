@@ -99,16 +99,18 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   window is 700 sessions live and in the backtest, `scan.scan_window`) and `setup_tags`
   (shakeout, ath_pivot over the window, early_leader, stage; never fails; stage 3 and the cheat's
   H0 uptrend read the template's price checks, no earlier RS rank being in the history). Power
-  play T is the highest high of the last 60 sessions; a detector counts the base number with the
-  playbook's `book_vcp` params, else the defaults; the primary base's history counts from the
-  instrument's first bar in the window (its listing), across series breaks. A tight final
+  play T is the highest high of the last 60 sessions; the detectors count the base number on the
+  book's default params (Setup 1 is dropped, so no S1 `book_vcp` to follow); the primary base's
+  age is the scan calendar's sessions since the instrument's first bar, gaps included, and a
+  first bar on the window's first session or before is no recent listing. A tight final
   contraction confirms only once price leaves it, as in `book_vcp`. The plan's [mine] values are
   parameter defaults, logged per signal (`mine` in each criterion's extras).
 - **S1 validity window (owner 2026-10-30).** A setup of a playbook with `valid_sessions` N,
   named by (playbook, instrument, `pivot_date`), is valid D+1..D+N from the night D it was first
   found (`hat_setup_window`, one row per setup and strategy version). Re-detection never extends
   it, and once closed it is never armed again: expired, triggered (any signal of its row:
-  entered, skipped by the chase or gap rule, declined; or held), cancelled (a close under the
+  entered, skipped by the chase or gap rule, declined; or held; in the backtest also any skip
+  after the level broke but a volume or pace one, `loop.consumes`), cancelled (a close under the
   final contraction's low less the stop buffer, a confirmed swing high above the pivot, no bar,
   out of the universe) or replaced by a newer pivot. A regime-off night ends every open window,
   live and in the backtest, and a setup found after it starts anew. An open setup not found again
