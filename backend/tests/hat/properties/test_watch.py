@@ -3,18 +3,23 @@ transition, the broker outage alert, the alert text's action line and the partia
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
-from app.hat.execution.session import UNREACHABLE_AFTER, unreachable_step
+from app.hat.execution.session import unreachable_watched
 from app.hat.ops.watch import (
     DISK_MIN_FREE_BYTES,
     HEARTBEAT_STALE,
     Finding,
+    checked,
     disk_findings,
     heartbeat_findings,
-    tell,
+    run_watch,
+    save_state,
     transition,
+    update_due,
     update_findings,
     verify_findings,
 )
@@ -37,33 +42,55 @@ def test_update_without_status_file_is_not_watched() -> None:
     assert update_findings(None, NIGHT) == []
 
 
-def test_update_failed_steps_are_one_finding_per_run_and_steps() -> None:
+def test_update_failed_is_one_finding_per_run() -> None:
     found = update_findings(_status("2026-10-29T19:30:00+05:30", ["bars5m"], ["features"]), NIGHT)
     assert [f.code for f in found] == ["update.failed"]
     assert found[0].detail == {"failed.1": "bars5m", "skipped.1": "features"}
     later = update_findings(
         _status("2026-10-29T19:30:00+05:30", ["bars5m", "etf"], ["features"]), NIGHT
     )
-    assert later[0].key != found[0].key  # a step that failed later in the run is told
-    again = update_findings(_status("2026-10-29T19:30:00+05:30", ["bars5m"], ["features"]), NIGHT)
-    assert again[0].key == found[0].key  # the same run and steps: the same event
+    assert later[0].key == found[0].key  # a worse run is the same event, not resolved and new
+    tomorrow = update_findings(_status("2026-10-30T19:30:00+05:30", ["bars5m"]), NIGHT)
+    assert tomorrow[0].key != found[0].key  # the next run is a new one
+
+
+def test_update_status_of_another_shape_is_read_as_no_run() -> None:
+    found = update_findings({"run": ["not", "a", "record"]}, NIGHT)
+    assert [f.code for f in found] == ["update.late"]
+    found = update_findings({"run": {"started": "2026-10-29T19:30:00+05:30", "failed": 3}}, NIGHT)
+    assert found == []
 
 
 def test_update_clean_run_today_is_no_finding() -> None:
     assert update_findings(_status("2026-10-29T19:30:00+05:30"), NIGHT) == []
 
 
-def test_update_late_only_after_the_deadline() -> None:
+def test_update_late_is_keyed_on_the_due_run_date() -> None:
     yesterday = _status("2026-10-28T19:30:00+05:30")
-    assert update_findings(yesterday, EVENING) == []  # still before 21:30
+    assert update_findings(yesterday, EVENING) == []  # today's run is not due before 21:30
     found = update_findings(yesterday, NIGHT)
-    assert [(f.code, f.detail) for f in found] == [("update.late", {"last_run": "2026-10-28"})]
-    assert found[0].key == "update.late:2026-10-29"
+    assert [(f.code, f.detail) for f in found] == [
+        ("update.late", {"due": "2026-10-29", "last_run": "2026-10-28"})
+    ]
+    # past midnight the same date is still the one due: the same event, never resolved
+    after_midnight = datetime(2026, 10, 30, 0, 5, tzinfo=IST)
+    assert [f.key for f in update_findings(yesterday, after_midnight)] == [found[0].key]
+    assert update_due(after_midnight) == date(2026, 10, 29)
 
 
 def test_unreadable_status_file_is_late() -> None:
     found = update_findings({}, NIGHT)
     assert [(f.code, f.detail["last_run"]) for f in found] == [("update.late", "never")]
+
+
+def test_a_check_that_raises_is_its_own_finding() -> None:
+    def broken() -> list[Finding]:
+        raise KeyError("run")
+
+    found = checked("update", broken)
+    assert [(f.code, f.key, dict(f.detail)) for f in found] == [
+        ("watch.check_error", "watch.check_error:update", {"check": "update", "error": "KeyError"})
+    ]
 
 
 # --- the data verification -------------------------------------------------------------------
@@ -140,32 +167,105 @@ def test_transition_tells_each_event_once_and_its_clearing() -> None:
     assert step.cleared == [("db.down:state", {"code": "db.down"})]
 
 
-def test_tell_keeps_an_unsent_alert_unopened() -> None:
+class _Marks:
+    def __init__(self, answer: bool | None = None) -> None:
+        self.claimed: set[str] = set()
+        self.answer = answer  # None: the store answers; else what every claim reads
+
+    def claim(self, name: str) -> bool | None:
+        if self.answer is not None or name in self.claimed:
+            return self.answer if self.answer is not None else False
+        self.claimed.add(name)
+        return True
+
+    def clear(self, name: str) -> None:
+        self.claimed.discard(name)
+
+
+def _sender(sent: list[str], ok: bool = True):  # noqa: ANN202 - a test double
+    def send(text: str) -> bool:
+        sent.append(text)
+        return ok
+
+    return send
+
+
+def test_state_is_saved_before_anything_is_sent() -> None:
     disk = Finding("disk.low", "disk.low:root", {"disk": "root"})
+    saved: list[dict] = []
     sent: list[str] = []
-    after = tell({}, [disk], NIGHT, lambda text: False)
-    assert after == {}  # tried again at the next run
-    after = tell({}, [disk], NIGHT, lambda text: sent.append(text) or True)
+
+    def save(doc: dict) -> bool:
+        saved.append(dict(doc))
+        assert sent == []  # nothing told before the state that follows is on disk
+        return True
+
+    after = run_watch({}, [disk], NIGHT, _sender(sent), save, _Marks())
     assert list(after) == ["disk.low:root"]
+    assert list(saved[0]) == ["disk.low:root"]
     assert sent[0].startswith("Alert: disk.low (2026-10-29)")
     assert sent[0].splitlines()[-1] == f"Do: {render.ACTIONS['disk.low']}"
-    tell(after, [], NIGHT, lambda text: sent.append(text) or True)
-    assert sent[-1] == "Resolved: disk.low (2026-10-29)"
+
+
+def test_an_unsent_alert_is_tried_again_next_run() -> None:
+    disk = Finding("disk.low", "disk.low:root", {"disk": "root"})
+    saved: list[dict] = []
+
+    def save(doc: dict) -> bool:
+        saved.append(dict(doc))
+        return True
+
+    after = run_watch({}, [disk], NIGHT, _sender([], ok=False), save, _Marks())
+    assert after == {}
+    assert saved[-1] == {}  # saved again without it, so the next run tells it
+
+
+def test_unwritable_state_tells_one_alert_and_nothing_else() -> None:
+    disk = Finding("disk.low", "disk.low:root", {"disk": "root"})
+    db = Finding("db.down", "db.down:state", {"database": "state"})
+    marks, sent = _Marks(), []
+    for _ in range(3):  # three runs on a full disk
+        assert run_watch({}, [disk, db], NIGHT, _sender(sent), lambda d: False, marks) is None
+    assert [t.splitlines()[0] for t in sent] == ["URGENT: watch.state_unwritable (2026-10-29)"]
+    # a save that works again clears the claim; the findings are then told once
+    after = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, marks)
+    assert list(after) == ["disk.low:root"]
+    assert marks.claimed == set()
+    # the claim store unreadable as well: nothing is sent at all
+    sent.clear()
+    assert run_watch({}, [disk], NIGHT, _sender(sent), lambda d: False, _Marks(False)) is None
+    assert sent == []
+
+
+def test_resolved_names_its_subject() -> None:
+    disk = Finding("disk.low", "disk.low:root", {"disk": "root", "free_gb": 3})
+    sent: list[str] = []
+    after = run_watch({}, [disk], NIGHT, _sender(sent), lambda d: True, _Marks())
+    run_watch(after, [], NIGHT, _sender(sent), lambda d: True, _Marks())
+    assert sent[-1].splitlines() == ["Resolved: disk.low (2026-10-29)", "disk: root", "free_gb: 3"]
+
+
+def test_save_state_is_atomic_and_reports_failure(tmp_path: Path) -> None:
+    path = tmp_path / "ops" / "watch.json"
+    assert save_state(path, {"k": {"code": "disk.low"}})
+    assert json.loads(path.read_text())["open"] == {"k": {"code": "disk.low"}}
+    (tmp_path / "blocked").write_text("a file, not a folder")
+    assert not save_state(tmp_path / "blocked" / "watch.json", {})
+    assert [p.name for p in path.parent.iterdir()] == ["watch.json"]  # no temporary left
 
 
 # --- the broker outage -----------------------------------------------------------------------
 
 
-def test_unreachable_is_one_alert_per_outage() -> None:
-    short = UNREACHABLE_AFTER - timedelta(seconds=1)
-    assert unreachable_step(short, False) == (False, False)
-    assert unreachable_step(UNREACHABLE_AFTER, False) == (True, True)
-    assert unreachable_step(UNREACHABLE_AFTER * 3, True) == (False, True)
-    assert unreachable_step(timedelta(0), True) == (False, False)  # a success ends it
-    assert unreachable_step(UNREACHABLE_AFTER, False) == (True, True)  # the next outage
-    # a success and a new outage between two checks: the shorter outage is a new one
-    assert unreachable_step(UNREACHABLE_AFTER, True, UNREACHABLE_AFTER * 3) == (True, True)
-    assert unreachable_step(UNREACHABLE_AFTER * 2, True, UNREACHABLE_AFTER) == (False, True)
+def test_unreachable_is_watched_from_the_login_prompt_to_the_close() -> None:
+    def at(h: int, m: int) -> datetime:
+        return datetime(2026, 10, 29, h, m, tzinfo=IST)
+
+    assert not unreachable_watched(at(8, 29))
+    assert unreachable_watched(at(8, 30))
+    assert unreachable_watched(at(15, 29))
+    assert not unreachable_watched(at(15, 30))
+    assert not unreachable_watched(at(2, 0))
 
 
 # --- the text --------------------------------------------------------------------------------

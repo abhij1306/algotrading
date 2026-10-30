@@ -286,9 +286,14 @@ class HatBroker(Protocol):
         no call; None when one may go."""
         ...
 
-    def unreachable_for(self) -> float:
-        """Seconds the broker's calls have failed in a row with no success since (the circuit
-        breaker's outage); 0.0 while they succeed: a local value, no call."""
+    def claim_unreachable_alert(self, after: float) -> float | None:
+        """The seconds the broker's calls have failed in a row (its circuit breaker's outage),
+        once per outage when it has lasted `after`, whichever account asks; None otherwise. A
+        local value, no call."""
+        ...
+
+    def release_unreachable_alert(self) -> None:
+        """Give back a claim whose alert was not delivered."""
         ...
 
     def session_status(self) -> SessionStatus: ...

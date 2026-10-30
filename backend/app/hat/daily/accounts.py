@@ -63,13 +63,14 @@ from ..execution.protect import StopDesk
 from ..execution.reconcile import ReconciliationService, notifier_sink
 from ..execution.router import ExecutionRouter, PlacementCheck, unplaced_entry
 from ..execution.session import (
+    UNREACHABLE_AFTER,
     SessionOwner,
     SessionRegistry,
     SessionWatch,
     broker_health_failing,
     record_session,
     refresh_capabilities,
-    unreachable_step,
+    unreachable_watched,
 )
 from ..models import (
     HatApproval,
@@ -139,9 +140,12 @@ class OwnedBroker:
         """A local value, no broker call: not serialised, like `capabilities`."""
         return self._broker.day_budget_spent()
 
-    def unreachable_for(self) -> float:
+    def claim_unreachable_alert(self, after: float) -> float | None:
         """A local value, no broker call: not serialised, like `capabilities`."""
-        return self._broker.unreachable_for()
+        return self._broker.claim_unreachable_alert(after)
+
+    def release_unreachable_alert(self) -> None:
+        self._broker.release_unreachable_alert()
 
     def write_refusal(self) -> str | None:
         """A local value, no broker call: not serialised, so a sale is never held up by it."""
@@ -173,8 +177,6 @@ class AccountDesk:
     failed_alerted_on: date | None = None  # the trade date `reconcile.failed` was raised for
     reconciled_at: datetime | None = None  # the last successful reconciliation
     budget_alerted_on: date | None = None  # the trade date `broker.budget_spent` was raised for
-    unreachable_alerted: bool = False  # this outage's `broker.unreachable` went out
-    unreachable_seen: timedelta = timedelta(0)  # the outage the last session check read
     synced_at: datetime | None = None  # the last fill sync that read the broker's books
     fills_read_at: datetime | None = None  # the last fill sync that succeeded (ca.rescale's gate)
 
@@ -208,22 +210,19 @@ class AccountDesk:
         return live
 
     def _watch_reach(self, now: datetime) -> None:
-        """The one URGENT `broker.unreachable` of an outage; told again at the next check when
-        it could not be delivered."""
-        down_for = timedelta(seconds=self.broker.unreachable_for())
-        previous, self.unreachable_seen = self.unreachable_seen, down_for
-        due, self.unreachable_alerted = unreachable_step(
-            down_for, self.unreachable_alerted, previous
-        )
-        if not due:
+        """The one URGENT `broker.unreachable` of an outage, from 08:30 IST to the close
+        (`unreachable_watched`, as `broker.session_lost`), claimed on the broker's circuit
+        breaker so the accounts sharing it send one; told again at the next check when it
+        could not be delivered."""
+        if not unreachable_watched(now):
             return
-        logger.error("account %s: broker calls failing for %s", self.account_id, down_for)
-        detail = {
-            "account_id": str(self.account_id),
-            "minutes": int(down_for.total_seconds() // 60),
-        }
+        down = self.broker.claim_unreachable_alert(UNREACHABLE_AFTER.total_seconds())
+        if down is None:
+            return
+        logger.error("broker calls failing for %.0f s (account %s)", down, self.account_id)
+        detail = {"account_id": str(self.account_id), "minutes": int(down // 60)}
         if not self.notifier.alert(BROKER_UNREACHABLE, trade_date_of(now), detail):
-            self.unreachable_alerted = False
+            self.broker.release_unreachable_alert()
 
     def _sync_broker_health(self, session: Session, now: datetime, live: bool) -> None:
         """Each of the account's bots is manage-only while its session is down between 09:05

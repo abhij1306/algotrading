@@ -45,7 +45,7 @@ __all__ = [
     "SessionWatch",
     "backoff_delay",
     "broker_health_failing",
-    "unreachable_step",
+    "unreachable_watched",
     "record_session",
     "refresh_capabilities",
 ]
@@ -130,20 +130,11 @@ def broker_health_failing(now: datetime, live: bool) -> bool:
     return not live and BROKER_HEALTH_FROM <= at < BROKER_HEALTH_UNTIL
 
 
-def unreachable_step(
-    down_for: timedelta, alerted: bool, previous: timedelta = timedelta(0)
-) -> tuple[bool, bool]:
-    """(alert now, alerted) for one check of the broker's outage `down_for` (0 while its calls
-    succeed), `previous` being the last check's: one alert per outage, once it has lasted
-    `UNREACHABLE_AFTER`. A success ends an outage, seen as no outage now or as one shorter than
-    the last check's (a success and a new outage between two checks)."""
-    if down_for <= timedelta(0):
-        return False, False
-    if down_for < previous:
-        alerted = False
-    if alerted or down_for < UNREACHABLE_AFTER:
-        return False, alerted
-    return True, True
+def unreachable_watched(now: datetime) -> bool:
+    """Whether a broker outage at `now` is alerted: from the 08:30 IST login prompt to the
+    close, as a lost session is (before it, the night's broker maintenance is no news)."""
+    at = now.astimezone(IST).time()
+    return WATCH_FROM <= at < BROKER_HEALTH_UNTIL
 
 
 class SessionWatch:

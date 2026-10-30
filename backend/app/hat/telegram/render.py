@@ -98,6 +98,8 @@ URGENT_ALERTS = frozenset(
         "broker.unreachable",
         "runtime.down",
         "db.down",
+        "watch.state_unwritable",
+        "watch.failed",
     }
 )
 # What the owner does about each alert, one line under it (runbook, Alerts and failures, has the
@@ -121,10 +123,16 @@ ACTIONS: Mapping[str, str] = {
     "events.partitions.",
     # data
     "update.failed": "Read the step's detail and log (update --status), fix, rerun with --only.",
-    "update.late": "The daily data update did not run today: check the timer (systemctl --user "
-    "list-timers) and the machine.",
+    "update.late": "The daily data update has not run for the due date: check the timer "
+    "(systemctl --user list-timers) and the machine.",
     "verify.failed": "A data verification check failed: read verify.md in that report and "
     "correct through the check's own path.",
+    "watch.check_error": "One check of the health watch raised (journalctl --user -u "
+    "hat-watch); the other checks still run.",
+    "watch.state_unwritable": "The health watch cannot save its state (disk full or ops/ "
+    "broken), so it tells nothing more until it can: free space or fix the folder.",
+    "watch.failed": "The health watch stopped: journalctl --user -u hat-watch; nothing is "
+    "watched until it runs again.",
     "quality.failed": "Affected bots are manage-only until the gate passes; read hat_job_run and "
     "the log. Never re-arm by hand.",
     "quality_failed": "Affected bots are manage-only until the gate passes; read the log.",
@@ -338,9 +346,14 @@ def alert_text(code: str, trade_date: date, detail: Mapping[str, object]) -> str
     return "\n".join(lines)
 
 
-def resolved_text(code: str, trade_date: date) -> str:
-    """The note that an alert's cause has cleared (the out-of-process watch's)."""
-    return f"Resolved: {_safe(code)} ({trade_date.isoformat()})"
+def resolved_text(code: str, trade_date: date, detail: Mapping[str, object]) -> str:
+    """The note that an alert's cause has cleared (the out-of-process watch's), with the
+    alert's detail, so it names its subject (which database, disk or run)."""
+    lines = [f"Resolved: {_safe(code)} ({trade_date.isoformat()})"]
+    lines += [
+        f"{_safe(k)}: {_safe(v)}" for k, v in sorted(detail.items(), key=lambda kv: str(kv[0]))
+    ]
+    return "\n".join(lines)
 
 
 # --- digests and reports -----------------------------------------------------------------------

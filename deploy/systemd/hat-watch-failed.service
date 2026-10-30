@@ -1,0 +1,14 @@
+# The health watch's OnFailure= unit (docs/runbook.md, Health watch): one watch.failed alert when
+# a run failed and could not tell it itself. Installed with scripts/install_watch_timer.sh, which
+# fills in @REPO@ and @DATA_ROOT@. Started at most once a day, so a watch failing every run
+# never floods the chat.
+[Unit]
+Description=HAT health watch failed: tell the owner
+StartLimitIntervalSec=1d
+StartLimitBurst=1
+
+[Service]
+Type=oneshot
+Environment="HAT_DATA_ROOT=@DATA_ROOT@"
+ExecStart="@REPO@/scripts/hat_watch.sh" --notify-failure
+TimeoutStartSec=1min

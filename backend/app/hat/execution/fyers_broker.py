@@ -216,7 +216,8 @@ def classify_place_reply(
 class CircuitBreaker:
     """Opens after `threshold` failures in a row and stays open for `recovery_sec`; one success
     closes it. `down_for` is how long the calls have failed since they first reached
-    `threshold` in a row (the outage the session watch alerts). Thread-safe."""
+    `threshold` in a row: the outage, alerted once however many accounts share the breaker
+    (`claim_alert`). Thread-safe."""
 
     def __init__(
         self,
@@ -231,6 +232,7 @@ class CircuitBreaker:
         self.failures = 0
         self.open_until = 0.0
         self.down_since: float | None = None
+        self.alerted = False  # this outage's alert was claimed
 
     def is_open(self) -> bool:
         with self._lock:
@@ -241,6 +243,24 @@ class CircuitBreaker:
             self.failures = 0
             self.open_until = 0.0
             self.down_since = None
+            self.alerted = False
+
+    def claim_alert(self, after: float) -> float | None:
+        """The outage's length, once per outage when it has lasted `after` seconds (the caller
+        alerts it); None otherwise."""
+        with self._lock:
+            if self.down_since is None or self.alerted:
+                return None
+            down = self._clock() - self.down_since
+            if down < after:
+                return None
+            self.alerted = True
+            return down
+
+    def release_alert(self) -> None:
+        """An alert claimed and not delivered: the next claim of this outage may take it."""
+        with self._lock:
+            self.alerted = False
 
     def down_for(self) -> float:
         """Seconds since the calls reached `threshold` failures in a row with no success since;
@@ -596,9 +616,12 @@ class GuardedBroker:
         # None sends without a budget (a test double); production passes the process budget
         self.budget = budget
 
-    def unreachable_for(self) -> float:
-        """Seconds the broker's calls have failed in a row (`CircuitBreaker.down_for`)."""
-        return self.breaker.down_for()
+    def claim_unreachable_alert(self, after: float) -> float | None:
+        """The breaker's outage, once per outage (`CircuitBreaker.claim_alert`)."""
+        return self.breaker.claim_alert(after)
+
+    def release_unreachable_alert(self) -> None:
+        self.breaker.release_alert()
 
     def write_refusal(self) -> str | None:
         """The code a write would be refused with now, unsent (`broker.write_refusal`)."""

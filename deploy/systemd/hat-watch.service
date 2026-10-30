@@ -5,6 +5,7 @@
 Description=HAT health watch
 Wants=network-online.target
 After=network-online.target
+OnFailure=hat-watch-failed.service
 
 [Service]
 Type=oneshot

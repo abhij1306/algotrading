@@ -147,7 +147,8 @@ class HatTelegramCursor(StateBase):
 
 class HatHeartbeat(StateBase):
     """The last beat of each named part of the runtime (`scheduler`: its loop, every tick), read
-    by the out-of-process watch (`ops/watch.py`), which tells the owner when it goes stale."""
+    by the out-of-process watch (`ops/watch.py`), which tells the owner when it goes stale; and
+    the watch's own once-a-time claims (`watch:<alert>`, stamped when claimed)."""
 
     __tablename__ = "hat_heartbeat"
 

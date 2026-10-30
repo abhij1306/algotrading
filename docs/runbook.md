@@ -626,20 +626,27 @@ What the runtime cannot tell about itself: `python -m app.hat.ops.watch` (or
 `scripts/hat_watch.sh`), every five minutes on the host by a systemd user timer installed with
 `scripts/install_watch_timer.sh <HAT_DATA_ROOT>` (the database and Telegram settings from the
 repo's `.env`; `HAT_ENABLED=true` there turns on the heartbeat check). `--dry-run` prints the
-findings and sends nothing. Each finding is alerted once while it stands and told `Resolved:` when
-it clears; the open ones are in `HAT_DATA_ROOT/ops/watch.json`, and an alert Telegram did not take
-is tried again at the next run. Install it on the machine that runs the backend or the daily
-data update; `systemctl --user list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
+findings and sends nothing. Each finding is alerted once while it stands and told `Resolved:`,
+with its subject, when it clears; the open ones are in `HAT_DATA_ROOT/ops/watch.json`, saved
+before anything is sent, and an alert Telegram did not take is tried again at the next run.
+Install it on the machine that runs the backend or the daily data update; `systemctl --user
+list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
 
 - **`runtime.down`** (URGENT): the scheduler's `hat_heartbeat` row (stamped every 30 s) is over
   3 minutes old: the backend is dead or wedged. Broker stops protect positions; `$COMPOSE ps`,
   `$COMPOSE logs backend`, start it, then Restart recovery.
 - **`db.down`** (URGENT, `live` or `state`): `SELECT 1` fails. `$COMPOSE ps postgres`.
 - **`disk.low`**: under 10 GB or 10% free on the data root's or the root file system.
-- **`update.failed`**, **`update.late`** (no run started by 21:30 IST): Daily data update,
-  Recover; for late, `systemctl --user list-timers hat-data-update.timer` and linger.
+- **`update.failed`** (one per run), **`update.late`** (no run started for the due date: today
+  from 21:30 IST, else yesterday): Daily data update, Recover; for late, `systemctl --user
+  list-timers hat-data-update.timer` and linger.
 - **`verify.failed`**: the newest report that ran a check failed it; read its `verify.md`
   (Data verification).
+- **`watch.check_error`**: one check raised (its name and error type); the others ran.
+- **`watch.state_unwritable`** (URGENT, once until a save works): `ops/watch.json` cannot be
+  written, so the watch tells nothing else; free the disk or fix `ops/`.
+- **`watch.failed`** (URGENT, once per failure spell): a run failed outright; when it could not
+  send that itself, the `OnFailure=` unit `hat-watch-failed` does, at most once a day.
 
 - **`quality.failed`, `ingest.failed`:** affected bots manage-only. `select job, trade_date,
   status, error_code from hat_job_run where trade_date = current_date order by started_at;` and
@@ -655,8 +662,9 @@ data update; `systemctl --user list-timers hat-watch.timer`, `journalctl --user 
 - **`broker.session_lost`:** bots manage-only, stops at the broker; recovery is automatic once the
   session is back (log in if the token expired). A token the broker refused (revoked or expired
   at the broker) shows not connected in the app header until a new login.
-- **`broker.unreachable`:** URGENT, once per outage. The broker's calls have failed in a row for
-  two minutes (its circuit breaker), though the token may be valid: no entry goes; stops, sales
+- **`broker.unreachable`:** URGENT, once per outage for every account sharing the broker's
+  circuit breaker, from 08:30 IST to the close. The broker's calls have failed in a row for two
+  minutes, though the token may be valid: no entry goes; stops, sales
   and reconciliation retry. Check the network and Fyers' status; if it lasts into the close,
   decide on the positions at Fyers.
 - **`broker.budget_spent`:** URGENT. The day's broker calls are spent: no new entry and no

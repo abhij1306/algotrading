@@ -125,6 +125,28 @@ def test_breaker_follows_its_model(
         assert other.failures == 0
 
 
+def test_breaker_outage_alert_is_claimed_once_per_outage() -> None:
+    """Accounts sharing a breaker claim its outage's alert once: from `after` seconds into it,
+    again only after a release (undelivered) or a success and a new outage."""
+    clock = Tick()
+    breaker = CircuitBreaker(2, 20.0, clock)
+    breaker.record_failure()
+    assert breaker.claim_alert(0.0) is None  # one failure is no outage
+    breaker.record_failure()
+    clock.now += 119
+    assert breaker.claim_alert(120.0) is None
+    clock.now += 1
+    assert breaker.claim_alert(120.0) == 120.0
+    assert breaker.claim_alert(120.0) is None  # the second account: already claimed
+    breaker.release_alert()
+    assert breaker.claim_alert(120.0) == 120.0  # undelivered: claimed again
+    breaker.record_success()
+    breaker.record_failure()
+    breaker.record_failure()
+    clock.now += 120
+    assert breaker.claim_alert(120.0) == 120.0  # a new outage
+
+
 @given(
     method=st.sampled_from(
         ["place_order", "place_gtt", "modify_order", "cancel_order", "cancel_gtt"]
