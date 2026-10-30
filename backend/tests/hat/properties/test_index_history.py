@@ -18,7 +18,9 @@ from app.hat.data.index_history import (
     NIFTY_500,
     NIFTY_500_TRI,
     ArchiveIndexSource,
+    changed_rows,
     compare_tri,
+    dated_on,
     fetch_tri_raw,
     latest_tri_raw,
     parse_history_json,
@@ -26,9 +28,10 @@ from app.hat.data.index_history import (
     parse_tri_json,
     tri_raw_range,
     tri_request,
+    write_reload_backup,
 )
 from app.hat.data.pacing import Pacer
-from app.hat.data.store import DataStore, StoreError, keep_once
+from app.hat.data.store import DataStore, IndexRow, StoreError, keep_once
 
 DAY = date(2013, 10, 9)
 CSV = (
@@ -42,6 +45,20 @@ def test_archive_csv_with_an_html_page_has_no_row() -> None:
     page = "<!DOCTYPE html>\n<link href=a,b,c,d rel=x>\n" + CSV.decode()
     assert parse_index_archive_csv(page, DAY) == []
     assert [p.row.close for p in parse_index_archive_csv(CSV.decode(), DAY)] == [Decimal("4592.45")]
+
+
+def test_archive_csv_rows_of_another_day_are_refused() -> None:
+    """Every row's `Index Date` must be the requested session (NSE writes DD-MM-YYYY or
+    DD/MM/YYYY; three April 2023 files write the month first). Harm: another session's levels
+    stored under this one when a stale or wrong file is served."""
+    assert parse_index_archive_csv(CSV.decode(), date(2013, 10, 10)) == []
+    slashed = CSV.decode().replace("09-10-2013", "09/10/2013")
+    assert len(parse_index_archive_csv(slashed, DAY)) == 1
+    swapped = CSV.decode().replace("09-10-2013", "04-06-2023")
+    assert len(parse_index_archive_csv(swapped, date(2023, 4, 6))) == 1
+    assert parse_index_archive_csv(swapped, date(2023, 4, 7)) == []
+    assert not dated_on("", DAY)
+    assert not dated_on("9 Oct 2013", DAY)
 
 
 def test_parse_tri_json_reads_the_close_only() -> None:
@@ -191,3 +208,43 @@ def test_keep_once_never_replaces_a_file_that_appeared_meanwhile(
     assert path.read_bytes() == b"first"
     assert keep_once(path, b"first") is False
     assert [p.name for p in tmp_path.iterdir()] == [path.name]
+
+
+def test_reload_rewrites_only_a_stored_index_the_file_gives_otherwise() -> None:
+    # NIFTY 50 2025-09-18: the MCP snapshot's high was 25448.95, NSE's file says 25448.55
+    stored = {
+        "NIFTY 50": IndexRow(
+            "NIFTY 50",
+            Decimal("25441.05"),
+            Decimal("25448.95"),
+            Decimal("25329.75"),
+            Decimal("25423.6"),
+        ),
+        "NIFTY 500": IndexRow("NIFTY 500", Decimal(1), Decimal(2), Decimal(1), Decimal("1.50")),
+    }
+    file_rows = [
+        IndexRow(
+            "NIFTY 50",
+            Decimal("25441.05"),
+            Decimal("25448.55"),
+            Decimal("25329.75"),
+            Decimal("25423.6"),
+        ),
+        IndexRow("NIFTY 500", Decimal(1), Decimal(2), Decimal(1), Decimal("1.5")),
+        IndexRow("INDIA VIX", Decimal(10), Decimal(11), Decimal(9), Decimal(10)),
+    ]
+    assert changed_rows(stored, file_rows) == [file_rows[0]]
+
+
+def test_a_reload_backup_keeps_the_stored_rows_as_they_were(tmp_path: Path) -> None:
+    """`reload --apply` writes every stored row of the days it changes before touching the
+    store. Harm: a wrong reload with no way back to the levels it replaced."""
+    row = IndexRow(
+        "NIFTY 50", Decimal("25300.1"), Decimal("25448.95"), Decimal(25200), Decimal(25400)
+    )
+    path = tmp_path / "index_reload" / "before-x.csv"
+    write_reload_backup(path, [(date(2025, 9, 18), row)])
+    assert path.read_text().splitlines() == [
+        "day,index_name,open,high,low,close",
+        "2025-09-18,NIFTY 50,25300.1,25448.95,25200,25400",
+    ]

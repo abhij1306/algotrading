@@ -1,10 +1,15 @@
 """D3: the stored NIFTY 500 membership (`hat_index_member`) against NSE's notices and archived
 constituent lists.
 
+- Scope: a backtest reads membership only from the night before its first session, and refuses
+  a start before the history (`backtest.data.membership_cover_refusal`); its lookback reads bars
+  and features, which rank every ordinary equity, never the index. So the history must start by
+  `NEEDED_FROM` (decisions.md "Backtests from 2016-01-01"; a later start fails), and the
+  sessions before its start are listed (warn), not failed. A session after its end fails (dated:
+  a backtest there has no point-in-time universe).
 - Size: the members of each session from the cover's start, grouped into runs of one count; a
   run off 500 warns with its extra or missing members named (a documented exception, such as the
-  Tata Motors DVR counted beside its ordinary share until 2024-08-30, reads off them). A session
-  of the window with no membership fails (dated: a backtest there has no point-in-time universe).
+  Tata Motors DVR counted beside its ordinary share until 2024-08-30, reads off them).
 - Notices (`--notices`: `changes_parsed.json`, the NIFTY 500 sections parsed from NSE's index
   notices, and `overrides.json`, the hand-read corrections of revised or void notices), both
   ways. Every stored entry after the cover's start and every exit must be a notice's inclusion
@@ -17,9 +22,17 @@ constituent lists.
 - Lists: each archived constituent list (`verify_reference/nifty500/<YYYYMMDDhhmmss>_*.csv`, kept
   from the Wayback Machine's captures of NSE's and niftyindices' `ind_nifty500list.csv`, and
   today's list from NSE's archive, fetched with `--fetch`) against the stored members of its
-  capture's session, by ISIN. A difference that is a demerger dummy warns, as does one within a
-  session of a stored change (the capture may predate the file's update); any other fails,
-  a listed member HAT has no instrument for among them (survivorship). No list fails.
+  capture's session (`list_session`: the last session closed by the capture's UTC stamp), by
+  ISIN. The membership holds every constituent NSE publishes that HAT has an instrument for,
+  REIT and InvIT units included (universes drop them by ISIN: decisions.md "Stocks only"). A
+  difference that is a demerger dummy warns, as does one within a session of a stored change
+  (the capture may predate the file's update) and a listed REIT or InvIT unit HAT has no
+  instrument for (the instrument scan reads no RR or IV series row); any other fails, a listed
+  member HAT has no instrument for among them (survivorship). No list fails.
+- Exceptions: a failed change or list item the reviewed list names (`VERIFY_EXCEPTIONS["d3"]`:
+  code, ISIN, day, pin, reason) warns as `excepted` (`exceptions.py`). A notice names a symbol,
+  so its item takes the one ISIN that symbol has had (`isin_of_symbol`: the instruments, their
+  former symbols and the archived lists), or none when it has had two.
 """
 
 from __future__ import annotations
@@ -31,14 +44,19 @@ from bisect import bisect_left, bisect_right
 from collections import defaultdict
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
+
+from app.paths import VERIFY_EXCEPTIONS
 
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
+from ..isin import trust_unit
 from ..nse_files import INDUSTRY_LIST_URL
+from ..sessions import SESSION_CLOSE
 from . import dated
 from .context import Context
+from .exceptions import Exceptions, read_exceptions
 from .references import SYMBOL_CHANGES, SYMBOL_CHANGES_URL, read_symbol_changes, reference_file
 
 INDEX = "NIFTY 500"
@@ -58,6 +76,9 @@ LIST_URLS = (
 )
 CAPTURE_URL = "https://web.archive.org/web/{stamp}id_/{original}"
 DUMMY_PREFIX = "DUM"  # a demerger dummy's ISIN (DUM545A01024) and symbol (DUMMYHEG)
+LIVE_SUFFIX = "_nsearchives-live.csv"
+# [A] decisions.md "Backtests from 2016-01-01": the first session a backtest may read members on
+NEEDED_FROM = date(2016, 1, 1)
 
 
 @dataclass(frozen=True)
@@ -129,12 +150,15 @@ def notice_changes(
     return out
 
 
-def list_session(sessions: Sequence[date], day: date) -> date | None:
-    """The session a list captured on `day` shows: that day when it is a session, else the last
-    session before it (a closed day's list holds the previous session's members); None before
-    the first session. The window is judged on this session, never on the next one."""
-    at = bisect_right(sessions, day)
-    return sessions[at - 1] if at else None
+def list_session(sessions: Sequence[date], at: datetime) -> date | None:
+    """The session a list captured at `at` shows: the last session closed (15:30 IST) by then.
+    NSE rewrites the file after a session, so a capture in the night before a change's
+    effective session, or during it, still holds the members before it; None before the first
+    session. The window is judged on this session, never on the next one."""
+    i = bisect_right(sessions, at.astimezone(IST).date())
+    while i and datetime.combine(sessions[i - 1], SESSION_CLOSE, tzinfo=IST) > at:
+        i -= 1
+    return sessions[i - 1] if i else None
 
 
 def first_session(sessions: Sequence[date], day: date) -> date | None:
@@ -317,14 +341,17 @@ def compare_list(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """One archived list (ISIN -> symbol) against the stored members of its session (ISIN ->
     symbol): (explained differences, unexplained ones). A dummy, or a symbol changed within a
-    session of the capture (`near_change`), is explained; a listed ISIN HAT has no instrument for
-    is not (the universe misses a member)."""
+    session of the capture (`near_change`), is explained, as is a listed REIT or InvIT unit HAT
+    has no instrument for (no universe holds one); any other listed ISIN HAT has no instrument
+    for is not (the universe misses a member)."""
     explained, wrong = [], []
     for isin in sorted(set(listed) ^ set(stored)):
         symbol = listed.get(isin) or stored.get(isin, "")
         item = {"isin": isin, "symbol": symbol, "in": "list" if isin in listed else "store"}
         if isin.startswith(DUMMY_PREFIX) or symbol.startswith("DUMMY"):
             explained.append({**item, "why": "demerger dummy"})
+        elif isin in listed and isin not in known_isins and trust_unit(isin):
+            explained.append({**item, "why": "REIT or InvIT unit HAT has no instrument for"})
         elif isin in listed and isin not in known_isins:
             wrong.append({**item, "why": "listed member with no instrument in HAT (survivorship)"})
         elif isin in near_change or symbol in near_change:
@@ -361,16 +388,17 @@ def symbol_renames(ctx: Context) -> tuple[list[tuple[str, str]], int] | None:  #
     return [(r.old, r.new) for r in renames], unread
 
 
-def capture_day(name: str) -> date | None:
-    """`20181004105632_niftyindices.csv` -> its capture date."""
+def capture_at(name: str) -> datetime | None:
+    """`20181004105632_niftyindices.csv` -> the instant of its capture: the Wayback Machine
+    stamps a capture in UTC, as `live_list_name` does."""
     stamp = name.split("_", 1)[0]
     try:
-        return datetime.strptime(stamp[:8], "%Y%m%d").date()  # noqa: DTZ007 - a calendar date
+        return datetime.strptime(stamp, "%Y%m%d%H%M%S").replace(tzinfo=UTC)
     except ValueError:
         return None
 
 
-def _fetch_lists(ctx: Context, last_session: date | None) -> None:  # pragma: no cover
+def _fetch_lists(ctx: Context, sessions: Sequence[date]) -> None:  # pragma: no cover
     """With `--fetch`: every Wayback capture of the list URLs (one per distinct content) and
     today's list from NSE's archive (`live_list_name`), kept under `verify_reference/nifty500/`."""
     for url in LIST_URLS:
@@ -389,27 +417,24 @@ def _fetch_lists(ctx: Context, last_session: date | None) -> None:  # pragma: no
                 CAPTURE_URL.format(stamp=stamp, original=original),
                 valid=lambda data: b"ISIN" in data[:300],
             )
-    name = live_list_name(datetime.now(IST).date(), ctx.end, last_session)
-    if name is not None:
+    now = datetime.now(UTC)
+    last_session = list_session(sessions, now)
+    kept = [capture_at(p.name) for p in ctx.reference_dir(LIST_GROUP).glob(f"*{LIVE_SUFFIX}")]
+    name = live_list_name(now, ctx.end, last_session)
+    if name is not None and not any(k and list_session(sessions, k) == last_session for k in kept):
         reference_file(
             ctx, LIST_GROUP, name, INDUSTRY_LIST_URL, valid=lambda data: b"ISIN" in data[:300]
         )
 
 
-def last_session_by(sessions: Sequence[date], today: date) -> date | None:
-    """The last session on or before `today` (the calendar also lists the year's coming
-    sessions)."""
-    at = bisect_right(sessions, today)
-    return sessions[at - 1] if at else None
-
-
-def live_list_name(today: date, end: date, last_session: date | None) -> str | None:
-    """The name NSE's live list is kept under: today's date (the day it was fetched, so the list
-    is compared with the membership of the day it states); None, so nothing is fetched, when
-    the run ends before the last session (a past window never stores today's list)."""
+def live_list_name(fetched: datetime, end: date, last_session: date | None) -> str | None:
+    """The name NSE's live list is kept under: the UTC instant it was fetched (`fetched`), as
+    the Wayback captures are named, so `list_session` compares it with the membership of the
+    last session closed when it was fetched; None, so nothing is fetched, when the run ends
+    before the last session (a past window never stores today's list)."""
     if last_session is None or end < last_session:
         return None
-    return f"{today:%Y%m%d}000000_nsearchives-live.csv"
+    return f"{fetched.astimezone(UTC):%Y%m%d%H%M%S}{LIVE_SUFFIX}"
 
 
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
@@ -433,16 +458,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         )
     ]
     covered = [d for d in sessions if cover_start <= d <= cover_end]
-    uncovered = [d for d in sessions if d < cover_start or d > cover_end]
-    findings = []
-    if uncovered:
-        span = [{"from": uncovered[0].isoformat(), "to": uncovered[-1].isoformat()}]
-        findings.append(
-            dated(
-                finding("sessions_without_membership", FAIL, span, sessions=len(uncovered)),
-                uncovered,
-            )
-        )
+    findings = scope_findings(sessions, cover_start, cover_end)
+    if ctx.fetch:
+        _fetch_lists(ctx, sessions_all)
+    exceptions = Exceptions(read_exceptions(VERIFY_EXCEPTIONS["d3"], "D3"), key_of=_item_key)
+    lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     runs = size_runs(members, covered)
     off = [r for r in runs if r["count"] != SIZE]
     if off:
@@ -482,26 +502,40 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             "isin_change": sum("isin_change" in t for t in trace.traced),
         }
         summary["traced_examples"] = trace.traced[:10]
-        for code, items in (
+        isins = isin_of_symbol(
+            [
+                *ctx.rows(
+                    "SELECT symbol, isin FROM hat_instrument UNION SELECT h.symbol, i.isin "
+                    "FROM hat_instrument_symbol_history h JOIN hat_instrument i "
+                    "ON i.id = h.instrument_id"
+                ),
+                *(
+                    (symbol, isin)
+                    for path in lists
+                    for isin, symbol in read_list(
+                        path.read_text(encoding="utf-8-sig", errors="replace")
+                    ).items()
+                ),
+            ]
+        )
+        unapplied = [{**i, "isin": isins.get(i["symbol"].upper())} for i in trace.unapplied]
+        for code, found in (
             ("entry_without_notice", trace.entries),
             ("exit_without_notice", trace.exits),
-            ("notice_not_applied", trace.unapplied),
+            ("notice_not_applied", unapplied),
         ):
-            if items:
+            if items := exceptions.split(code, found):
                 findings.append(dated(finding(code, FAIL, items), [i["day"] for i in items]))
     else:
         ctx.note("D3: no --notices folder with changes_parsed.json; changes not traced")
         findings.append(finding("notices_missing", FAIL, ["changes_parsed.json"]))
-    if ctx.fetch:
-        _fetch_lists(ctx, last_session_by(sessions_all, datetime.now(IST).date()))
     known = {isin for (isin,) in ctx.rows("SELECT isin FROM hat_instrument")}
-    lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     compared = []
     mismatched: list[dict[str, Any]] = []
     differences: list[dict[str, Any]] = []
     for path in lists:
-        day = capture_day(path.name)
-        at = None if day is None else list_session(sessions_all, day)
+        stamp = capture_at(path.name)
+        at = None if stamp is None else list_session(sessions_all, stamp)
         if at is None or not (max(cover_start, ctx.start) <= at <= min(cover_end, ctx.end)):
             continue
         listed = read_list(path.read_text(encoding="utf-8-sig", errors="replace"))
@@ -528,6 +562,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         mismatched += [{**item, "file": path.name, "session": at.isoformat()} for item in wrong]
         differences += [{**item, "file": path.name} for item in explained]
     summary["lists_compared"] = compared
+    mismatched = exceptions.split("list_mismatch", mismatched)
     if mismatched:
         findings.append(
             dated(finding("list_mismatch", FAIL, mismatched), [i["session"] for i in mismatched])
@@ -536,7 +571,49 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         findings.append(finding("list_difference_explained", WARN, differences))
     if not compared:
         findings.append(finding("no_archived_list", FAIL, [str(ctx.reference_dir(LIST_GROUP))]))
+    findings += exceptions.findings()
     return check_result("D3", summary, findings)
+
+
+def _item_key(code: str, item: Mapping[str, Any]) -> tuple[str | None, str]:
+    """A D3 item's (ISIN, day): a list item by the session its list shows."""
+    return item.get("isin"), item["session"] if code == "list_mismatch" else item["day"]
+
+
+def isin_of_symbol(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Each symbol's ISIN, from (symbol, ISIN) pairs, for the symbols that have had one only."""
+    seen: dict[str, set[str]] = defaultdict(set)
+    for symbol, isin in pairs:
+        if symbol and isin:
+            seen[symbol.upper()].add(isin.upper())
+    return {s: next(iter(i)) for s, i in seen.items() if len(i) == 1}
+
+
+def scope_findings(sessions: Sequence[date], first: date, last: date) -> list[dict[str, Any]]:
+    """The window's sessions against the history's cover `first..last`: a cover starting after
+    `NEEDED_FROM` fails on the sessions from it to the cover's start (`history_starts_late`); the
+    sessions before the cover are listed (`sessions_before_history`, warn: no backtest reads
+    members there); a session after it fails (`sessions_without_membership`, dated)."""
+    out = []
+    late = [d for d in sessions if NEEDED_FROM <= d < first]
+    if late:
+        out.append(dated(finding("history_starts_late", FAIL, _span(late)), late))
+    before = [d for d in sessions if d < min(first, NEEDED_FROM)]
+    if before:
+        out.append(finding("sessions_before_history", WARN, _span(before), sessions=len(before)))
+    after = [d for d in sessions if d > last]
+    if after:
+        out.append(
+            dated(
+                finding("sessions_without_membership", FAIL, _span(after), sessions=len(after)),
+                after,
+            )
+        )
+    return out
+
+
+def _span(days: Sequence[date]) -> list[dict[str, str]]:
+    return [{"from": days[0].isoformat(), "to": days[-1].isoformat()}]
 
 
 __all__ = [
@@ -547,6 +624,7 @@ __all__ = [
     "notice_changes",
     "read_list",
     "run",
+    "scope_findings",
     "size_runs",
     "trace_changes",
 ]

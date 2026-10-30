@@ -8,7 +8,9 @@ actions with `d < ex_date <= D`: the factors `bars_daily_cap_adj` multiplies by
 (`chains.stored_adjustment`, once per ISIN chain under its current id, HAT-DATA-053; dividends are
 not in them). `to_raw` divides prices by `F` and multiplies the volume by it (the
 inverse of the adjusted view's volume rule), so the store holds one basis whatever day a symbol was
-downloaded.
+downloaded. The Kotak export adjusts its prices the same way but not its volume, which is NSE's
+traded quantity as it was (the bhavcopy's, measured on 2026-10-30): its import converts the prices
+only (`adjusts_volume=False`).
 
 The corporate-action table can be incomplete, and a day's candles can be wrong, so the conversion
 is never trusted alone: `check_day` compares the day's 5-minute bars with the raw daily bar
@@ -93,16 +95,22 @@ def fyers_factor(actions: Iterable[tuple[date, Decimal]], day: date, fetched_on:
     return product
 
 
-def to_raw(bar: Bar, factor: Decimal) -> Bar:
+def to_raw(bar: Bar, factor: Decimal, *, adjusts_volume: bool = True) -> Bar:
     """`bar` on the raw basis: prices divided by `factor` at the store's 4 places, the volume
-    multiplied by it (half-even to whole shares). A factor of 1 returns the bar unchanged."""
+    multiplied by it (half-even to whole shares) when the source adjusted its volume too
+    (`adjusts_volume`; the Kotak export adjusts its prices only, so its volume is already raw).
+    A factor of 1 returns the bar unchanged."""
     if factor == 1:
         return bar
 
     def price(value: Decimal) -> Decimal:
         return (value / factor).quantize(_PRICE_STEP, ROUND_HALF_EVEN)
 
-    volume = int((bar.volume * factor).to_integral_value(ROUND_HALF_EVEN))
+    volume = (
+        int((bar.volume * factor).to_integral_value(ROUND_HALF_EVEN))
+        if adjusts_volume
+        else bar.volume
+    )
     return Bar(
         bar.symbol,
         bar.start,

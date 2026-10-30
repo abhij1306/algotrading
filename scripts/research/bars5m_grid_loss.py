@@ -1,20 +1,40 @@
-"""How many NIFTY 500 stock-days lose their 5-minute replay to the full-grid rule of
-`backtest.intraday.on_basis` (every bar of the 09:15-15:25 grid present, the first open within
-`CLOSE_5M_PCT` of the daily open), against the rule before it (bars on the grid, none required,
-the last close within `CLOSE_5M_PCT` of the daily close), by year and liquidity bucket.
+"""How many NIFTY 500 stock-days the replay rule (`backtest.intraday.REPLAY_RULE`) replays on
+5-minute bars, against the rules before it, by year and liquidity bucket, and whether its empty
+buckets are windows without a trade.
 
-A stock-day is a point-in-time NIFTY 500 member (`hat_index_member`) with a stored daily bar,
-on a session the 5-minute store covers, before the 2025 hold-out. Its liquidity bucket is its
-20-session average traded value before the day (Rs crore). For each day with bars the report
-counts: passes the old rule, passes the new one, lost (old passes, new fails) by cause
-(`missing`: on the grid with buckets missing; `open`: full grid, first open off), and the
-missing buckets of the lost days (how many, and whether the first or last bucket is missing).
+The rule: the 09:15 bar present, every bar on the IST 5-minute grid once, the 09:15 open within
+`CLOSE_5M_PCT` of the daily open (`intraday.on_basis`), no bucket the import refused missing
+(`intraday.lacks_refused`) and the session in no known coverage gap (`bars5m_gaps`). The rules
+before: `full_grid` wanted every bucket of the grid; `edges` the 09:15 and 15:25 bars (no
+coverage gaps). A stock-day is a point-in-time NIFTY 500 member (`hat_index_member`) with a
+stored daily bar, on a session the 5-minute store covers. Its liquidity bucket is its 20-session
+average traded value before the day (Rs crore). Each day with bars is the first of:
+
+- `off_grid`: a bar off the grid or twice; `no_first`: no 09:15 bar; `open_off`: the 09:15 open
+  off; `refused`: a bucket the import refused is missing; `gap`: inside a coverage gap;
+- `full`: every bucket present (every rule replays it); `back`: some buckets empty (interior or
+  trailing: the rule replays it, as a window without a trade).
+
+Whether an empty bucket is a window without a trade, two ways:
+
+- daily volume: the 5-minute volume over the daily volume, on `full` days against `back` days
+  (a bucket dropped with trades in it shows as volume missing on `back` days only);
+- with `--kotak DIR` (the broker export, `raw_5m/<SYMBOL>.parquet`): each empty bucket of a
+  `back` day against the export's row for it, traded (volume > 0), flat (volume 0) or absent.
+  The export labels a bar by its end until it stops printing a traded 15:30 row (to 2022-01),
+  by its start after; a day with a traded 15:30 row is read as end-labelled.
+
+What the rule reads to choose a day: the 09:15 bar and open (known at 09:20), the grid and the
+refused buckets (properties of the stored file and the ledger) and the coverage gaps (the
+vendor's copy); never the last bar or the close. The report sets the replayed days without a
+15:25 bar (the edges rule refused them) beside the rest: how many, and how often they close at
+the day's high or low (a circuit lock leaves the close without trades).
 
     DB_NAME=hat_live PGOPTIONS="-c default_transaction_read_only=on" HAT_DATA_ROOT=<data> \\
-        venv/bin/python scripts/research/bars5m_grid_loss.py [--out FILE.json]
+        venv/bin/python scripts/research/bars5m_grid_loss.py [--kotak DIR] [--out FILE.json]
 
-Reads the stores and the database only; prints a Markdown table and writes JSON under
-`reports/bt-verify/` when `--out` is given.
+Reads the stores, the export and the database only; prints Markdown tables and writes JSON
+under `reports/bt-verify/` when `--out` is given.
 """
 
 from __future__ import annotations
@@ -23,7 +43,10 @@ import argparse
 import json
 import re
 import sys
+from collections.abc import Iterable
+from datetime import date
 from pathlib import Path
+from statistics import median
 from typing import Any
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
@@ -34,62 +57,129 @@ from sqlalchemy import select, text  # noqa: E402
 from app.database import db_session_scope  # noqa: E402
 from app.hat.data.audit import CLOSE_5M_PCT  # noqa: E402
 from app.hat.data.bars import BAR_WIDTH  # noqa: E402
+from app.hat.data.bars5m_gaps import gap_spans, in_gap, read_gaps  # noqa: E402
+from app.hat.data.bars_store import BarStore  # noqa: E402
 from app.hat.data.sessions import SESSION_CLOSE, SESSION_OPEN  # noqa: E402
-from app.hat.models import HatEvent, HatIndexMember  # noqa: E402
+from app.hat.models import HatEvent, HatIndexMember, HatInstrument  # noqa: E402
 from app.hat.settings import operator_settings  # noqa: E402
-from app.paths import PROJECT_ROOT  # noqa: E402
+from app.paths import BARS5M_GAPS, PROJECT_ROOT  # noqa: E402
 
-HOLD_OUT_START = "2025-01-01"
 # the grid `on_basis` reads: the regular session's 5-minute bars, in minutes after midnight IST
 FIRST_MIN = SESSION_OPEN.hour * 60 + SESSION_OPEN.minute
 WIDTH_MIN = int(BAR_WIDTH.total_seconds()) // 60
 LAST_MIN = SESSION_CLOSE.hour * 60 + SESSION_CLOSE.minute - WIDTH_MIN
 GRID_BARS = (LAST_MIN - FIRST_MIN) // WIDTH_MIN + 1
-RANGE_PCT = 0.1
-_FLOATS = ("adv", "open_off", "close_off", "high_off", "low_off")
+KINDS = ("full", "back", "off_grid", "no_first", "open_off", "refused", "gap")
+_FLOATS = ("adv", "open_off", "vol_ratio", "ret")
 BUCKETS = ((0, 10), (10, 25), (25, 50), (50, 100), (100, None))  # ADV20, Rs crore
+VOLUME_BANDS = (1.0, 5.0)  # |5-minute volume / daily volume - 1|, percent
+PARQUET = "*.parquet"
 REPORTS = PROJECT_ROOT / "reports" / "bt-verify"
 _REPORT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,80}\.json")
 
-_SQL = """
-with daily as (
-    select instrument_id, date, open, high, low, close,
-           avg(traded_value) over (partition by instrument_id order by date
-                                   rows between 20 preceding and 1 preceding) / 1e7 as adv,
-           count(*) over (partition by instrument_id order by date
-                          rows between 20 preceding and 1 preceding) as adv_n
-    from read_parquet($daily, hive_partitioning = true)
-    where date >= date '2021-09-01' and date < cast($holdout as date) and series in ('EQ', 'BE')
-),
-five as (
+# one stored 5-minute day's summary, built a year at a time (the whole store at once spills)
+_FIVE_SQL = """
+insert into five_days
     select instrument_id, cast(date as date) as date,
            count(*) as n,
            count(distinct bar_start) as n_distinct,
            count(*) filter (where (hour(s) * 60 + minute(s) - $first) % $width = 0
                                and second(s) = 0
                                and hour(s) * 60 + minute(s) between $first and $last) as on_grid,
-           min(s) as first_start, max(s) as last_start,
-           arg_min(open, bar_start) as first_open, arg_max(close, bar_start) as last_close,
-           max(high) as high, min(low) as low
+           bool_or(hour(s) * 60 + minute(s) = $first and second(s) = 0) as has_first,
+           bool_or(hour(s) * 60 + minute(s) = $last and second(s) = 0) as has_last,
+           arg_min(open, bar_start) as first_open,
+           sum(volume) as volume
     from (select *, timezone('Asia/Kolkata', bar_start) as s
-          from read_parquet($five, hive_partitioning = true))
-    where date < cast($holdout as date)
+          from read_parquet($five, hive_partitioning = true)
+          where date >= cast($start as date) and date < cast($stop as date))
     group by 1, 2
+"""
+
+_SQL = """
+create temp table day_rows as
+with daily as (
+    select instrument_id, date, symbol, open, high, low, close, volume,
+           avg(traded_value) over (partition by instrument_id order by date
+                                   rows between 20 preceding and 1 preceding) / 1e7 as adv,
+           count(traded_value) over (partition by instrument_id order by date
+                          rows between 20 preceding and 1 preceding) as adv_n
+    from read_parquet($daily, hive_partitioning = true)
+    where date >= date '2021-09-01' and series in ('EQ', 'BE')
 ),
-days as (select distinct date from five),
+days as (select distinct date from five_days),
 members as (
     select m.instrument_id, d.date from members_df m join days d
       on m.effective_from <= d.date and (m.effective_to is null or m.effective_to > d.date)
 )
-select year(m.date) as year, d.adv, d.adv_n, f.n, f.n_distinct, f.on_grid,
-       hour(f.first_start) * 60 + minute(f.first_start) as first_min,
-       hour(f.last_start) * 60 + minute(f.last_start) as last_min,
+select m.instrument_id, m.date, d.symbol, year(m.date) as year, d.adv, d.adv_n,
+       f.n, f.n_distinct, f.on_grid, f.has_first, f.has_last,
+       coalesce(r.n, 0) as refused_missing,
        abs(f.first_open / d.open - 1) * 100 as open_off,
-       abs(f.last_close / d.close - 1) * 100 as close_off,
-       abs(f.high / d.high - 1) * 100 as high_off, abs(f.low / d.low - 1) * 100 as low_off
+       f.volume / nullif(d.volume, 0) as vol_ratio,
+       d.close / d.open - 1 as ret,
+       d.close = d.high as close_at_high, d.close = d.low as close_at_low
 from members m
 join daily d on d.instrument_id = m.instrument_id and d.date = m.date
-left join five f on f.instrument_id = m.instrument_id and f.date = m.date
+left join five_days f on f.instrument_id = m.instrument_id and f.date = m.date
+left join refused_days r on r.instrument_id = m.instrument_id and r.date = m.date
+"""
+
+# the buckets the import refused (ledger rows with a bar start) that the stored day lacks
+_REFUSED_SQL = """
+insert into refused_days
+    select r.instrument_id, r.day, count(*)
+    from rejects r
+    anti join (select instrument_id, bar_start from read_parquet($five, hive_partitioning = true)
+               where date >= cast($start as date) and date < cast($stop as date)) f
+      on f.instrument_id = r.instrument_id and f.bar_start = r.bar_start
+    where r.day >= cast($start as date) and r.day < cast($stop as date)
+    group by 1, 2
+"""
+
+# the empty buckets of the `back` days, against the export's row for each
+_KOTAK_SQL = """
+with back as (select instrument_id, date, symbol from back_days),
+grid as (select unnest(range($first, $last + 1, $width)) as minute),
+stored as (
+    select f.instrument_id, cast(timezone('Asia/Kolkata', f.bar_start) as date) as date,
+           hour(timezone('Asia/Kolkata', f.bar_start)) * 60
+             + minute(timezone('Asia/Kolkata', f.bar_start)) as minute
+    from read_parquet($five, hive_partitioning = true) f
+    semi join back b on b.instrument_id = f.instrument_id and b.date = cast(f.date as date)
+),
+empty as (
+    select b.instrument_id, b.date, b.symbol, g.minute
+    from back b cross join grid g
+    anti join stored s on s.instrument_id = b.instrument_id and s.date = b.date
+                       and s.minute = g.minute
+),
+raw as (  -- the IST wall clock: DuckDB reads a zoned timestamp in its session zone
+    select symbol, cast(s as date) as date, hour(s) * 60 + minute(s) as minute, volume
+    from (select regexp_extract(filename, '([^/]+)\\.parquet$', 1) as symbol,
+                 timezone('Asia/Kolkata', ts) as s, volume
+          from read_parquet($kotak, filename = true))
+    where cast(s as date) in (select distinct date from back)
+),
+labels as (
+    select symbol, date, bool_or(minute = $close and volume > 0) as end_labelled
+    from raw group by 1, 2
+),
+rows as (
+    select r.symbol, r.date,
+           r.minute - case when l.end_labelled then $width else 0 end as minute, r.volume
+    from raw r join labels l using (symbol, date)
+)
+select year(e.date) as year,
+       case when l.symbol is null then 'day_absent'
+            when r.volume > 0 then 'traded'
+            when r.volume = 0 then 'flat'
+            else 'absent' end as kotak,
+       count(*) as buckets
+from empty e
+left join labels l on l.symbol = e.symbol and l.date = e.date
+left join rows r on r.symbol = e.symbol and r.date = e.date and r.minute = e.minute
+group by all order by 1, 2
 """
 
 
@@ -103,65 +193,85 @@ def bucket_of(adv: float | None, adv_n: int) -> str:
     return "n/a"  # pragma: no cover - the last bucket is open
 
 
-def classify(row: dict[str, Any]) -> tuple[str, int]:
-    """(`no_bars`, `kept`, `lost_missing`, `lost_open`, `failed_both` or `new_only`, missing
-    buckets) of one stock-day's 5-minute summary under the old and the new rule."""
+def classify(row: dict[str, Any]) -> str:
+    """`no_bars` or one of `KINDS`, of one stock-day's 5-minute summary."""
     if row["n"] is None:
-        return "no_bars", 0
-    on_grid = row["on_grid"] == row["n"]
-    old = on_grid and row["close_off"] is not None and row["close_off"] <= CLOSE_5M_PCT
-    full = on_grid and row["n_distinct"] == row["n"] == GRID_BARS
-    new = full and row["open_off"] is not None and row["open_off"] <= CLOSE_5M_PCT
-    missing = GRID_BARS - row["n_distinct"] if on_grid else 0
-    if old and new:
-        return "kept", 0
-    if old:
-        return ("lost_open" if full else "lost_missing"), missing
-    return ("new_only" if new else "failed_both"), missing
+        return "no_bars"
+    if row["on_grid"] != row["n"] or row["n_distinct"] != row["n"]:
+        return "off_grid"
+    if not row["has_first"]:
+        return "no_first"
+    if row["open_off"] is None or row["open_off"] > CLOSE_5M_PCT:
+        return "open_off"
+    if row["refused_missing"]:
+        return "refused"
+    if row["in_gap"]:
+        return "gap"
+    return "full" if row["n"] == GRID_BARS else "back"
 
 
-def in_range(row: dict[str, Any]) -> bool:
-    """Whether the bars' high and low are within `RANGE_PCT` of the daily bar's."""
-    return (
-        row["high_off"] is not None
-        and row["low_off"] is not None
-        and max(row["high_off"], row["low_off"]) <= RANGE_PCT
-    )
+def edges(row: dict[str, Any], kind: str) -> bool:
+    """Whether the edges rule (the 15:25 bar too, no coverage gaps) replayed the day."""
+    return (kind in ("full", "back", "gap")) and bool(row["has_last"])
 
 
-def _missing_band(missing: int) -> str:
-    return "1" if missing == 1 else "2-5" if missing <= 5 else "6-20" if missing <= 20 else "21+"
+def volume_fit(ratios: Iterable[float]) -> dict[str, Any]:
+    """How close the 5-minute volume comes to the daily volume: the days, the median ratio and
+    the share within each of `VOLUME_BANDS` percent."""
+    found = sorted(ratios)
+    if not found:
+        return {"days": 0}
+    out: dict[str, Any] = {"days": len(found), "median": round(median(found), 4)}
+    for band in VOLUME_BANDS:
+        within = sum(abs(r - 1) * 100 <= band for r in found)
+        out[f"within_{band:g}pct"] = round(100 * within / len(found), 1)
+    return out
+
+
+def _selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if not rows:
+        return {"days": 0}
+    rets = sorted(r["ret"] for r in rows if r["ret"] is not None)
+    return {
+        "days": len(rows),
+        "median_ret_pct": round(100 * median(rets), 3) if rets else None,
+        "close_at_high_pct": round(
+            100 * sum(bool(r["close_at_high"]) for r in rows) / len(rows), 1
+        ),
+        "close_at_low_pct": round(100 * sum(bool(r["close_at_low"]) for r in rows) / len(rows), 1),
+    }
 
 
 def tally(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    """Counts by year and bucket, and the lost days' missing buckets."""
+    """Counts by year and bucket, the volume fit of `full` and `back` days, the empty-bucket
+    counts of `back` days and the replayed days without a 15:25 bar beside the rest."""
     table: dict[tuple[int, str], dict[str, int]] = {}
-    bands: dict[str, int] = {}
-    edges = {"first_missing": 0, "last_missing": 0, "both_present": 0}
-    # the bars' high and low within RANGE_PCT of the daily bar's: no traded extreme is missing
-    ranges = {"kept": [0, 0], "lost_missing_both_edges": [0, 0]}
+    ratios: dict[str, list[float]] = {"full": [], "back": []}
+    empty: dict[str, int] = {}
+    chosen: dict[str, list[dict[str, Any]]] = {"replayed": [], "no_last": []}
     for row in rows:
-        kind, missing = classify(row)
-        both = row["first_min"] == FIRST_MIN and row["last_min"] == LAST_MIN
-        group = "kept" if kind == "kept" else "lost_missing_both_edges"
-        if kind == "kept" or (kind == "lost_missing" and both):
-            ranges[group][0] += 1
-            ranges[group][1] += in_range(row)
+        kind = classify(row)
         cell = table.setdefault((row["year"], bucket_of(row["adv"], row["adv_n"])), {})
         cell["member_days"] = cell.get("member_days", 0) + 1
         cell[kind] = cell.get(kind, 0) + 1
-        if kind == "lost_missing":
-            band = _missing_band(missing)
-            bands[band] = bands.get(band, 0) + 1
-            edges["first_missing"] += row["first_min"] != FIRST_MIN
-            edges["last_missing"] += row["last_min"] != LAST_MIN
-            edges["both_present"] += both
+        cell["edges"] = cell.get("edges", 0) + edges(row, kind)
+        if kind in ratios and row["vol_ratio"] is not None:
+            ratios[kind].append(row["vol_ratio"])
+        if kind == "back":
+            band = _empty_band(GRID_BARS - row["n"])
+            empty[band] = empty.get(band, 0) + 1
+        if kind in ("full", "back"):
+            chosen["replayed" if row["has_last"] else "no_last"].append(row)
     return {
         "cells": [{"year": y, "bucket": b, **c} for (y, b), c in sorted(table.items())],
-        "lost_missing_by_count": dict(sorted(bands.items())),
-        "lost_missing_edges": edges,
-        "range_within_pct": {k: {"days": v[0], "in_range": v[1]} for k, v in ranges.items()},
+        "volume_fit": {k: volume_fit(v) for k, v in ratios.items()},
+        "back_empty_buckets": dict(sorted(empty.items())),
+        "selection": {k: _selection(v) for k, v in chosen.items()},
     }
+
+
+def _empty_band(missing: int) -> str:
+    return "1" if missing == 1 else "2-5" if missing <= 5 else "6-20" if missing <= 20 else "21+"
 
 
 def markdown(cells: list[dict[str, Any]], key: str) -> str:
@@ -172,23 +282,45 @@ def markdown(cells: list[dict[str, Any]], key: str) -> str:
         for k, v in cell.items():
             if k not in ("year", "bucket"):
                 total[k] = total.get(k, 0) + v
-    cols = ("member_days", "no_bars", "kept", "lost_missing", "lost_open", "new_only")
-    lines = [f"| {key} | " + " | ".join(cols) + " | lost % of old passes |"]
-    lines.append("|" + " --- |" * (len(cols) + 2))
+    cols = ("member_days", "no_bars", *KINDS)
+    heads = ("% full grid", "% edges", "% now")
+    lines = [f"| {key} | " + " | ".join((*cols, *heads)) + " |"]
+    lines.append("|" + " --- |" * (len(cols) + len(heads) + 1))
     for k, total in sorted(sums.items(), key=lambda kv: str(kv[0])):
-        lost = total.get("lost_missing", 0) + total.get("lost_open", 0)
-        old = total.get("kept", 0) + lost
-        share = f"{100 * lost / old:.1f}" if old else "-"
-        lines.append(f"| {k} | " + " | ".join(str(total.get(c, 0)) for c in cols) + f" | {share} |")
+        days = total.get("member_days", 0)
+        replayed = (
+            total.get("full", 0),
+            total.get("edges", 0),
+            total.get("full", 0) + total.get("back", 0),
+        )
+        pcts = [f"{100 * n / days:.1f}" if days else "-" for n in replayed]
+        lines.append(
+            f"| {k} | " + " | ".join([*(str(total.get(c, 0)) for c in cols), *pcts]) + " |"
+        )
+    return "\n".join(lines)
+
+
+def kotak_table(rows: list[tuple[int, str, int]]) -> str:
+    """The `back` days' empty buckets by year against the export's row for each."""
+    kinds = ("flat", "absent", "traded", "day_absent")
+    years: dict[int, dict[str, int]] = {}
+    for year, kind, n in rows:
+        years.setdefault(year, {})[kind] = n
+    lines = ["| year | " + " | ".join(kinds) + " |", "|" + " --- |" * (len(kinds) + 1)]
+    for year, counts in sorted(years.items()):
+        lines.append(f"| {year} | " + " | ".join(str(counts.get(k, 0)) for k in kinds) + " |")
     return "\n".join(lines)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--kotak", type=Path, help="the broker export folder (holds raw_5m/)")
     parser.add_argument("--out", help=f"a report file name, written under {REPORTS}")
     args = parser.parse_args(argv)
     if args.out is not None and not _REPORT_NAME.fullmatch(args.out):
         raise SystemExit("refused: --out is a bare file name ending .json")
+    if args.kotak is not None and not (args.kotak / "raw_5m").is_dir():
+        raise SystemExit("refused: --kotak has no raw_5m/ folder")
     root = operator_settings().data_root
     with db_session_scope() as session:
         session.execute(text("SET TRANSACTION READ ONLY"), bind_arguments={"mapper": HatEvent})
@@ -198,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
                 select(HatIndexMember).where(HatIndexMember.index_name == "NIFTY 500")
             )
         ]
+        isins = {
+            str(i): isin
+            for i, isin in session.execute(select(HatInstrument.id, HatInstrument.isin))
+        }
     con = duckdb.connect()
     con.execute("set memory_limit = '1500MB'")
     con.execute("set threads = 2")
@@ -206,33 +342,68 @@ def main(argv: list[str] | None = None) -> int:
         "create table members_df (instrument_id varchar, effective_from date, effective_to date)"
     )
     con.executemany("insert into members_df values (?, ?, ?)", members)
-    cur = con.execute(
-        _SQL,
-        {
-            "daily": str(root / "bars_daily_raw" / "*" / "*.parquet"),
-            "five": str(root / "bars_5m" / "*" / "*.parquet"),
-            "holdout": HOLD_OUT_START,
-            "first": FIRST_MIN,
-            "last": LAST_MIN,
-            "width": WIDTH_MIN,
-        },
+    five = str(root / "bars_5m" / "*" / PARQUET)
+    grid = {"first": FIRST_MIN, "last": LAST_MIN, "width": WIDTH_MIN}
+    con.execute(
+        "create temp table five_days (instrument_id varchar, date date, n bigint,"
+        " n_distinct bigint, on_grid bigint, has_first boolean, has_last boolean,"
+        " first_open double, volume hugeint)"
     )
+    con.execute(
+        "create temp table rejects (instrument_id varchar, day date, bar_start timestamptz)"
+    )
+    con.executemany(
+        "insert into rejects values (?, ?, ?)",
+        [
+            (r.instrument_id, r.day, r.bar_start)
+            for r in BarStore(root).read_rejects()
+            if r.bar_start is not None and r.day is not None
+        ],
+    )
+    con.execute("create temp table refused_days (instrument_id varchar, date date, n bigint)")
+    for year in range(2021, date.today().year + 1):
+        span = {"start": f"{year}-01-01", "stop": f"{year + 1}-01-01"}
+        con.execute(_FIVE_SQL, {"five": five, **span, **grid})
+        con.execute(_REFUSED_SQL, {"five": five, **span})
+    con.execute(_SQL, {"daily": str(root / "bars_daily_raw" / "*" / PARQUET)})
+    gaps = gap_spans(read_gaps(BARS5M_GAPS))
+    cur = con.execute("select * exclude (symbol) from day_rows")
     names = [d[0] for d in cur.description]
-    rows = [
-        {
+    rows = []
+    for r in cur.fetchall():
+        row = {
             k: (float(v) if k in _FLOATS and v is not None else v)
             for k, v in zip(names, r, strict=True)
         }
-        for r in cur.fetchall()
-    ]
+        row["in_gap"] = in_gap(gaps, isins.get(row.pop("instrument_id")), row.pop("date"))
+        rows.append(row)
     report = tally(rows)
     print(markdown(report["cells"], "year"))
     print()
     print(markdown(report["cells"], "bucket"))
     print()
-    print("lost to missing buckets, by missing count:", report["lost_missing_by_count"])
-    print("lost to missing buckets, edges:", report["lost_missing_edges"])
-    print(f"high and low within {RANGE_PCT}% of the daily bar:", report["range_within_pct"])
+    print("5-minute volume over daily volume:", report["volume_fit"])
+    print("back days by empty buckets:", report["back_empty_buckets"])
+    print("replayed days with and without a 15:25 bar:", report["selection"])
+    if args.kotak is not None:
+        con.execute(
+            "create temp table back_days as select instrument_id, date, symbol from day_rows "
+            "where n is not null and on_grid = n and n_distinct = n and has_first "
+            "and n < $grid_bars and open_off <= $open_pct",
+            {"grid_bars": GRID_BARS, "open_pct": CLOSE_5M_PCT},
+        )
+        found = con.execute(
+            _KOTAK_SQL,
+            {
+                "five": five,
+                "kotak": str(args.kotak / "raw_5m" / PARQUET),
+                "close": LAST_MIN + WIDTH_MIN,  # the closing row an end label prints
+                **grid,
+            },
+        ).fetchall()
+        report["kotak_empty_buckets"] = [{"year": y, "kotak": k, "buckets": n} for y, k, n in found]
+        print()
+        print(kotak_table(found))
     if args.out is not None:
         REPORTS.mkdir(parents=True, exist_ok=True)
         (REPORTS / args.out).write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")

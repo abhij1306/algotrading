@@ -6,7 +6,9 @@ snapshot and breadth (HAT-DATA-040..048, 050, 051; HAT-OPS-022).
 fetches the active EQ/BE universe in batches of 50, checks every row, flags the symbols whose
 prices suggest a corporate action, looks those up (and only those) and writes the day's raw
 partition once. At 22:00 without a matching probe it runs the bhavcopy fallback of PR 5 instead.
-The index snapshot and the advance/decline record are stored on both paths; a run that cannot
+The index levels and the advance/decline record are stored on both paths; the levels are NSE's
+daily index file of the session when it can be had, the MCP snapshot only when not (the file is
+what NSE publishes: a snapshot's NIFTY 50 high of 2025-09-18 was 0.40 off it). A run that cannot
 store the NIFTY 500 and India VIX levels does not succeed. Then the NIFTY 500 TRI close of the
 session (and of any recent bar day still without one) is fetched from niftyindices; a day it
 lacks is recorded in the report and left missing, never carried, and does not fail the run (only
@@ -63,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 JOB_INGEST = "ingest.nightly"
 SOURCE_MCP = "mcp"
+INDEX_FROM_CSV = "nse_index_csv"  # the levels came from NSE's daily index file
 
 PROBE_START = clock_time(18, 0)
 CUTOFF = clock_time(22, 0)
@@ -247,6 +250,7 @@ class IngestReport:
     actions_created: int = 0
     probes: int = 0
     index_rows: int = 0
+    index_source: str = ""  # which source supplied the levels: `INDEX_FROM_CSV` or `SOURCE_MCP`
     breadth_source: str = ""
     tri_stored: int = 0  # NIFTY 500 TRI closes written (the session's and earlier missing ones)
     tri_missing: list[date] = field(default_factory=list)  # bar days still without a TRI close
@@ -268,6 +272,7 @@ class IngestReport:
             "actions_created": self.actions_created,
             "probes": self.probes,
             "index_rows": self.index_rows,
+            "index_source": self.index_source,
             "breadth_source": self.breadth_source,
             "tri_stored": self.tri_stored,
             "tri_missing": [d.isoformat() for d in self.tri_missing],
@@ -421,10 +426,10 @@ def _lookup_actions(
     return stored.created, len(found.failed) + len(stored.conflicts)
 
 
-def _store_indices(
-    deps: IngestDeps, trade_date: date, report: IngestReport, *, csv_first: bool
-) -> None:
-    """Store the day's index levels; the run fails when NIFTY 500 or India VIX is missing."""
+def _store_indices(deps: IngestDeps, trade_date: date, report: IngestReport) -> None:
+    """Store the day's index levels, NSE's file first (only its rows dated the session:
+    `index_history.dated_on`); the run fails when NIFTY 500 or India VIX is missing. The report
+    names the source that supplied them (`index_source`)."""
 
     def from_csv() -> list[IndexRow]:
         text = deps.index_csv(trade_date) if deps.index_csv is not None else None
@@ -439,12 +444,12 @@ def _store_indices(
             return []
         return index_rows_from_mcp(snap.rows) if snap.data_date == trade_date else []
 
-    sources = (from_csv, from_mcp) if csv_first else (from_mcp, from_csv)
-    for source in sources:
+    for name, source in ((INDEX_FROM_CSV, from_csv), (SOURCE_MCP, from_mcp)):
         rows = source()
         if rows and has_required_indices(r.index_name for r in rows):
             deps.store.upsert_index(trade_date, rows)
             report.index_rows = len(rows)
+            report.index_source = name
             return
     raise JobError(CODE_INDEX_MISSING)
 
@@ -486,12 +491,11 @@ def run_ingest(deps: IngestDeps, trade_date: date, run_id: uuid.UUID) -> IngestR
     report.universe = len(members)
     symbols = request_symbols(members)
     report.requested = len(symbols)
-    csv_first = False
     if deps.store.partition_files(DATASET_BARS, trade_date):
         _reuse_partition(deps, trade_date, report)
     else:
-        csv_first = _fetch_and_write(deps, trade_date, members, symbols, run_id, report)
-    _store_indices(deps, trade_date, report, csv_first=csv_first)
+        _fetch_and_write(deps, trade_date, members, symbols, run_id, report)
+    _store_indices(deps, trade_date, report)
     _store_breadth(deps, trade_date, report)
     _store_tri(deps, trade_date, report)
     return report
@@ -513,9 +517,9 @@ def _fetch_and_write(
     symbols: Sequence[str],
     run_id: uuid.UUID,
     report: IngestReport,
-) -> bool:
+) -> None:
     """Fetch the day (MCP, else the bhavcopy fallback), look up flagged actions and write the raw
-    partition, its row-check counts first. True when the rows came from the bhavcopy CSV."""
+    partition, its row-check counts first."""
     by_sym = by_symbol(members)
     outcome = wait_for_data(lambda: _probe(deps, trade_date), trade_date, deps.clock, deps.sleep)
     report.probes = len(outcome.probes)
@@ -547,7 +551,6 @@ def _fetch_and_write(
     if rows and not deps.store.partition_files(DATASET_BARS, trade_date):
         _keep_checks(deps.store, trade_date, report)  # first: ingest's partition has its counts
     write_raw_once(deps.store, trade_date, rows)
-    return not outcome.ready
 
 
 # The row-check counts of the run that wrote a day's raw partition. A retry that finds the

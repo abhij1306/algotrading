@@ -43,7 +43,14 @@ from app.hat.backtest.fills import (
     entry_fill,
     stop_fill,
 )
-from app.hat.backtest.intraday import EP_ESTIMATE, after_trigger, on_basis, traded_low_after
+from app.hat.backtest.intraday import (
+    EP_ESTIMATE,
+    after_trigger,
+    lacks_refused,
+    on_basis,
+    screened_buckets,
+    traded_low_after,
+)
 from app.hat.backtest.loop import AccountFills
 from app.hat.backtest.slots import SLOT_ORDER_SCORE, SLOT_ORDER_TIME, order_slots, trigger_rank
 from app.hat.backtest.spec import (
@@ -62,6 +69,7 @@ from app.hat.backtest.spec import (
 from app.hat.confighash import config_hash
 from app.hat.costs import DEFAULT_SLIPPAGE_BPS, BacktestFills, load_cost_schedule
 from app.hat.data.bars import Bar as Bar5m
+from app.hat.data.bars_store import RejectRow
 from app.hat.data.ticks import scaled_tick, tick_for_date
 from app.hat.engine.portfolio.allocator import sleeve_key
 from app.hat.engine.portfolio.universe import Interval, members_on
@@ -229,22 +237,48 @@ def test_after_trigger() -> None:
 
 def test_on_basis() -> None:
     """A session's 5-minute bars are read only when they fit its daily bar, by what is known at
-    the open: every bar of the IST 5-minute grid of the session present (09:15 to 15:25), none
-    off it, and the first open within 5% of the daily open (never the close). Harm: an entry
-    decided on bars of another price basis or another day, a session chosen by its close, or a
-    truncated day replayed without its later lows."""
+    the open: the 09:15 bar present, every bar on the IST 5-minute grid of the session once,
+    and the 09:15 open within 5% of the daily open (never the close or the last bar). An empty
+    bucket, interior or trailing, is a window without a trade, as live's bar builder sees it.
+    Harm: an entry decided on bars of another price basis or another day, a session chosen by
+    how it ended (a circuit lock has no late trade), or a quiet day refused for its quiet."""
     day = date(2024, 3, 1)
     bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))  # 75 bars, each opening at 99
     assert on_basis(day, bars, D(99))
     assert on_basis(day, bars, D("94.3"))  # 4.98% off
     assert not on_basis(day, bars, D("104.5"))  # the first open 5.3% off
     assert not on_basis(day, (), D(99))
-    assert not on_basis(day, bars[:-1], D(99))  # no 15:25 bar: a truncated day
-    assert not on_basis(day, bars[:10] + bars[11:], D(99))  # a bar missing inside
+    assert on_basis(day, bars[:-1], D(99))  # no trade in 15:25-15:30 (a locked close)
+    assert on_basis(day, bars[:60], D(99))  # nothing after 14:15: no trade, as live
+    assert on_basis(day, bars[:10] + bars[11:], D(99))  # no trade in 10:05-10:10
+    assert on_basis(day, (bars[0], bars[-1]), D(99))  # traded only at the open and the close
+    assert not on_basis(day, bars[1:], D(99))  # no 09:15 bar
+    assert on_basis(day, bars[::-1], D(99))  # in any order: the 09:15 bar's open is read
+    assert not on_basis(day, (*bars, _bar(0, "104", "105")), D(99))  # 09:15 twice
     assert not on_basis(day, (*bars, bars[3]), D(99))  # a bar twice
     assert not on_basis(day, (*bars[:-1], _bar(7, "104", "100")), D(99))  # off the grid
     assert not on_basis(day, (*bars[:-1], _bar(375, "104", "100")), D(99))  # 15:30
     assert not on_basis(date(2024, 3, 2), bars, D(99))  # another day's bars
+
+
+def test_a_session_missing_a_refused_bucket_is_not_replayed() -> None:
+    """A bucket the import refused (a ledger row with its bar start) traded: a session whose bars
+    lack it is not quiet there and is never replayed; one that stores it (from another copy) is.
+    Harm: a session replayed without the trades of a bucket the import dropped, or a good
+    session refused for another copy's refusal."""
+    day = date(2024, 3, 1)
+    at = datetime(2024, 3, 1, 10, 5, tzinfo=IST)
+    rows = [
+        RejectRow("A", "A", day, at, "volume"),
+        RejectRow("B", "B", day, None, "basis_mismatch"),
+        RejectRow("C", "C", None, None, "epoch"),
+    ]
+    refused = screened_buckets(rows)
+    assert refused == {("A", day): frozenset({at})}
+    bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))
+    assert not lacks_refused(bars, refused[("A", day)])  # 10:05 stored from another copy
+    assert lacks_refused(bars[:10] + bars[11:], refused[("A", day)])  # 10:05 missing
+    assert not lacks_refused(bars[:10] + bars[11:], ())
 
 
 def test_known_gaps_name_only_the_estimates_taken() -> None:

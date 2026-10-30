@@ -2,12 +2,14 @@
 back to the Kotak raw files they came from (`--kotak`), and the stored days checked again.
 
 The raw files are read here on their own, with their own time labelling: a day whose traded bars
-include one labelled 15:30 and none 09:15 is labelled by bar end (each bar starts five minutes
-before its label), any other by bar start (`end_labelled`); the importer's switch date is not
-used. Each refused (instrument, day) is aggregated from those candles (the session's 5-minute
-bars from 09:15 to 15:30 IST), and held against the raw daily bar with the import's envelope
-(`bars_basis.check_day`, tolerance `history_envelope_tol`, never loosened here). The first class
-that fits, in this order:
+include one labelled 15:30 is labelled by bar end (each bar starts five minutes before its label),
+any other by bar start (`end_labelled`); the importer's switch date is not used. In the export of
+2026-10-28 every day to 2022-01-21 has a traded 15:30 row and no later day has one; 4,956 of
+those early days also have a traded row labelled 09:15, the pre-open print (the bar ending
+09:15), which the importer drops as outside the session. Each refused (instrument, day) is
+aggregated from those candles (the session's 5-minute bars from 09:15 to 15:30 IST), and held
+against the raw daily bar with the import's envelope (`bars_basis.check_day`, tolerance
+`history_envelope_tol`, never loosened here). The first class that fits, in this order:
 
 - `no_daily_now`: no raw daily bar for the day now (ours: the bar or the ISIN map);
 - `stored_now`: the day is stored now (a later run let it in: the ledger row is stale);
@@ -37,16 +39,32 @@ raw evidence, and the rule this evidence recommends. Stored days that fail the e
 Stored bars bar by bar: a seeded sample of `COMPARE_SAMPLE` stored (instrument, day) pairs is
 compared with the raw file's bars of that day (`compare_bars`): bars pair by the labelling rule
 (`end_labelled`), and a day the other alignment fits better fails (`bar_alignment_not_rule`: the
-stored labels are a bar off); the day's scale (the stored history is the source divided by the
-factors it carries, one number a day) is found from the bars themselves, and then every stored
-bar must be a source bar at that scale (prices within `PRICE_TICK` of a tick, volume within one
-share or `VOLUME_SLACK`), and every traded source bar in the session must be stored. A stored day
-with no raw file, a bar that differs, or a bar on one side only fails (dated). The envelope check
-above holds each scaled day to the raw daily bar, so the scale itself is checked there. The store's
-bars came from Fyers' minute history inside its download windows (`minute_history/progress.json`)
-and from the Kotak import outside them; the summary splits the compare by that writer
-(`by_writer`): inside a Fyers window Kotak is a second vendor, not the bars' own source, and a
-difference there still fails (the stored bars are not proven).
+stored labels are a bar off); the day's scale (the export's prices carry the later actions, one
+number a day) is found from the bars themselves, and then every stored bar must be a source bar
+at that scale (prices within `PRICE_TICK` of a tick) with the source's volume as it is (the
+export does not adjust its volume: `bars_basis.to_raw`), and every traded source bar in the
+session must be stored. Independently of both vendors, each sampled day's stored session volume
+must reconcile with the bhavcopy's (`day_volume_fits`, else `day_volume_differs`; a short day
+inside a known coverage gap, `bars5m_gaps`, warns as `day_volume_in_gap`). A stored day with no
+raw file, a bar that differs, or a bar on one side only fails (dated), except (`judge_day`):
+- the session's last bar (15:25) differing only in its close, one side the daily close
+  (`last_bar_close`, warn): NSE's close is the closing auction's price, which one copy of the
+  vendor's history stamps on the last bar and the other does not (`close_convention`);
+- a day whose differences are all a trade at a bucket boundary filed in the neighbouring bar
+  (`vendor_bucket_boundary`, warn: the same bars, day volume, high and low, prices within
+  `PRICE_BOUND`);
+- a day inside a Fyers window (the store's bars came from Fyers' minute history there,
+  `minute_history/progress.json`; Kotak is a second vendor, not their source): prices within
+  `PRICE_BOUND`, and bar volumes or bars Kotak lacks on a day whose volume reconciles with the
+  bhavcopy, warn as `second_vendor_differs`; a traded Kotak bar the store lacks still fails. A
+  Fyers window day of a symbol the export has no file for at all warns as
+  `second_vendor_missing`; a day missing from a file the export has fails;
+- a failed day the reviewed list names (`VERIFY_EXCEPTIONS["d4"]`: code, ISIN, day, the item's
+  values when reviewed, such as `bars` with `worst` or `scale`, and the reason with its evidence),
+  warned as `excepted` (`exceptions.py`).
+The envelope check above holds each stored day to the raw daily bar, so the scale itself is
+checked there. The summary splits the compare by writer (`by_writer`) and gives the volume ratio
+by writer.
 """
 
 from __future__ import annotations
@@ -55,18 +73,22 @@ import json
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from contextlib import closing
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from app.paths import BARS5M_GAPS, VERIFY_EXCEPTIONS
+
 from ...money import require_exact
 from ...time import IST
 from ..audit import FAIL, WARN, check_result, finding
+from ..bars5m_gaps import gap_spans, in_gap, read_gaps
 from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
 from . import dated, seeded_sample
 from .context import Context
+from .exceptions import Exceptions, read_exceptions
 
 BASIS_STEP = 0.03  # a factor's mark: both extremes off by 3% or more, the same way and ratio
 AUCTION_NEAR = 0.01  # a missed extreme within 1% of the daily open: the auction's
@@ -78,6 +100,14 @@ COMPARE_SAMPLE = 3000
 PRICE_TICK = 0.0105  # rupees at the source's scale: a 0.01 tick and its rounding
 PRICE_SLACK = 0.0005  # relative: the scaled source rounded to the store's four places
 VOLUME_SLACK = 0.001  # relative: the scaled volume rounded to whole shares
+# The largest relative price difference a second vendor's bar or a bucket-boundary trade may show
+# and still only warn: a few ticks on a cheap stock, never a wrong level (`bucket_boundary`).
+PRICE_BOUND = 0.005
+# The stored session volume against the bhavcopy's (`day_volume_fits`): the bhavcopy also counts
+# the pre-open auction and the closing session, so a day may fall short of it by this much and
+# never exceed it by more than `DAY_VOLUME_OVER` (a share counted twice at a bucket edge).
+DAY_VOLUME_SHORT = 0.10
+DAY_VOLUME_OVER = 0.01
 CAUSE = {
     "no_source": "source",
     "bad_source_exceeds": "source",
@@ -130,9 +160,9 @@ class SourceBar:
 
 def end_labelled(bars: Iterable[SourceBar]) -> bool:
     """Whether a day's rows label each bar by its end: a traded bar labelled 15:30 (the last
-    bar's end) and none at 09:15 (the first bar's start)."""
-    traded = {b.label.time() for b in bars if b.volume > 0}
-    return time(15, 30) in traded and time(9, 15) not in traded
+    bar's end). A traded 09:15 row does not say otherwise: on an end-labelled day it is the
+    pre-open print."""
+    return any(b.volume > 0 and b.label.time() == time(15, 30) for b in bars)
 
 
 def candles_of(rows: Iterable[SourceBar]) -> list[Candle]:
@@ -160,6 +190,99 @@ class BarCompare:
     stored_only: int
     source_only: int
     rule: bool  # no other alignment matches more bars than `end_labelled`'s
+    close_convention: int = (
+        0  # price differences that are the last bar's close (`close_convention`)
+    )
+    worst: float = 0.0  # the largest relative price difference of a differing pair
+    stored_volume: int = 0  # the day's stored session volume
+    source_volume: int = 0  # the source's traded session volume
+    extremes: bool = True  # the day's high and low the same in both, at the scale
+
+
+def bucket_boundary(result: BarCompare) -> bool:
+    """Whether a day's differences are only trades at a bucket boundary filed in the neighbouring
+    bar by one copy (`vendor_bucket_boundary`, warn): the same bars on both sides, the same day
+    volume (`VOLUME_SLACK`), the same day high and low, and no price off by more than
+    `PRICE_BOUND`. Such a trade moves an open, a close or a volume between adjacent bars and
+    nothing else; neither copy is wrong."""
+    return (
+        not result.stored_only
+        and not result.source_only
+        and result.extremes
+        and result.worst <= PRICE_BOUND
+        and abs(result.stored_volume - result.source_volume)
+        <= max(1.0, VOLUME_SLACK * result.source_volume)
+    )
+
+
+def judge_day(result: BarCompare, fyers: bool, volume_fits: bool) -> list[tuple[str, int, bool]]:
+    """A compared day's findings, (code, bars, warn only): every difference fails, except
+    - a day whose differences are all at bucket boundaries (`bucket_boundary`):
+      `vendor_bucket_boundary`, warn;
+    - inside a Fyers window (`fyers`: Kotak is a second vendor there, not the bars' source),
+      prices off by at most `PRICE_BOUND`, and bar volumes or bars Kotak lacks on a day whose
+      stored volume reconciles with the bhavcopy's (`volume_fits`, independent of both vendors):
+      `second_vendor_differs`, warn. A traded source bar the store lacks always fails."""
+    found = {
+        "bar_price_differs": result.price,
+        "bar_volume_differs": result.volume,
+        "stored_bar_not_in_source": result.stored_only,
+        "source_bar_not_stored": result.source_only,
+    }
+    if bucket_boundary(result) and (result.price or result.volume):
+        return [("vendor_bucket_boundary", result.price + result.volume, True)]
+    out = []
+    for code, n in found.items():
+        if not n:
+            continue
+        excused = fyers and (
+            result.worst <= PRICE_BOUND
+            if code == "bar_price_differs"
+            else volume_fits and code != "source_bar_not_stored"
+        )
+        out.append(("second_vendor_differs", n, True) if excused else (code, n, False))
+    return out
+
+
+def day_volume_ratio(stored: int, daily: int | None) -> float | None:
+    """The day's stored session volume over the bhavcopy's (the raw daily bar's), or None
+    without a daily volume."""
+    return None if not daily else stored / daily
+
+
+def day_volume_fits(ratio: float) -> bool:
+    """Whether a day's stored volume reconciles with the bhavcopy's: at most `DAY_VOLUME_OVER`
+    above it and `DAY_VOLUME_SHORT` below (the bhavcopy also counts the pre-open auction and the
+    closing session, which no session bar holds)."""
+    return 1 - DAY_VOLUME_SHORT <= ratio <= 1 + DAY_VOLUME_OVER
+
+
+LAST_BAR = time(15, 25)
+
+
+def close_convention(
+    start: time, stored: Sequence[float], source: SourceBar, scale: float, daily_close: float | None
+) -> bool:
+    """Whether a pair differs only as the closing auction makes it: the session's last bar, every
+    price but the close matching, and one side's close the daily close (NSE's close is the
+    auction's price, which one copy of the history stamps on the last bar)."""
+    if start != LAST_BAR or daily_close is None:
+        return False
+    rest = SourceBar(source.label, source.open, source.high, source.low, stored[3] / scale, 0)
+    if not _matches(stored, rest, scale):
+        return False
+    tick = max(PRICE_TICK * scale, PRICE_SLACK * abs(daily_close))
+    return abs(stored[3] - daily_close) <= tick or abs(source.close * scale - daily_close) <= tick
+
+
+def _off(stored: Sequence[float], source: SourceBar, scale: float) -> float:
+    """The largest relative difference of a pair's prices at the scale."""
+    return max(
+        abs(mine - theirs * scale) / abs(mine) if mine else 0.0
+        for mine, theirs in zip(
+            stored[:4], (source.open, source.high, source.low, source.close), strict=True
+        )
+    )
 
 
 def _matches(stored: Sequence[float], source: SourceBar, scale: float) -> bool:
@@ -188,15 +311,19 @@ def _scale(pairs: Sequence[tuple[Sequence[float], SourceBar]]) -> float:
 
 
 def compare_bars(
-    day: date, stored: Mapping[time, Sequence[float]], source: Sequence[SourceBar]
+    day: date,
+    stored: Mapping[time, Sequence[float]],
+    source: Sequence[SourceBar],
+    daily_close: float | None = None,
 ) -> BarCompare:
     """A day's stored bars (start time -> open, high, low, close, volume) against the source's
     rows of that day. The bars pair by the labelling rule (`end_labelled`: 0 or 5 minutes from
     start to label), never by the alignment that fits best, so bars stored a bar off still differ;
     `rule` is False when the other alignment would match more bars (the stored labels are off).
-    The scale is the median of stored close over source close; then each stored bar's prices and
-    volume against the scaled source bar, and the bars on one side only (a source bar counts
-    when it is traded and starts in the session)."""
+    The scale is the median of stored close over source close; then each stored bar's prices
+    against the scaled source bar (a `close_convention` pair counted apart) and its volume against
+    the source's as it is (the export's volume is raw: `bars_basis.to_raw`), and the bars on one
+    side only (a source bar counts when it is traded and starts in the session)."""
     by_label = {b.label.time(): b for b in source if b.label.date() == day}
     shift = 5 if end_labelled(by_label.values()) else 0
     scores = []
@@ -206,23 +333,75 @@ def compare_bars(
         scores.append(sum(_matches(v, b, found_scale) for v, b in found))
     pairs = _pairs(stored, by_label, day, shift)
     scale = _scale(pairs)
-    price = sum(not _matches(v, b, scale) for v, b in pairs)
-    volume = sum(
-        abs(v[4] - b.volume / scale) > max(1.0, VOLUME_SLACK * abs(v[4])) for v, b in pairs
-    )
     move = timedelta(minutes=shift)
-    starts = {(datetime.combine(day, t) - move).time() for t, b in by_label.items() if b.volume > 0}
-    source_only = sum(1 for t in starts if SESSION[0] <= t < SESSION[1] and t not in stored)
+    timed = [
+        (t, v, b)
+        for t, v in stored.items()
+        if (b := by_label.get((datetime.combine(day, t) + move).time())) is not None
+    ]
+    differ = [(t, v, b) for t, v, b in timed if not _matches(v, b, scale)]
+    conventional = [close_convention(t, v, b, scale, daily_close) for t, v, b in differ]
+    convention = sum(conventional)
+    volume = sum(abs(v[4] - b.volume) > max(1.0, VOLUME_SLACK * abs(v[4])) for v, b in pairs)
+    traded = {(datetime.combine(day, t) - move).time() for t, b in by_label.items() if b.volume > 0}
+    in_session = [
+        b
+        for t, b in by_label.items()
+        if b.volume > 0 and SESSION[0] <= (datetime.combine(day, t) - move).time() < SESSION[1]
+    ]
+    source_only = sum(1 for t in traded if SESSION[0] <= t < SESSION[1] and t not in stored)
+    mine = [v for t, v in stored.items() if SESSION[0] <= t < SESSION[1]]
+    extremes = bool(mine and in_session) and (
+        abs(max(v[1] for v in mine) - max(b.high for b in in_session) * scale) <= PRICE_TICK * scale
+        and abs(min(v[2] for v in mine) - min(b.low for b in in_session) * scale)
+        <= PRICE_TICK * scale
+    )
     return BarCompare(
         shift,
         scale,
         len(stored),
-        price,
+        len(differ) - convention,
         volume,
         len(stored) - len(pairs),
         source_only,
         scores[0] >= scores[1],
+        convention,
+        max(
+            (_off(v, b, scale) for (_, v, b), c in zip(differ, conventional, strict=True) if not c),
+            default=0.0,
+        ),
+        int(sum(v[4] for v in mine)),
+        sum(b.volume for b in in_session),
+        extremes,
     )
+
+
+def restored_volumes(
+    day: date,
+    stored: Mapping[time, Sequence[float]],
+    source: Sequence[SourceBar],
+    daily_volume: int | None,
+) -> dict[time, int] | None:
+    """The export's volume of each stored bar of `day` (by start), when the export proves the
+    day: the bars pair by the labelling rule, every stored bar has a source bar of the same
+    prices at the day's scale (`compare_bars`: prices within `PRICE_BOUND`, the export's rounding
+    of its adjusted prices to the tick; none stored only; the rule's alignment), and the restored
+    session volume reconciles with the bhavcopy's (`day_volume_fits`). None otherwise, and when
+    a paired export bar has a negative volume (the export has such rows): the day is left as it
+    is."""
+    result = compare_bars(day, stored, source)
+    if result.worst > PRICE_BOUND or result.stored_only or not result.rule or not daily_volume:
+        return None
+    by_label = {b.label.time(): b for b in source if b.label.date() == day}
+    move = timedelta(minutes=result.shift)
+    out = {}
+    for t in stored:
+        found = by_label.get((datetime.combine(day, t) + move).time())
+        if found is None or found.volume < 0:
+            return None
+        out[t] = found.volume
+    session = sum(v for t, v in out.items() if SESSION[0] <= t < SESSION[1])
+    return out if day_volume_fits(session / daily_volume) else None
 
 
 def session_days(candles: Iterable[Candle]) -> dict[date, DayBars]:
@@ -378,6 +557,15 @@ def source_rows(
         if wanted is None or label.date() in wanted:
             out.append(SourceBar(label, float(o), float(h), float(lo), float(c), int(v or 0)))
     return out
+
+
+def one_per_label(rows: Iterable[SourceBar]) -> list[SourceBar]:
+    """The first row of each label: a day in both a symbol's file and its former symbol's is
+    one day of bars, not two."""
+    seen: dict[datetime, SourceBar] = {}
+    for row in rows:
+        seen.setdefault(row.label, row)
+    return list(seen.values())
 
 
 def _candles(path: Path) -> list[Candle]:  # pragma: no cover - files
@@ -539,6 +727,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     return check_result("D4", summary, findings)
 
 
+_DAILY_DAY_SQL = """
+SELECT CAST(instrument_id AS VARCHAR), high, low, close, volume FROM bars_daily_raw_latest
+WHERE date = ? AND CAST(instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
+"""
+
 _DAY_BARS_SQL = """
 SELECT CAST(instrument_id AS VARCHAR), bar_start, open, high, low, close, volume
 FROM read_parquet(?) WHERE CAST(instrument_id AS VARCHAR) IN (SELECT unnest(CAST(? AS VARCHAR[])))
@@ -570,108 +763,242 @@ def fyers_windows(progress: Mapping[str, Any]) -> dict[str, tuple[date, date]]:
     return out
 
 
-def _compare_sample(
-    ctx: Context, stored: set[tuple[str, date]]
-) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
-    """`compare_bars` on a seeded sample of the stored days: the summary and the findings."""
+FAILS = (
+    "stored_day_without_source",
+    "bar_alignment_not_rule",
+    "bar_price_differs",
+    "bar_volume_differs",
+    "stored_bar_not_in_source",
+    "source_bar_not_stored",
+    "day_volume_differs",
+)
+WARNS = (
+    "last_bar_close",
+    "vendor_bucket_boundary",
+    "second_vendor_differs",
+    "second_vendor_missing",
+    "day_volume_in_gap",
+)
+
+
+@dataclass
+class _Tally:
+    counts: Counter[str] = field(default_factory=Counter)
+    by_year: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
+    by_writer: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
+    items: dict[str, list[dict[str, Any]]] = field(default_factory=lambda: defaultdict(list))
+    ratios: dict[str, Counter[str]] = field(default_factory=lambda: defaultdict(Counter))
+
+    def add(self, code: str, n: int, item: Mapping[str, Any], writer: str, year: str) -> None:
+        self.counts[code] += n
+        self.by_writer[writer][code] += n
+        self.by_year[year][code] += n
+        self.items[code].append(dict(item))
+
+
+def _sample_bars(
+    ctx: Context, sample: Sequence[tuple[str, date]]
+) -> tuple[
+    dict[tuple[str, date], dict[time, tuple[float, ...]]],
+    dict[tuple[str, date], tuple[float, float, float, int | None]],
+]:  # pragma: no cover - real data
+    """The sample's stored bars and raw daily bars (high, low, close, volume)."""
     from ..bars_store import DATASET, FILE_NAME  # noqa: PLC0415
 
-    assert ctx.kotak is not None
-    pool = sorted((i, d) for i, d in stored if ctx.start <= d <= ctx.end)
-    sample = seeded_sample(pool, COMPARE_SAMPLE, SAMPLE_SEED)
     by_day: dict[date, list[str]] = defaultdict(list)
     for instrument, day in sample:
         by_day[day].append(instrument)
     bars: dict[tuple[str, date], dict[time, tuple[float, ...]]] = defaultdict(dict)
+    daily: dict[tuple[str, date], tuple[float, float, float, int | None]] = {}
     with closing(ctx.store.connect()) as con:
         for day, instruments in sorted(by_day.items()):
+            for i, h, lo, c, v in con.execute(_DAILY_DAY_SQL, [day, instruments]).fetchall():
+                daily[(i, day)] = (float(h), float(lo), float(c), None if v is None else int(v))
             path = ctx.root / DATASET / f"date={day.isoformat()}" / FILE_NAME
             for i, start, o, h, lo, c, v in con.execute(
                 _DAY_BARS_SQL, [str(path), instruments]
             ).fetchall():
                 at = start.astimezone(IST)
                 bars[(i, at.date())][at.time()] = (float(o), float(h), float(lo), float(c), int(v))
+    return bars, daily
+
+
+def _kotak_rows(
+    kotak: Path, symbols: Sequence[str], days: Sequence[date]
+) -> tuple[list[SourceBar], bool]:  # pragma: no cover - files
+    """The export's rows of `days` under any of the symbols, and whether it has a file for one."""
+    rows: list[SourceBar] = []
+    has_file = False
+    for symbol in symbols:
+        for folder in ("raw_5m", "raw_5m_former"):
+            path = kotak / folder / f"{symbol}.parquet"
+            if path.is_file():
+                has_file = True
+                rows += source_rows(path, days)
+    return one_per_label(rows), has_file
+
+
+def _compare_sample(
+    ctx: Context, stored: set[tuple[str, date]]
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+    """`compare_bars` on a seeded sample of the stored days, each judged by `judge_day`, and its
+    stored volume against the bhavcopy's (`day_volume_fits`; a short day inside a known coverage
+    gap, `bars5m_gaps`, warns): the summary and the findings."""
+    assert ctx.kotak is not None
+    pool = sorted((i, d) for i, d in stored if ctx.start <= d <= ctx.end)
+    sample = seeded_sample(pool, COMPARE_SAMPLE, SAMPLE_SEED)
+    bars, daily = _sample_bars(ctx, sample)
     names = _symbols(ctx)
+    isins = dict(ctx.rows("SELECT CAST(id AS TEXT), isin FROM hat_instrument"))
+    gaps = gap_spans(read_gaps(BARS5M_GAPS))
     try:
         progress = json.loads((ctx.root / "minute_history" / "progress.json").read_text())
     except (OSError, ValueError):
         progress = {}
     windows = fyers_windows(progress)
-    by_writer: dict[str, Counter[str]] = defaultdict(Counter)
     by_instrument: dict[str, list[date]] = defaultdict(list)
     for instrument, day in sample:
         by_instrument[instrument].append(day)
-    counts: Counter[str] = Counter()
-    by_year: dict[str, Counter[str]] = defaultdict(Counter)
-    items: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    tally = _Tally()
     for instrument, days in sorted(by_instrument.items()):
-        rows: list[SourceBar] = []
-        for symbol in names.get(instrument, ()):
-            for folder in ("raw_5m", "raw_5m_former"):
-                path = ctx.kotak / folder / f"{symbol}.parquet"
-                if path.is_file():
-                    rows += source_rows(path, days)
+        rows, has_file = _kotak_rows(ctx.kotak, names.get(instrument, ()), days)
         for day in days:
-            year = by_year[str(day.year)]
             fyers = any(
                 (w := windows.get(n)) is not None and w[0] <= day <= w[1]
                 for n in names.get(instrument, ())
             )
-            writer = by_writer["fyers_window" if fyers else "kotak_import"]
-            source = [r for r in rows if r.label.date() == day]
-            item = {"instrument_id": instrument, "day": day.isoformat()}
-            writer["days"] += 1
-            if not source:
-                writer["stored_day_without_source"] += 1
-                counts["stored_day_without_source"] += 1
-                items["stored_day_without_source"].append(item)
-                continue
-            result = compare_bars(day, bars[(instrument, day)], source)
-            counts["days"] += 1
-            counts["bars"] += result.bars
-            year[f"shift_{result.shift}"] += 1
-            counts["scaled_days"] += abs(result.scale - 1) > PRICE_SLACK
-            if not result.rule:
-                counts["bar_alignment_not_rule"] += 1
-                year["bar_alignment_not_rule"] += 1
-                writer["bar_alignment_not_rule"] += 1
-                items["bar_alignment_not_rule"].append(item)
-            for code, n in (
-                ("bar_price_differs", result.price),
-                ("bar_volume_differs", result.volume),
-                ("stored_bar_not_in_source", result.stored_only),
-                ("source_bar_not_stored", result.source_only),
-            ):
-                if n:
-                    counts[code] += n
-                    year[code] += n
-                    writer[code] += n
-                    items[code].append({**item, "bars": n, "scale": round(result.scale, 6)})
-    findings = [
-        dated(
-            {
-                **finding(code, FAIL, items[code]),
-                "count": counts[code],
-                "days_with": len(items[code]),
-            },
-            [i["day"] for i in items[code]],
+            _judge_one(
+                tally,
+                (instrument, day, isins.get(instrument, "")),
+                bars[(instrument, day)],
+                daily.get((instrument, day)),
+                [r for r in rows if r.label.date() == day],
+                fyers=fyers,
+                has_file=has_file,
+                gaps=gaps,
+            )
+    return _report(tally, len(sample), len(pool))
+
+
+def _judge_one(  # noqa: PLR0913 - one day's evidence
+    tally: _Tally,
+    key: tuple[str, date, str],
+    mine: Mapping[time, Sequence[float]],
+    bar: tuple[float, float, float, int | None] | None,
+    source: Sequence[SourceBar],
+    *,
+    fyers: bool,
+    has_file: bool,
+    gaps: Mapping[str, tuple[tuple[date, date], ...]],
+) -> None:  # pragma: no cover - real data
+    instrument, day, isin = key
+    writer, year = ("fyers_window" if fyers else "kotak_import"), str(day.year)
+    item: dict[str, Any] = {"instrument_id": instrument, "isin": isin, "day": day.isoformat()}
+    tally.by_writer[writer]["days"] += 1
+    fits = _judge_volume(tally, item, writer, mine, None if bar is None else bar[3], gaps)
+    if not source:
+        # a second vendor that never carried the symbol proves nothing; one that has the
+        # symbol but not the day, or the bars' own source without the day, fails
+        code = "second_vendor_missing" if fyers and not has_file else "stored_day_without_source"
+        tally.add(code, 1, item, writer, year)
+        return
+    result = compare_bars(day, mine, source, None if bar is None else bar[2])
+    tally.counts["days"] += 1
+    tally.counts["bars"] += result.bars
+    tally.counts["scaled_days"] += abs(result.scale - 1) > PRICE_SLACK
+    tally.by_year[year][f"shift_{result.shift}"] += 1
+    if result.close_convention:
+        tally.add(
+            "last_bar_close",
+            result.close_convention,
+            {**item, "bars": result.close_convention},
+            writer,
+            year,
         )
-        for code in (
-            "stored_day_without_source",
-            "bar_alignment_not_rule",
-            "bar_price_differs",
-            "bar_volume_differs",
-            "stored_bar_not_in_source",
-            "source_bar_not_stored",
-        )
-        if items[code]
-    ]
+    if not result.rule:
+        tally.add("bar_alignment_not_rule", 1, item, writer, year)
+    for code, n, _warn in judge_day(result, fyers, fits):
+        found = {
+            **item,
+            "bars": n,
+            "scale": round(result.scale, 6),
+            "worst": round(result.worst, 6),
+        }
+        tally.add(code, n, found, writer, year)
+
+
+def _judge_volume(
+    tally: _Tally,
+    item: Mapping[str, Any],
+    writer: str,
+    mine: Mapping[time, Sequence[float]],
+    daily_volume: int | None,
+    gaps: Mapping[str, tuple[tuple[date, date], ...]],
+) -> bool:  # pragma: no cover - real data
+    """Whether the day's stored session volume reconciles with the bhavcopy's (`day_volume_fits`),
+    tallied by writer; a day off it fails, or warns inside a known coverage gap when short."""
+    day = date.fromisoformat(item["day"])
+    stored_volume = int(sum(v[4] for t, v in mine.items() if SESSION[0] <= t < SESSION[1]))
+    ratio = day_volume_ratio(stored_volume, daily_volume)
+    if ratio is None:
+        return False
+    tally.ratios[writer][_ratio_bucket(ratio)] += 1
+    if day_volume_fits(ratio):
+        return True
+    short_in_gap = in_gap(gaps, item["isin"], day) and ratio < 1
+    code = "day_volume_in_gap" if short_in_gap else "day_volume_differs"
+    tally.add(code, 1, {**item, "ratio": round(ratio, 4)}, writer, str(day.year))
+    return False
+
+
+def _ratio_bucket(ratio: float) -> str:
+    for edge in (0.5, 0.9, 0.98, 1.0, 1.01):
+        if ratio < edge:
+            return f"<{edge}"
+    return ">=1.01"
+
+
+def _report(
+    tally: _Tally, sample: int, pool: int
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - real data
+    exceptions = Exceptions(
+        read_exceptions(VERIFY_EXCEPTIONS["d4"], "D4"),
+        key_of=lambda _code, i: (i.get("isin"), i["day"]),
+    )
+    findings = []
+    for code in FAILS:
+        failed = exceptions.split(code, tally.items[code])
+        if failed:
+            findings.append(
+                dated(
+                    {
+                        **finding(code, FAIL, failed),
+                        "count": sum(i.get("bars", 1) for i in failed),
+                        "days_with": len(failed),
+                    },
+                    [i["day"] for i in failed],
+                )
+            )
+    for code in WARNS:
+        if tally.items[code]:
+            findings.append(
+                {
+                    **finding(code, WARN, tally.items[code]),
+                    "count": tally.counts[code],
+                    "days_with": len({(i["instrument_id"], i["day"]) for i in tally.items[code]}),
+                }
+            )
+    findings += exceptions.findings()
     summary = {
-        "sample": len(sample),
-        "of_stored_days": len(pool),
-        **{k: counts[k] for k in ("days", "bars", "scaled_days")},
-        "by_year": {y: dict(c) for y, c in sorted(by_year.items())},
-        "by_writer": {w: dict(c) for w, c in sorted(by_writer.items())},
+        "sample": sample,
+        "of_stored_days": pool,
+        **{k: tally.counts[k] for k in ("days", "bars", "scaled_days")},
+        "by_year": {y: dict(c) for y, c in sorted(tally.by_year.items())},
+        "by_writer": {w: dict(c) for w, c in sorted(tally.by_writer.items())},
+        # the stored session volume over the bhavcopy's, by writer (`day_volume_fits`)
+        "day_volume_ratio": {w: dict(sorted(c.items())) for w, c in sorted(tally.ratios.items())},
+        "price_bound": PRICE_BOUND,
+        "day_volume_bounds": [1 - DAY_VOLUME_SHORT, 1 + DAY_VOLUME_OVER],
     }
     return summary, findings
 

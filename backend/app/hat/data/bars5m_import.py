@@ -12,9 +12,10 @@ a 15:30 placeholder after the close) belongs to no bar, as in `BarBuilder`.
 The history is adjusted for corporate actions up to the day it was downloaded (the file's
 modification day), but not for every one: most splits, bonuses and rights issues are carried,
 most demergers and a few splits and bonuses are not. `carried` decides for each stored action
-from the sessions before its ex-date, `bars_basis.to_raw` converts each day with the carried
-factors, and every day must fit the raw daily bar of that day (`check_day`) or it is ledgered,
-never written: a wrong decision costs days, never a wrong bar.
+from the sessions before its ex-date, `bars_basis.to_raw` converts each day's prices with the
+carried factors (the export's volume is not adjusted: it stays as the file gives it), and every
+day must fit the raw daily bar of that day (`check_day`) or it is ledgered, never written: a wrong
+decision costs days, never a wrong bar.
 
 A file's symbol maps to an instrument through its ISIN (`universe_raw.csv`, cross-checked with
 the scrip master); a symbol without one, or with two, is reported and not imported. A day belongs
@@ -248,7 +249,7 @@ def _import_one(
 
     def fits(day: date, actions: Sequence[tuple[date, Decimal]]) -> bool:
         owner, factor = owner_of(day, chain, daily), fyers_factor(actions, day, source.fetched_on)
-        raw = [to_raw(b, factor) for b in by_day[day]]
+        raw = [to_raw(b, factor, adjusts_volume=False) for b in by_day[day]]
         return owner is not None and check_day(raw, daily[(owner, day)], basis.tolerance) is None
 
     actions = carried(steps, sorted(by_day), fits)
@@ -262,7 +263,10 @@ def _import_one(
             report.kept_stored += 1
             continue
         factor = fyers_factor(actions, day, source.fetched_on)
-        raw = [replace(to_raw(b, factor), symbol=owner or chain[0]) for b in group]
+        raw = [
+            replace(to_raw(b, factor, adjusts_volume=False), symbol=owner or chain[0])
+            for b in group
+        ]
         code = (
             NO_DAILY_BAR if owner is None else check_day(raw, daily[(owner, day)], basis.tolerance)
         )

@@ -27,14 +27,14 @@ days; a naive high-over-the-open rule fired on 94%.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from ..data.audit import CLOSE_5M_PCT
 from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
-from ..data.bars_store import BarStore
+from ..data.bars_store import BarStore, RejectRow
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..engine.trigger import (
     Candidate,
@@ -55,7 +55,10 @@ __all__ = [
     "EpTrace",
     "after_trigger",
     "traded_low_after",
+    "REPLAY_RULE",
     "on_basis",
+    "lacks_refused",
+    "screened_buckets",
     "replay",
     "session_bars",
     "trace",
@@ -127,27 +130,50 @@ def session_bars(
     return {k: tuple(v) for k, v in out.items()}
 
 
+REPLAY_RULE = "first_bar_clean_grid_open_5pct_no_refused_bucket_no_coverage_gap"
+
+
 def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
-    """Whether a session's 5-minute bars fit its daily bar: every bar of the IST 5-minute grid
-    of `day`'s regular session present (09:15 to 15:25, each once, none off it: a property of
-    the stored file, so a truncated day is never replayed to miss its later lows), and the
-    first bar's open within `CLOSE_5M_PCT` of the daily open (both on one price basis). The data
-    audit judges the last close (`audit.basis_of`); a run decides before the close, so it reads
-    the open. A session that does not fit is decided on the daily estimate, so no run reads bars
-    off their day."""
+    """Whether a session's 5-minute bars fit its daily bar, by what is known at the open only:
+    the regular session's first (09:15) bar present, every bar on the IST 5-minute grid of
+    `day` and each once, and the 09:15 open within `CLOSE_5M_PCT` of the daily open (both on
+    one price basis). A missing bucket, interior or trailing, is a window without a trade: live's
+    bar builder makes no bar for one (`data.bars`), so the replay sees what live saw and trades
+    nothing there. Nothing after the open decides it (no last bar, no close), so a session is
+    never chosen by how it ended; a truncated copy is refused by its coverage
+    (`bars5m_gaps`), a session lacking a bucket the import refused by `lacks_refused`. A
+    session that does not fit is decided on the daily estimate, so no run reads bars off their
+    day (`REPLAY_RULE`, in the run's conventions)."""
     if not bars or daily_open <= 0:
         return False
     opens = datetime.combine(day, SESSION_OPEN, tzinfo=IST)
     closes = datetime.combine(day, SESSION_CLOSE, tzinfo=IST)
-    starts = set()
+    starts: dict[datetime, Bar] = {}
     for bar in bars:
         start = bar.start.astimezone(IST)
-        if not opens <= start < closes or (start - opens) % BAR_WIDTH:
+        if not opens <= start < closes or (start - opens) % BAR_WIDTH or start in starts:
             return False
-        starts.add(start)
-    if len(starts) != len(bars) or len(starts) != (closes - opens) // BAR_WIDTH:
+        starts[start] = bar
+    first = starts.get(opens)
+    if first is None:
         return False
-    return abs(bars[0].open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
+    return abs(first.open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
+
+
+def screened_buckets(rejects: Iterable[RejectRow]) -> dict[tuple[str, date], frozenset[datetime]]:
+    """The 5-minute buckets the import refused (ledger rows with a `bar_start`), by (instrument,
+    day). Such a bucket traded; a session whose stored bars lack one is not quiet there."""
+    found: dict[tuple[str, date], set[datetime]] = {}
+    for r in rejects:
+        if r.bar_start is not None and r.day is not None:
+            found.setdefault((r.instrument_id, r.day), set()).add(r.bar_start)
+    return {k: frozenset(v) for k, v in found.items()}
+
+
+def lacks_refused(bars: Sequence[Bar], refused: Collection[datetime]) -> bool:
+    """Whether a session's bars lack a bucket the import refused: its gap traded, so the session
+    is decided on the daily estimate (a refused bucket stored from another copy is no gap)."""
+    return bool(set(refused) - {bar.start for bar in bars})
 
 
 class _ReplayView:

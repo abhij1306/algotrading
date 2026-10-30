@@ -38,6 +38,9 @@ import polars as pl
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
+from app.paths import BARS5M_GAPS
+
+from ..data.bars5m_gaps import gap_spans, read_gaps
 from ..data.bars_store import BarStore
 from ..data.ca_versions import digest as versions_digest
 from ..data.chains import stored_adjustment
@@ -76,6 +79,7 @@ from ..models import (
 )
 from ..money import exact
 from ..time import IST, as_utc
+from .intraday import screened_buckets
 from .spec import BacktestError, membership_key
 
 __all__ = [
@@ -220,6 +224,12 @@ class MarketData:
     # The store's raw 5-minute bars, read one session at a time for the candidates the loop
     # decides on them (`intraday.session_bars`); None: every session uses the daily estimate.
     intraday: BarStore | None = None
+    # The 5-minute buckets the import refused, by (instrument, day) (`intraday.screened_buckets`):
+    # a session whose bars lack one is decided on the daily estimate, since the gap traded.
+    screened_5m: Mapping[tuple[str, date], frozenset[datetime]] = field(default_factory=dict)
+    # The 5-minute history's known coverage gaps by ISIN (`bars5m_gaps.gap_spans`): a session
+    # inside one is decided on the daily estimate, its copy being known short there.
+    gaps_5m: Mapping[str, tuple[tuple[date, date], ...]] = field(default_factory=dict)
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
     pending: frozenset[tuple[str, date]] = frozenset()
@@ -1246,6 +1256,20 @@ def results_digest_text(results: Mapping[str, Sequence[ResultEvent]]) -> str:
     )
 
 
+def _screened(
+    intraday: BarStore, sessions: Sequence[date]
+) -> dict[tuple[str, date], frozenset[datetime]]:
+    """The refused 5-minute buckets (`intraday.screened_buckets`) when the run reads any session
+    of the store; none otherwise."""
+    return screened_buckets(intraday.read_rejects()) if sessions else {}
+
+
+def _gaps(sessions: Sequence[date]) -> dict[str, tuple[tuple[date, date], ...]]:
+    """The 5-minute history's known coverage gaps (`bars5m_gaps.csv`) when the run reads any
+    session of the store; none otherwise."""
+    return gap_spans(read_gaps(BARS5M_GAPS)) if sessions else {}
+
+
 def load_market(
     store: DataStore,
     session: Session,
@@ -1369,6 +1393,8 @@ def load_market(
         symbols=symbols,
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
+        screened_5m=_screened(intraday, sessions_5m),
+        gaps_5m=_gaps(sessions_5m),
         results=filings,
     )
     snapshot = {

@@ -53,6 +53,16 @@ def test_to_raw_divides_prices_and_multiplies_volume() -> None:
     assert to_raw(same, Decimal(1)) is same
 
 
+def test_to_raw_keeps_a_raw_volume() -> None:
+    """The Kotak export adjusts its prices for a later split but not its volume (ANGELBRKG on
+    2025-06-10: 728,126 shares against the bhavcopy's 728,254, at a tenth of the price). Harm:
+    the volume cut by the factor again, a tenth of the day's trades in a replay's volume pace."""
+    raw = to_raw(
+        _bar("319.5", "319.5", "312.3", "315", volume=728126), Decimal("0.1"), adjusts_volume=False
+    )
+    assert (raw.open, raw.close, raw.volume) == (Decimal("3195.0000"), Decimal("3150.0000"), 728126)
+
+
 def test_check_day_envelope() -> None:
     bars = [_bar("100", "104", "99", "103"), _bar("103", "105", "101", "102", minutes=5)]
     tol = Decimal("0.005")
