@@ -604,11 +604,9 @@ def windowed(
     found; a closed one (expired, triggered, cancelled, replaced) is never armed again. An open
     setup the scan does not find again is carried on (`carry`) unless closed; one whose
     instrument has a newer setup tonight is replaced. Each row's window goes into `book`."""
-    total = playbook.valid_sessions
-    if total is None:
+    if playbook.valid_sessions is None:
         return list(fresh)
     out: list[WatchRow] = []
-    opened: set[str] = set()
     seen: set[WindowKey] = set()
     for row in fresh:
         pivot_on = _pivot_on(row.criteria_results)
@@ -616,39 +614,70 @@ def windowed(
             continue  # a setup without a pivot bar has no window to keep
         key = (playbook.name, row.instrument_id, pivot_on)
         seen.add(key)
-        stored = book.stored.get(key)
-        armed = stored is not None and stored.status == OPEN
-        if stored is not None and not armed and stored.status != REGIME_OFF:
-            continue  # closed for good
-        if armed and key in book.triggered:
-            book.close(stored, TRIGGERED)
-            continue
-        first = stored.found_on if armed else inputs.as_of
-        session = window_session(days, first)
-        if session > total:
-            if stored is not None:
-                book.close(stored, EXPIRED)
-            continue
-        found = _in_window(row, first, session, total, carried=False)
-        book.put(_window_of(found, first, pivot_on))
-        opened.add(row.instrument_id)
-        out.append(found)
+        found = _found_again(playbook, inputs.as_of, days, row, key, book)
+        if found is not None:
+            out.append(found)
+    opened = {r.instrument_id for r in out}
     for key, stored in sorted(book.stored.items()):
-        if key[0] != playbook.name or stored.status != OPEN or key in seen:
-            continue
-        if key[1] in opened:
-            book.close(stored, REPLACED)
-            continue
-        if key in book.triggered:
-            book.close(stored, TRIGGERED)
-            continue
-        carried = carry(playbook, inputs, days, contexts.get(key[1]), stored)
-        if isinstance(carried, str):
-            book.close(stored, carried)
-            continue
-        book.put(copy.replace(stored, criteria_results=carried.criteria_results))
-        out.append(carried)
+        if key[0] == playbook.name and stored.status == OPEN and key not in seen:
+            carried = _carry_on(playbook, inputs, days, contexts, stored, opened, book)
+            if carried is not None:
+                out.append(carried)
     return out
+
+
+def _found_again(
+    playbook: Playbook,
+    as_of: date,
+    days: Sequence[date],
+    row: WatchRow,
+    key: WindowKey,
+    book: _Windows,
+) -> WatchRow | None:
+    """Tonight's row of a setup the scan found, in its window (opened tonight unless it is
+    open already), or None when its window is closed or over (closing it in `book`)."""
+    total = playbook.valid_sessions or 0
+    stored = book.stored.get(key)
+    armed = stored is not None and stored.status == OPEN
+    if stored is not None and not armed and stored.status != REGIME_OFF:
+        return None  # closed for good
+    if stored is not None and armed and key in book.triggered:
+        book.close(stored, TRIGGERED)
+        return None
+    first = stored.found_on if stored is not None and armed else as_of
+    session = window_session(days, first)
+    if session > total:
+        if stored is not None:
+            book.close(stored, EXPIRED)
+        return None
+    found = _in_window(row, first, session, total, carried=False)
+    book.put(_window_of(found, first, key[2]))
+    return found
+
+
+def _carry_on(
+    playbook: Playbook,
+    inputs: ScanInputs,
+    days: Sequence[date],
+    contexts: Mapping[str, tuple[EvalContext, StageOutcome]],
+    stored: SetupWindow,
+    opened: Collection[str],
+    book: _Windows,
+) -> WatchRow | None:
+    """The carried row of an open setup the scan did not find again, or None when it closes:
+    replaced (its instrument has a newer setup tonight), triggered, or as `carry` says."""
+    if stored.instrument_id in opened:
+        book.close(stored, REPLACED)
+        return None
+    if stored.key in book.triggered:
+        book.close(stored, TRIGGERED)
+        return None
+    carried = carry(playbook, inputs, days, contexts.get(stored.instrument_id), stored)
+    if isinstance(carried, str):
+        book.close(stored, carried)
+        return None
+    book.put(copy.replace(stored, criteria_results=carried.criteria_results))
+    return carried
 
 
 def cancel_level(playbook: Playbook, contraction_low: Decimal) -> Decimal:
