@@ -4,8 +4,9 @@ session, the instrument's ISIN (`*`: every instrument) and why. A replay refuses
 bars of a session inside a gap (`in_gap`) and decides it on the daily estimate, so a truncated
 copy is refused by where it is known to be short, never by how its prices moved.
 
-The rows in force: the Kotak export of 2026-10-28 ends at the 15:10 bar on some sessions of
-2026-08-03..2026-10-28 for 219 instruments (their stored days from the import end there), and
+The rows in force: the sessions of 2026-08-03..2026-10-28 where the Kotak export of 2026-10-28
+ends at the 15:10 bar and the Fyers refetch (`bars5m_refetch`) could not make the stored day
+whole (16 sessions of 11 instruments, each row with the refetch's outcome), and
 NSE's special sessions in the history's span ran shorter than the regular session (2024-03-02
 and 2024-05-18, the disaster-recovery site's live sessions)."""
 
