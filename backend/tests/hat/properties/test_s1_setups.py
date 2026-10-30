@@ -30,7 +30,7 @@ from app.hat.engine.criteria import evaluate
 from app.hat.engine.criteria import setups as s
 from app.hat.engine.criteria.base import EvalContext
 from app.hat.engine.criteria.book import Contraction, series_of
-from app.hat.engine.strategy.config import parse_config
+from app.hat.engine.strategy.config import StrategyConfig, parse_config
 
 D = Decimal
 
@@ -523,7 +523,7 @@ def test_a_setup_found_again_keeps_its_first_night() -> None:
     assert "a" not in {r.instrument_id for r in over.rows}  # its window is over
 
 
-def _carried(close: float) -> list[scan.WatchRow]:
+def _carried(close: float, config: StrategyConfig = CONFIG) -> list[scan.WatchRow]:
     """The cheat row of `a` found last night, on a night that adds `close` on heavy volume (the
     pause no longer dries up, so the scan does not find it again)."""
     night = _bars({"a": CHEAT, "c": [50.0] * len(CHEAT)}, {"a": 15, "c": 0})
@@ -538,7 +538,7 @@ def _carried(close: float) -> list[scan.WatchRow]:
         ]
     )
     earlier = [_found(first, night["date"].max())]
-    return list(scan.scan_bot(CONFIG, _inputs(later, earlier=earlier)).rows)
+    return list(scan.scan_bot(config, _inputs(later, earlier=earlier)).rows)
 
 
 def test_a_setup_not_found_again_is_carried() -> None:
@@ -550,6 +550,12 @@ def test_a_setup_not_found_again_is_carried() -> None:
 
 def test_a_close_below_the_stop_cancels() -> None:
     assert _carried(78.0) == []  # the stop: 0.5% under the pause's low of 79.202
+
+
+def test_a_setup_failing_its_playbooks_own_universe_is_not_carried() -> None:
+    own = [{"type": "min_price", "params": {"inr": 100}}]  # the close of 81 is under it
+    playbooks = [{**p, "universe": own} for p in S1_SETUPS["playbooks"]]
+    assert _carried(81.0, parse_config({**S1_SETUPS, "playbooks": playbooks})) == []
 
 
 def test_one_row_per_instrument_records_every_setup() -> None:

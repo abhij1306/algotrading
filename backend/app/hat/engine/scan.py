@@ -24,10 +24,11 @@ the bot was opened on (`ScanInputs.used_pivots`). A setup is named by its pivot'
 
 from __future__ import annotations
 
+import copy
 import math
 from bisect import bisect_right
 from collections.abc import Collection, Mapping, MutableMapping, Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, timedelta
 from decimal import Decimal
 from typing import Any
@@ -270,14 +271,21 @@ def setup_summary(
     rs = rs_rank(ctx, RsRankParams(basis="eligible")).value
     if rs is not None:
         out["rs_rank"] = rs
-    for stage in evaluation.stages:
-        for outcome in stage.outcomes if stage.stage == "setup" else ():
-            if not outcome.result.passed:
-                continue
-            keys = TAG_KEYS if outcome.type == "setup_tags" else SUMMARY_KEYS
-            extras = _json_extras(outcome.result.extras)
-            out.update({k: extras[k] for k in keys if k in extras and k not in out})
+    for outcome in _passed_setup_outcomes(evaluation):
+        keys = TAG_KEYS if outcome.type == "setup_tags" else SUMMARY_KEYS
+        extras = _json_extras(outcome.result.extras)
+        out.update({k: extras[k] for k in keys if k in extras and k not in out})
     return out
+
+
+def _passed_setup_outcomes(evaluation: PlaybookEvaluation) -> list[StageOutcome]:
+    return [
+        outcome
+        for stage in evaluation.stages
+        if stage.stage == "setup"
+        for outcome in stage.outcomes
+        if outcome.result.passed
+    ]
 
 
 def pivot_date(history: Bars, pivot: Decimal | None) -> date | None:
@@ -493,7 +501,7 @@ def _in_window(row: WatchRow, first: date, session: int, total: int, *, carried:
     results[WINDOW] = {"found_on": first.isoformat(), "session": session, "sessions": total}
     if carried:
         results["carried"] = True
-    return replace(row, criteria_results=results)
+    return copy.replace(row, criteria_results=results)
 
 
 def windowed(
@@ -527,7 +535,7 @@ def windowed(
         carried = carry(playbook, inputs, contexts.get(instrument_id), before[instrument_id])
         if carried is not None:
             adtr_value = exact(adtr.get(instrument_id), floats=True)
-            out.append(replace(carried, adtr=adtr_value))
+            out.append(copy.replace(carried, adtr=adtr_value))
     return out
 
 
@@ -550,6 +558,8 @@ def carry(
     if found is None or total is None or first is None or not isinstance(pivot_text, str):
         return None
     ctx, universe = found
+    if playbook.universe is not None:  # the playbook's own universe, as `evaluate_playbook`
+        universe = evaluate_stage("universe", playbook.universe, ctx)
     history = ctx.history
     pivot_on = date.fromisoformat(pivot_text)
     session = window_session(history.dates, first)
@@ -557,17 +567,10 @@ def carry(
         return None
     if setup_taken(earlier.instrument_id, pivot_on, inputs.held, inputs.used_pivots):
         return None
-    levels = watchlist_levels(results.get("levels", {}))
-    old_pivot = levels.get(PIVOT)
     new_pivot = exact(history.high[history.dates.index(pivot_on)], floats=True)
-    if old_pivot is None or new_pivot is None:
+    scaled = _rescaled(watchlist_levels(results.get("levels", {})), new_pivot)
+    if scaled is None or new_pivot is None:
         return None
-    ratio = new_pivot / old_pivot
-    scaled = {
-        k: v if v is None or ratio == 1 else (v * ratio).quantize(_LEVEL_STEP)
-        for k, v in levels.items()
-    }
-    scaled[PIVOT] = new_pivot
     pivot = daily_level(playbook, scaled)
     stop = _planned_stop(playbook, scaled.get(CONTRACTION_LOW), pivot, ctx)
     close = exact(history.close[-1], floats=True)
@@ -579,13 +582,8 @@ def carry(
         return None
     out = dict(results)
     out["levels"] = {k: str(v) for k, v in scaled.items() if v is not None}
-    setup = dict(results.get("setup") or {})
+    setup = _carried_setup(results.get("setup") or {}, pivot, stop)
     if setup:
-        setup.update({"pivot": str(pivot)} if pivot is not None else {})
-        setup.pop("stop", None)
-        setup.pop("stop_pct", None)
-        if stop is not None and pivot:
-            setup.update(stop=str(stop), stop_pct=float((pivot - stop) / pivot * 100))
         out["setup"] = setup
     row = WatchRow(
         playbook=playbook.name,
@@ -599,6 +597,35 @@ def carry(
     return _in_window(row, first, session, total, carried=True)
 
 
+def _rescaled(
+    levels: Mapping[str, Decimal | None], new_pivot: Decimal | None
+) -> dict[str, Decimal | None] | None:
+    """The levels on tonight's scale: each times the pivot's change (`new_pivot`, the high of
+    the pivot's bar tonight, over the stored pivot); None without either pivot."""
+    old_pivot = levels.get(PIVOT)
+    if old_pivot is None or new_pivot is None:
+        return None
+    ratio = new_pivot / old_pivot
+    scaled = {
+        k: v if v is None or ratio == 1 else (v * ratio).quantize(_LEVEL_STEP)
+        for k, v in levels.items()
+    }
+    scaled[PIVOT] = new_pivot
+    return scaled
+
+
+def _carried_setup(
+    setup: Mapping[str, Any], pivot: Decimal | None, stop: Decimal | None
+) -> dict[str, Any]:
+    """A carried row's setup summary with tonight's pivot, stop and stop %."""
+    out = {k: v for k, v in setup.items() if k not in ("stop", "stop_pct")}
+    if out and pivot is not None:
+        out["pivot"] = str(pivot)
+    if out and stop is not None and pivot:
+        out.update(stop=str(stop), stop_pct=float((pivot - stop) / pivot * 100))
+    return out
+
+
 def _valid_until(row: WatchRow, ahead: Sequence[date]) -> WatchRow:
     """The row with its last valid session: the trade date, or under a validity window the
     window's last session (None when `ahead` does not reach it)."""
@@ -606,7 +633,7 @@ def _valid_until(row: WatchRow, ahead: Sequence[date]) -> WatchRow:
     left = 0
     if isinstance(window, Mapping):
         left = int(window["sessions"]) - int(window["session"])
-    return replace(row, valid_until=ahead[left] if left < len(ahead) else None)
+    return copy.replace(row, valid_until=ahead[left] if left < len(ahead) else None)
 
 
 def with_setup_tags(config: StrategyConfig, rows: Sequence[WatchRow]) -> list[WatchRow]:
@@ -635,7 +662,7 @@ def with_setup_tags(config: StrategyConfig, rows: Sequence[WatchRow]) -> list[Wa
         if isinstance(setup, Mapping):
             results = dict(row.criteria_results)
             results["setup"] = {**setup, "setup_tags": sorted(tags[row.instrument_id])}
-            row = replace(row, criteria_results=results)
+            row = copy.replace(row, criteria_results=results)
         out.append(row)
     return out
 

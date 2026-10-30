@@ -20,9 +20,10 @@ opened on, which the scan keeps off the watchlist (decisions.md "A pivot is used
 
 from __future__ import annotations
 
+import copy
 import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import date, datetime
 
 from sqlalchemy import select
@@ -137,16 +138,18 @@ def _book(
 
 
 def _earlier(
-    session: Session, bot_id: uuid.UUID, config: StrategyConfig, day: date
+    session: Session, bot_id: uuid.UUID, version_id: uuid.UUID, config: StrategyConfig, day: date
 ) -> tuple[EarlierRow, ...]:
     """The rows the bot published for the session `day` of its playbooks with a validity window
-    (`Playbook.valid_sessions`), which the scan may carry on."""
+    (`Playbook.valid_sessions`) under its live version `version_id`, which the scan may carry
+    on: a new version starts with no carried setup."""
     windowed = [p.name for p in config.playbooks if p.valid_sessions is not None]
     if not windowed:
         return ()
     rows = session.scalars(
         select(HatWatchlistEntry).where(
             HatWatchlistEntry.bot_id == bot_id,
+            HatWatchlistEntry.strategy_version_id == version_id,
             HatWatchlistEntry.trade_date == day,
             HatWatchlistEntry.playbook.in_(windowed),
         )
@@ -163,7 +166,7 @@ def _with_members(
     book: tuple[frozenset[str], frozenset[tuple[str, date]]],
     earlier: tuple[EarlierRow, ...],
 ) -> ScanInputs:
-    return replace(
+    return copy.replace(
         inputs,
         members={str(m) for m in members},
         held=book[0],
@@ -212,7 +215,7 @@ def scan_and_publish(
         return Published(0, False, "no_universe")
     config = parse_config(version.config)
     members = _tradable_members(session, universe_id, inputs.as_of)
-    earlier = _earlier(session, bot_id, config, inputs.as_of)
+    earlier = _earlier(session, bot_id, version.id, config, inputs.as_of)
     result: ScanResult = scan_bot(
         config, _with_members(inputs, members, _book(session, bot_id), earlier)
     )
