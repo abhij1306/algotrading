@@ -62,13 +62,14 @@ Closes = Mapping[str, Sequence[tuple[date, Decimal]]]  # instrument id -> dated 
 @dataclass(frozen=True)
 class BookFill:
     """One fill of the book: its session, instrument, shares (bought > 0, sold < 0), price and
-    fees."""
+    fees; or, with `rescale`, a split or bonus setting the shares held to `qty` (no cash)."""
 
     day: date
     instrument_id: str
     qty: int
     price: Decimal
     fees: Decimal
+    rescale: bool = False
 
 
 @dataclass(frozen=True)
@@ -97,6 +98,8 @@ class ClosedTrade:
     net_pnl: Decimal
     fees: Decimal
     r: Decimal
+    mfe_r: Decimal | None = None  # a paper trade's; None on a real one
+    mae_r: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -138,8 +141,10 @@ def book_curve(
     closes: Closes,
 ) -> list[BookSession]:
     """The book's close on each of `days` (sorted sessions): its equity, its positions' value
-    and how many it held. A fill or a dividend dated before the first session counts on it."""
-    ordered = sorted(fills, key=lambda f: f.day)
+    and how many it held. A fill or a dividend dated before the first session counts on it.
+    Fills of one session apply in the order given (the reader gives them in time order); a
+    rescale sets the shares held and scales the fallback price by the same ratio."""
+    ordered = sorted(fills, key=lambda f: f.day)  # stable: a session's own order is kept
     paid = sorted(dividends)
     cash, held = _ZERO, defaultdict(int)
     last_price: dict[str, Decimal] = {}
@@ -148,10 +153,16 @@ def book_curve(
     for day in days:
         while i < len(ordered) and ordered[i].day <= day:
             f = ordered[i]
+            i += 1
+            if f.rescale:
+                before = held[f.instrument_id]
+                if before > 0 and f.qty > 0 and f.instrument_id in last_price:
+                    last_price[f.instrument_id] = last_price[f.instrument_id] * before / f.qty
+                held[f.instrument_id] = f.qty
+                continue
             cash += -f.qty * f.price - f.fees
             held[f.instrument_id] += f.qty
             last_price[f.instrument_id] = f.price
-            i += 1
         while j < len(paid) and paid[j][0] <= day:
             cash += paid[j][1]
             j += 1
@@ -198,7 +209,10 @@ def book_report(
     before = curve[-2].equity if len(curve) > 1 else start
     ordered = sorted(trades, key=lambda t: (t.entry, t.symbol, t.exit))
     metrics = book_metrics(
-        [BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.exit) for t in ordered],
+        [
+            BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.exit, t.mfe_r, t.mae_r)
+            for t in ordered
+        ],
         [(s.day, s.equity) for s in curve],
         curve,
         start,
@@ -216,8 +230,8 @@ def book_report(
         realised=sum((t.net_pnl for t in trades), _ZERO),
         realised_today=sum((t.net_pnl for t in trades if t.exit == as_of), _ZERO),
         unrealised=sum((p.unrealised for p in positions), _ZERO),
-        fees=sum((f.fees for f in fills), _ZERO),
-        fees_today=sum((f.fees for f in fills if f.day == as_of), _ZERO),
+        fees=sum((f.fees for f in fills if not f.rescale), _ZERO),
+        fees_today=sum((f.fees for f in fills if f.day == as_of and not f.rescale), _ZERO),
         position_value=today.position_value,
         invested_pct=rounded(today.position_value / today.equity * _HUNDRED)
         if today.equity > 0
@@ -303,10 +317,12 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
     from ..configs.records import Bot
     from ..configs.unit import configs_of
     from ..data.calendar import session_calendar
+    from ..engine.rescale import EVENT_RESCALED
     from ..engine.trade_dividends import positions_dividend_credits
     from ..governance import Mode
     from ..models import (
         HatAllocationDaily,
+        HatEvent,
         HatFill,
         HatOrder,
         HatPosition,
@@ -367,18 +383,35 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                 if by_signal
                 else []
             )
+            # the fills and the rescales (a split or bonus sets the shares), in time order
+            steps = [
+                (as_utc(at), signal_id, -qty if side == "sell" else qty, price, fee, False)
+                for signal_id, side, qty, price, fee, at in fill_rows
+            ]
+            by_id = {p.id: p for p in positions}
+            if by_id:
+                for event in session.scalars(
+                    select(HatEvent).where(
+                        HatEvent.event_type == EVENT_RESCALED,
+                        HatEvent.aggregate_type == "position",
+                        HatEvent.aggregate_id.in_(list(by_id)),
+                    )
+                ):
+                    qty = int(event.payload["to"]["qty_open"])
+                    position = by_id[event.aggregate_id]
+                    steps.append((as_utc(event.occurred_at), position.signal_id, qty, 0, 0, True))
             fills, cash, held = [], defaultdict(lambda: _ZERO), defaultdict(int)
-            for signal_id, side, qty, price, fee, at in fill_rows:
-                day = trade_date_of(as_utc(at))
+            for at, signal_id, qty, price, fee, rescale in sorted(steps, key=lambda s: s[0]):
+                day = trade_date_of(at)
                 if day > as_of:
                     continue
-                signed = -qty if side == "sell" else qty
-                position = by_signal[signal_id]
-                fills.append(
-                    BookFill(day, str(position.instrument_id), signed, Decimal(price), Decimal(fee))
-                )
-                cash[signal_id] += -signed * Decimal(price) - Decimal(fee)
-                held[signal_id] += signed
+                instrument = str(by_signal[signal_id].instrument_id)
+                fills.append(BookFill(day, instrument, qty, Decimal(price), Decimal(fee), rescale))
+                if rescale:
+                    held[signal_id] = qty
+                    continue
+                cash[signal_id] += -qty * Decimal(price) - Decimal(fee)
+                held[signal_id] += qty
             days = sorted(
                 d
                 for d, row in (calendar.days.items() if calendar else ())
@@ -414,6 +447,8 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                             Decimal(result.realized_pnl),
                             Decimal(result.fees),
                             Decimal(result.r_multiple),
+                            None if result.mfe_r is None else Decimal(result.mfe_r),
+                            None if result.mae_r is None else Decimal(result.mae_r),
                         )
                     )
                     dividends.extend(earned)

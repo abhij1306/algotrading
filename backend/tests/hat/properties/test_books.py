@@ -162,3 +162,47 @@ def test_dividends_are_credited_on_their_ex_dates() -> None:
     assert dividend_credits(steps, paid, DAYS[2]) == [(DAYS[1], D("200"))]
     curve = book_curve(START, DAYS, [], [(DAYS[1], D("200"))], {})
     assert [s.equity for s in curve] == [START, START + 200, START + 200, START + 200]
+
+
+def test_a_split_rescales_the_shares_held_and_the_fallback_price() -> None:
+    """A 1:2 split on DAYS[2]: 100 shares at 100 become 200; the closes after it are halved, so
+    the book's value does not halve with them."""
+    fills = [
+        BookFill(DAYS[0], "a", 100, D("100"), D("0")),
+        BookFill(DAYS[2], "a", 200, D("0"), D("0"), rescale=True),
+    ]
+    closes = {"a": [(DAYS[0], D("100")), (DAYS[1], D("104")), (DAYS[2], D("52"))]}
+    curve = book_curve(START, DAYS, fills, [], closes)
+    assert [s.position_value for s in curve] == [D("10000"), D("10400"), D("10400"), D("10400")]
+    # no close at all: the fill price stands in, scaled by the split
+    unpriced = book_curve(START, DAYS, fills, [], {})
+    assert [s.position_value for s in unpriced] == [D("10000")] * 4
+
+
+def test_same_session_fills_keep_their_given_order() -> None:
+    """The fallback mark is the session's last fill in time order, whatever the day sort."""
+    fills = [
+        BookFill(DAYS[0], "a", 10, D("100"), D("0")),
+        BookFill(DAYS[0], "a", 10, D("110"), D("0")),
+    ]
+    assert book_curve(START, DAYS[:1], fills, [], {})[0].position_value == D("2200")
+
+
+def test_paper_trades_carry_mfe_and_mae_into_the_metrics() -> None:
+    trade = ClosedTrade(
+        "A", DAYS[0], DAYS[2], 2, "trail_step", D("958"), D("42"), D("1.9"), D("2.5"), D("-0.4")
+    )
+    report = book_report(
+        bot="s1",
+        kind="paper",
+        start=START,
+        period_start=DAYS[0],
+        days=DAYS,
+        fills=[],
+        dividends=[],
+        closes={},
+        trades=[trade],
+        positions=[],
+        benchmark=[],
+    )
+    assert (report.metrics["avg_mfe_r"], report.metrics["avg_mae_r"]) == (2.5, -0.4)

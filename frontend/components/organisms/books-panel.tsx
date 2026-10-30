@@ -68,8 +68,10 @@ function BookDetails({ book: b, onClose }: Readonly<{ book: Book; onClose: () =>
         {b.positions.map((p) => (
           <LabelledValue key={`open-${p.symbol}`} label={`Open ${p.symbol}`}>
             <span className="font-mono tabular-nums">
-              {p.qty} @ <Decimal value={p.avg_entry} />,{" "}
-              {p.open_r ? number(Number(p.open_r)) : PLACEHOLDER}R, <Decimal value={p.unrealised} />
+              {p.qty} @ <Decimal value={p.avg_entry} />, mark <Decimal value={p.mark} />, stop{" "}
+              <Decimal value={p.current_stop} />,{" "}
+              {p.open_r ? number(Number(p.open_r)) : PLACEHOLDER}
+              R, <Decimal value={p.unrealised} />
             </span>
           </LabelledValue>
         ))}

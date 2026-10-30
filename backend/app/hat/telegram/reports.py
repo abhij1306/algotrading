@@ -8,7 +8,7 @@ is `verification/tla/JobScheduler.tla`, LoginPromptOrder and ReportsAfterClose).
 | `telegram.rejections` | 15:35 | the day's `signal.rejected` signals with their reasons |
 | `telegram.daily_report` | 15:40 | per bot P&L; last night's GTT check; close gaps |
 | `telegram.veto_digest` | 15:45 | the week's veto score and verdict (last trading day) |
-| `telegram.books` | 23:45 | the live and paper books (`daily.books`), after `ingest.nightly` |
+| `telegram.books` | 23:45 | the live and paper books (`daily.books`), after `ca.adjust` |
 
 Each job runs once per trade date (`run_job`) and only on a trading day of
 `hat_trading_calendar`: on any other day it sends nothing. The reports start after the 15:30
@@ -29,6 +29,7 @@ from ..clock import SYSTEM_CLOCK, Clock
 from ..configs.records import Bot
 from ..configs.unit import configs_of
 from ..daily.books import books_text, read_books
+from ..daily.nightly import CA_ADJUST
 from ..data.calendar import session_calendar
 from ..data.ingest import JOB_INGEST
 from ..data.store import DataStore
@@ -317,5 +318,5 @@ def telegram_jobs(reports: Reports) -> tuple[ScheduledJob, ...]:
         ScheduledJob("telegram.rejections", REJECTIONS_AT, lambda _day: reports.rejection_digest()),
         ScheduledJob("telegram.daily_report", DAILY_REPORT_AT, lambda _day: reports.daily_report()),
         ScheduledJob("telegram.veto_digest", VETO_DIGEST_AT, lambda _day: reports.veto_digest()),
-        ScheduledJob("telegram.books", BOOKS_AT, reports.books, after=(JOB_INGEST,)),
+        ScheduledJob("telegram.books", BOOKS_AT, reports.books, after=(JOB_INGEST, CA_ADJUST)),
     )

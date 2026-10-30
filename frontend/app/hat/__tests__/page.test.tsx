@@ -163,7 +163,20 @@ const BOOKS = {
       invested_pct: 39.6,
       benchmark_return_pct: 0.8,
       metrics: { trades: 3, expectancy_r: 0.42, total_return_pct: 1.25, win_pct: 66.6667 },
-      positions: [],
+      positions: [
+        {
+          symbol: "TCS",
+          qty: 10,
+          avg_entry: "4000",
+          initial_stop: "3800",
+          current_stop: "3875.5",
+          mark: "4012.25",
+          value: "40122.5",
+          unrealised: "102.5",
+          open_r: "0.06125",
+          opened: "2026-10-15",
+        },
+      ],
       trades: [],
     },
   ],
@@ -335,6 +348,17 @@ describe("HatPage", () => {
     expect(within(books).getByText("1.25%")).toBeInTheDocument();
     expect(within(books).getByText("0.80%")).toBeInTheDocument();
     expect(within(books).getByText("paper")).toBeInTheDocument();
+  });
+
+  it("opens a book's details with each open position's mark and stop", async () => {
+    stubBackend(ROUTES);
+    renderPage();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Details of the paper book of s1" }));
+
+    const drawer = await screen.findByRole("dialog", { name: "s1 · paper" });
+    const open = within(drawer).getByText(/4,012\.25/);
+    expect(open.textContent).toContain("stop 3,875.50");
   });
 
   it("opens a signal's details in a drawer", async () => {
