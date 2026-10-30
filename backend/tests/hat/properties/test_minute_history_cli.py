@@ -54,7 +54,7 @@ def test_root_and_report(source: str, count: int, refused: bool, unmapped: int) 
             patch("app.database.db_session_scope", return_value=nullcontext()),
             patch("app.hat.data.universe.active_members", return_value=members),
             patch.object(
-                minute_history, "_basis", return_value=RawBasis([], lambda *_: {}, Decimal(0))
+                minute_history, "raw_basis", return_value=RawBasis([], lambda *_: {}, Decimal(0))
             ),
             patch("logging.basicConfig"),  # main's own logging setup must not leak into the run
             patch("sys.stdout", new_callable=io.StringIO) as out,

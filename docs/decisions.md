@@ -240,20 +240,25 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   volume does not (it is the bhavcopy's traded quantity as it was), so the import converts the
   prices only; days imported before 2026-10-30 had their volume cut by the factor and are
   restored from the export by `bars5m_volume` (each day only when the export's bars, the bhavcopy's volume and
-  one common factor across the day's bars prove it). Known gap: for 219 instruments the export ends at the 15:10 bar on
-  every session of 2026-08-03..2026-10-28. Those days are written when they fit; the stored Fyers
-  days cover some of them to 2026-10-21. The known coverage gaps of the history are listed by
-  vendor, span and ISIN in `bars5m_gaps.csv` (`app/hat/data/bars5m_gaps.py`). Known gap:
-  in 2026 the export's 09:15 bar opens at the pre-open auction price, often outside the bar's own
-  high and low; such a bar is refused (`bars_5m_rejects`, rule `ohlc`), never repaired, so the
-  day has no 09:15 bar and a run decides it on the daily estimate.
+  one common factor across the day's bars prove it). For 219 instruments the export ends at the 15:10 bar on
+  every session of 2026-08-03..2026-10-28, and in 2026 its 09:15 bar opens at the pre-open auction
+  price, often outside the bar's own high and low, so the import refuses it (`bars_5m_rejects`, rule
+  `ohlc`). Such short days are refetched from Fyers (`bars5m_refetch`, owner 2026-10-30), each
+  replaced whole only when Fyers' day passes the admission every 5-minute day meets (raw daily bar,
+  replay grid, 09:15 open at NSE's daily open to a tick, 15:25 bar, no refused bucket missing,
+  volume against the bhavcopy); a day that does not pass keeps its stored bars. On 2026-07-21 and
+  2026-07-23 Fyers' 09:15 bar opens at the first continuous trade, not the auction: those 144
+  written days keep their bars and are refused to the replay by `open_not_auction` gap rows
+  (orchestrator, 2026-10-30; no restore, no price patch). Most vendor days before November 2025
+  also open at the first trade (D4's `first_open_vs_nse`); that history is not refused. The known coverage gaps left are listed by vendor, span and ISIN
+  in `bars5m_gaps.csv` (`app/hat/data/bars5m_gaps.py`), each with the reason it stays short.
 - **A 5-minute session is replayed from its open** (orchestrator, 2026-10-30, replacing the
   edges rule). A run replays a session's stored bars (`intraday.on_basis`) when its 09:15 bar is
   there, every bar is on the IST 5-minute grid once, the 09:15 open is within 5% of the daily
   open, no bucket the import refused is missing (`intraday.lacks_refused`: a refused bucket did
-  trade) and the session lies in no known coverage gap (`bars5m_gaps`: the Kotak 15:10 cut of
-  2026-08-03..2026-10-28 for its 219 instruments, and NSE's special sessions of 2024-03-02 and
-  2024-05-18); other sessions are decided on the daily estimate. A missing bucket, interior or
+  trade) and the session lies in no known coverage gap (`bars5m_gaps`: the Kotak 15:10 sessions
+  of 2026-08-03..2026-10-28 the Fyers refetch could not make whole, the refetched sessions whose
+  09:15 bar opens off NSE's daily open, and NSE's special sessions of 2024-03-02 and 2024-05-18); other sessions are decided on the daily estimate. A missing bucket, interior or
   trailing, is a window without a trade, as live's bar builder sees it (`data.bars` makes no bar
   for one), so the replay trades nothing there: of the empty buckets the broker export also
   covers, it has a traded bar for 0.4%, all on six dates where the stored vendor folded the
