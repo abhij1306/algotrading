@@ -40,7 +40,8 @@ from bisect import bisect_left, bisect_right
 from collections import Counter, defaultdict
 from collections.abc import Callable, Hashable, Sequence
 from dataclasses import dataclass, field, replace
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
+from datetime import time as clock
 from decimal import Decimal
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -85,6 +86,7 @@ SIGNAL_SAMPLE = 15
 VOLUME_MISSES = 3  # pool a: level breaks refused by the breakout volume
 SHAPE_MISSES = 2  # pool b: past the detector's first gate, failed its next one or the dry-up
 ADV_SESSIONS = 50
+AT_NIGHT = clock(16, 0)  # the backtest loop's nightly scan instant, IST
 CASE_PREFIX = {"cheat": "CT", "cup_handle": "CH", "power_play": "PP", "primary_base": "PB"}
 LEAD = 20  # sessions charted before H0
 AFTER = 10  # sessions charted after the break (or the night)
@@ -353,6 +355,7 @@ def replay(args: argparse.Namespace) -> tuple[Any, Any, Any, Replay]:  # pragma:
     from app.hat.engine.scan import SESSIONS_AHEAD, ScanInputs, window_key
     from app.hat.models import HatEvent, HatWatchlistEntry
     from app.hat.settings import operator_settings
+    from app.hat.time import IST, as_utc
 
     settings = operator_settings()
     root = settings.data_root
@@ -445,7 +448,7 @@ def replay(args: argparse.Namespace) -> tuple[Any, Any, Any, Replay]:  # pragma:
                 triggered=frozenset(consumed),
                 sessions_ahead=view.days[bisect_left(view.days, day) :][:SESSIONS_AHEAD],
             )
-            now = datetime.combine(night, datetime.min.time()) + timedelta(hours=20)
+            now = as_utc(datetime.combine(night, AT_NIGHT, tzinfo=IST))  # as the loop's _publish
             published = watchlist.scan_and_publish(ledger_session, bot_id, inputs, day, now)
             if not published.gate_on and published.skipped is None:
                 out.regime_off += 1
@@ -616,6 +619,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - reads 
     for playbook, counts in run_funnel.items():
         for gate, count in counts.items():
             mine = found.funnel[playbook].get(gate)
+            if mine is None:  # a gate after the break (the entry's stop, its chase)
+                lines.append(f"| {playbook} | {gate} | not replayed | {count} |")
+                continue
             flag = "" if mine == count else " (differs)"
             lines.append(f"| {playbook} | {gate} | {mine}{flag} | {count} |")
     signals_path = run_folder(args.run_id) / "signals.csv"
@@ -660,7 +666,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - reads 
                 failed = "" if kind == "signal" else f"volume_pace: vr {fmt(ratio)} vs 1.5"
             else:
                 night, day, ratio = item.night, None, None
-                failed = f"{item.reason}: {fmt(item.value)} vs {threshold_of(item.reason, params)}"
+                value = fmt(item.value) or "none"
+                failed = f"{item.reason}: {value} vs {threshold_of(item.reason, params)}"
             last = view.days[min(len(view.days) - 1, view.index[day or night] + AFTER)]
             at_night = series_on(view, item.instrument_id, night)
             series = stitch(at_night, series_on(view, item.instrument_id, last))
