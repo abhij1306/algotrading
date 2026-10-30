@@ -6,9 +6,9 @@ backtest uses for an order at 09:20 on a day without five-minute bars (`engine/f
         [--from 2021-10-26] [--to 2024-12-31] [--min-adv-cr 10] [--min-price 50]
 
 For every session in the window with a stored `bars_5m` day, every point-in-time member of the
-universe that is liquid as a rotation buys it (the 20 sessions before the day averaging at least
-`--min-adv-cr` crore traded, and the previous close at least `--min-price`, the seed's universe
-stage) and whose five-minute session a backtest admits (`intraday.session_admitted`: it fits
+universe that is liquid as a rotation buys it (the seed's universe stage: series EQ or BE, the 20
+sessions before the day averaging at least `--min-adv-cr` crore traded, close times volume where
+no traded value is stored, and the previous close at least `--min-price`) and whose five-minute session a backtest admits (`intraday.session_admitted`: it fits
 its daily bar, lacks no refused bucket, lies in no known coverage gap) gives one move:
 the price at 09:20 (`fill_0920.price_0920`, the 09:15 bar's close) over the day's raw open, less
 1. It prints one JSON report: the count, the median, quartiles and mean of the move, the
@@ -36,6 +36,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "backend"))
 
 CRORE = Decimal(10_000_000)
 ADV_SESSIONS = 20
+SERIES_IN = frozenset({"EQ", "BE"})  # the seed's universe stage (`series_in`): what it can buy
+
+
+def turnover(
+    traded_value: Decimal | None, close: Decimal | None, volume: int | None
+) -> Decimal | None:
+    """A session's traded value as the universe stage reads it (`indicators.traded_values`):
+    the reported one, else close times volume; None without either."""
+    if traded_value is not None:
+        return traded_value
+    if close is not None and volume is not None:
+        return close * volume
+    return None
 
 
 def adverse_medians(moves: Sequence[float]) -> dict[str, Any]:
@@ -165,12 +178,17 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         daily = store.read_bars(day)
         ids = [str(i) for i in daily["instrument_id"].to_list()]
         isins = dict(zip(ids, daily["isin"].to_list(), strict=True))
+        series = dict(zip(ids, daily["series"].to_list(), strict=True))
         opens = {
             i: o for i, v in zip(ids, daily["open"].to_list(), strict=True) if (o := _decimal(v))
         }
         if day >= args.start and five.path(day).is_file():
             members = {str(m) for m in members_on(rows, day)}
-            wanted = sorted(n for n in members & set(opens) if liquidity.liquid(n))
+            wanted = sorted(
+                n
+                for n in members & set(opens)
+                if series.get(n) in SERIES_IN and liquidity.liquid(n)
+            )
             sessions = session_bars(five, day, dict.fromkeys(wanted, Decimal(1)))
             found = moves_of(
                 day,
@@ -187,10 +205,15 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 first_of_month.extend(found)
         liquidity.feed(
             (i, c, v)
-            for i, close, value in zip(
-                ids, daily["close"].to_list(), daily["traded_value"].to_list(), strict=True
+            for i, close, value, volume in zip(
+                ids,
+                daily["close"].to_list(),
+                daily["traded_value"].to_list(),
+                daily["volume"].to_list(),
+                strict=True,
             )
-            if (c := _decimal(close)) is not None and (v := _decimal(value)) is not None
+            if (c := _decimal(close)) is not None
+            and (v := turnover(_decimal(value), c, volume)) is not None
         )
     report = {
         "universe": args.universe,

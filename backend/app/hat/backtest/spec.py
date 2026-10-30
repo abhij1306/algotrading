@@ -27,7 +27,7 @@ from app.paths import BARS5M_GAPS
 
 from ..costs import BacktestFills
 from ..data.bars5m_gaps import gap_spans, read_gaps, spans_digest
-from ..engine.fill_0920 import OPEN_TO_0920_MEASURED
+from ..engine.fill_0920 import OPEN_TO_0920, OPEN_TO_0920_MEASURED
 from ..engine.portfolio import regime as regime_v1
 from ..engine.portfolio.allocator import sleeve_key
 from ..engine.strategy.config import Playbook, StrategyConfig
@@ -462,7 +462,9 @@ class RunSpec:
 
     def recorded_conventions(self) -> dict[str, Any]:
         """The conventions block recorded in the run's metrics, which `config_digest` hashes;
-        the co-sleeves and the overlay only when the run has them."""
+        the co-sleeves and the overlay only when the run has them, and the 09:20 estimate
+        (`fill_0920.OPEN_TO_0920`, its values and whether they are measured) always: a change
+        of it moves every rotation fill and gap-over entry."""
         out = self.conventions.record(
             self.fills, (self.start, self.end), sleeve_weight(self), self.regime_table
         )
@@ -470,6 +472,12 @@ class RunSpec:
             out["co_sleeves"] = [c.record() for c in self.co_sleeves]
         if self.overlay is not None:
             out["overlay"] = self.overlay.record()
+        # the median move to 09:20 a rotation fill or a gap-over entry is estimated with
+        out["open_to_0920"] = {
+            "buy": str(OPEN_TO_0920.buy),
+            "sell": str(OPEN_TO_0920.sell),
+            "measured": OPEN_TO_0920_MEASURED,
+        }
         return out
 
 

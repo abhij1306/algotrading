@@ -1218,3 +1218,10 @@ def test_open_to_0920__moves_read_fitting_sessions_only() -> None:
     assert open_0920.moves_of(day, sessions, opens, ["a", "b", "c", "g"], admits) == [
         pytest.approx(0.02)
     ]
+
+
+def test_open_to_0920__turnover_falls_back_to_close_times_volume() -> None:
+    assert open_0920.turnover(Decimal(500), Decimal(10), 7) == Decimal(500)
+    assert open_0920.turnover(None, Decimal(10), 7) == Decimal(70)
+    assert open_0920.turnover(None, None, 7) is None
+    assert open_0920.SERIES_IN == {"EQ", "BE"}
