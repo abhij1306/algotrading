@@ -1394,11 +1394,11 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         )
         starts = reference_starts(refs, ctx.start)
         ends = reference_pulled(p.name for p in (ctx.ca_data / "dividends").glob("ca_*.json"))
+        if rights_pulled is not None:  # a rights action after the pull is not the files' to hold
+            ends = {**ends, "rights": rights_pulled}
         factor_summary, factor_findings = compare_factors(
             refs, stored, keys_of, prev, deleted, starts, held, ends, exceptions, stores
         )
-        if rights_pulled is not None:
-            ends = {**ends, "rights": rights_pulled}
         summary["reference_pulled"] = {k: d.isoformat() for k, d in sorted(ends.items())}
         coverage = factor_coverage(starts, ctx.end)
         summary["factors"] = factor_summary
