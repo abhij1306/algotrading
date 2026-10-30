@@ -1264,6 +1264,12 @@ def _screened(
     return screened_buckets(intraday.read_rejects()) if sessions else {}
 
 
+def _gaps(sessions: Sequence[date]) -> dict[str, tuple[tuple[date, date], ...]]:
+    """The 5-minute history's known coverage gaps (`bars5m_gaps.csv`) when the run reads any
+    session of the store; none otherwise."""
+    return gap_spans(read_gaps(BARS5M_GAPS)) if sessions else {}
+
+
 def load_market(
     store: DataStore,
     session: Session,
@@ -1388,7 +1394,7 @@ def load_market(
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
         screened_5m=_screened(intraday, sessions_5m),
-        gaps_5m=gap_spans(read_gaps(BARS5M_GAPS)) if sessions_5m else {},
+        gaps_5m=_gaps(sessions_5m),
         results=filings,
     )
     snapshot = {

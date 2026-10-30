@@ -196,6 +196,46 @@ def _judge(
             report.changes += changes_of(instrument, day, mine, volumes)  # type: ignore[arg-type]
 
 
+def _export_rows(
+    kotak: Path, names: Mapping[str, Sequence[str]], instrument: str, days: Iterable[date]
+) -> dict[date, list[SourceBar]]:  # pragma: no cover - files
+    """The export's rows of `days` under any of the instrument's symbols, one per label, by day."""
+    paths = [
+        kotak / folder / f"{symbol}.parquet"
+        for symbol in dict.fromkeys(names.get(instrument, ()))
+        for folder in ("raw_5m", "raw_5m_former")
+    ]
+    by_day: dict[date, list[SourceBar]] = defaultdict(list)
+    for row in one_per_label(r for p in paths if p.is_file() for r in source_rows(p, days)):
+        by_day[row.label.date()].append(row)
+    return by_day
+
+
+def _candidates(
+    report: VolumeReport,
+    instrument: str,
+    days: Mapping[date, tuple[int, int | None]],
+    export: Mapping[date, list[SourceBar]],
+) -> dict[date, tuple[int | None, list[SourceBar]]]:
+    """The instrument's candidate days with export rows (`is_candidate`), counted in `report`;
+    a candidate without them is left."""
+    out: dict[date, tuple[int | None, list[SourceBar]]] = {}
+    for day, (volume, daily) in days.items():
+        rows = export.get(day, [])
+        total = sum(r.volume for r in rows if SESSION[0] <= r.label.time() < SESSION[1])
+        off, scaled = is_candidate(volume, daily, total)
+        report.off[day.year] += off
+        report.scaled[day.year] += scaled
+        if not (off or scaled):
+            continue
+        if not rows:
+            report.no_file[day.year] += 1
+            report.left.append((instrument, day, "no_file"))
+            continue
+        out[day] = (daily, rows)
+    return out
+
+
 def restore(
     store: DataStore, kotak: Path, names: Mapping[str, Sequence[str]]
 ) -> VolumeReport:  # pragma: no cover - real data
@@ -212,29 +252,7 @@ def restore(
         batch.clear()
 
     for instrument, days in sorted(_day_volumes(store).items()):
-        paths = [
-            kotak / folder / f"{symbol}.parquet"
-            for symbol in dict.fromkeys(names.get(instrument, ()))
-            for folder in ("raw_5m", "raw_5m_former")
-        ]
-        by_day: dict[date, list[SourceBar]] = defaultdict(list)
-        rows = one_per_label(r for p in paths if p.is_file() for r in source_rows(p, days))
-        for row in rows:
-            by_day[row.label.date()].append(row)
-        mine: dict[date, tuple[int | None, list[SourceBar]]] = {}
-        for day, (volume, daily) in days.items():
-            rows = by_day.get(day, [])
-            export = sum(r.volume for r in rows if SESSION[0] <= r.label.time() < SESSION[1])
-            off, scaled = is_candidate(volume, daily, export)
-            report.off[day.year] += off
-            report.scaled[day.year] += scaled
-            if not (off or scaled):
-                continue
-            if not rows:
-                report.no_file[day.year] += 1
-                report.left.append((instrument, day, "no_file"))
-                continue
-            mine[day] = (daily, rows)
+        mine = _candidates(report, instrument, days, _export_rows(kotak, names, instrument, days))
         if mine:
             batch[instrument] = mine
         if len(batch) >= BATCH:

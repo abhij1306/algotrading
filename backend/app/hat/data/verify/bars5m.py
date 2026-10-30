@@ -894,18 +894,7 @@ def _judge_one(  # noqa: PLR0913 - one day's evidence
     writer, year = ("fyers_window" if fyers else "kotak_import"), str(day.year)
     item: dict[str, Any] = {"instrument_id": instrument, "isin": isin, "day": day.isoformat()}
     tally.by_writer[writer]["days"] += 1
-    stored_volume = int(sum(v[4] for t, v in mine.items() if SESSION[0] <= t < SESSION[1]))
-    ratio = day_volume_ratio(stored_volume, None if bar is None else bar[3])
-    fits = ratio is not None and day_volume_fits(ratio)
-    if ratio is not None:
-        tally.ratios[writer][_ratio_bucket(ratio)] += 1
-        if not fits:
-            code = (
-                "day_volume_in_gap"
-                if in_gap(gaps, isin, day) and ratio < 1
-                else "day_volume_differs"
-            )
-            tally.add(code, 1, {**item, "ratio": round(ratio, 4)}, writer, year)
+    fits = _judge_volume(tally, item, writer, mine, None if bar is None else bar[3], gaps)
     if not source:
         # a second vendor that never carried the symbol proves nothing; one that has the
         # symbol but not the day, or the bars' own source without the day, fails
@@ -935,6 +924,30 @@ def _judge_one(  # noqa: PLR0913 - one day's evidence
             "worst": round(result.worst, 6),
         }
         tally.add(code, n, found, writer, year)
+
+
+def _judge_volume(
+    tally: _Tally,
+    item: Mapping[str, Any],
+    writer: str,
+    mine: Mapping[time, Sequence[float]],
+    daily_volume: int | None,
+    gaps: Mapping[str, tuple[tuple[date, date], ...]],
+) -> bool:  # pragma: no cover - real data
+    """Whether the day's stored session volume reconciles with the bhavcopy's (`day_volume_fits`),
+    tallied by writer; a day off it fails, or warns inside a known coverage gap when short."""
+    day = date.fromisoformat(item["day"])
+    stored_volume = int(sum(v[4] for t, v in mine.items() if SESSION[0] <= t < SESSION[1]))
+    ratio = day_volume_ratio(stored_volume, daily_volume)
+    if ratio is None:
+        return False
+    tally.ratios[writer][_ratio_bucket(ratio)] += 1
+    if day_volume_fits(ratio):
+        return True
+    short_in_gap = in_gap(gaps, item["isin"], day) and ratio < 1
+    code = "day_volume_in_gap" if short_in_gap else "day_volume_differs"
+    tally.add(code, 1, {**item, "ratio": round(ratio, 4)}, writer, str(day.year))
+    return False
 
 
 def _ratio_bucket(ratio: float) -> str:
