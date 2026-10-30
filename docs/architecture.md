@@ -196,7 +196,7 @@ cut-off and the trigger window's end follow its continuous-trading end (15 minut
 close, for NSE's closing auction), and watchlist.expire and trade.end_session its close.
 | 18:00 on | the nightly chain |
 | 23:00 / 23:15 / 23:30 | gtt.verify, journal.check, snapshot.bots |
-| 23:45 | telegram.books: the live and paper books (after ingest.nightly) |
+| 23:45 | telegram.books: the live and paper books (after ca.adjust) |
 
 Each job has a deadline (`JOB_DEADLINES`); failing, missing or overrunning it raises one URGENT
 alert. Periodic loops (`daily/periodic.py`, every 5 s): live exits and intraday drawdown kills;

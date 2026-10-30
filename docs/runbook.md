@@ -646,7 +646,7 @@ is a failure), each closed trade's R, and the Backtest Result Standard's headlin
 (`standard.book_metrics`, the code a run's `run.json` uses, so `win_pct`, `expectancy_r`,
 `max_dd_pct`, `invested_pct`, `cost_share_pct` and the rest compare one to one with the
 strategy's evidence run) against the NIFTY 500 TRI. Telegram sends it at 23:45 IST after
-`ingest.nightly` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
+`ca.adjust` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
 books` show it on demand.
 
 ## Alerts and failures
