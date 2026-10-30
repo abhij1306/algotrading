@@ -1092,3 +1092,75 @@ def test_truncation__compare_leaves_out_the_cuts_delisting_sales_of_rotation_hol
     # another order of the cut is still compared
     long = replace(_result(_DAYS, trades=delisting), rebalances=(sale,))
     assert not truncation.compare(short, long, at)["rebalances"]["pass"]
+
+
+class _Browser:
+    """A browser process that exits on `terminate` only when `obeys`."""
+
+    def __init__(self, *, obeys: bool, running: bool = True) -> None:
+        self.obeys, self.running, self.calls = obeys, running, []
+
+    def poll(self) -> int | None:
+        return None if self.running else 0
+
+    def terminate(self) -> None:
+        self.calls.append("terminate")
+        self.running = not self.obeys
+
+    def kill(self) -> None:
+        self.calls.append("kill")
+        self.running = False
+
+    def wait(self, timeout: float) -> int:
+        self.calls.append("wait")
+        if self.running:
+            raise fyers_login.subprocess.TimeoutExpired("browser", timeout)
+        return 0
+
+
+def test_fyers_login__close_browser_waits_and_kills_a_browser_that_stays() -> None:
+    obeys = _Browser(obeys=True)
+    fyers_login.close_browser(obeys, wait=0)
+    assert obeys.calls == ["terminate", "wait"]
+    stays = _Browser(obeys=False)
+    fyers_login.close_browser(stays, wait=0)
+    assert stays.calls == ["terminate", "wait", "kill", "wait"]
+    gone = _Browser(obeys=True, running=False)
+    fyers_login.close_browser(gone, wait=0)
+    assert gone.calls == []
+
+
+def test_fyers_login__remove_profile_retries_a_directory_still_being_written(
+    tmp_path: Path,
+) -> None:
+    profile = tmp_path / "fyers-login-x"
+    profile.mkdir()
+    failures = [OSError(39, "Directory not empty")] * 2
+    pauses: list[float] = []
+
+    def rmtree(path: str) -> None:
+        if failures:
+            raise failures.pop()
+        fyers_login.shutil.rmtree(path)
+
+    assert fyers_login.remove_profile(
+        str(profile), tries=5, pause=1.0, rmtree=rmtree, sleep=pauses.append
+    )
+    assert pauses == [1.0, 1.0]
+    assert not profile.exists()
+
+
+def test_fyers_login__remove_profile_never_raises(tmp_path: Path) -> None:
+    profile = tmp_path / "fyers-login-y"
+    profile.mkdir()
+
+    def stuck(_path: str) -> None:
+        raise OSError(39, "Directory not empty")
+
+    # every try fails; the last, error-ignoring pass still removes what it can
+    assert fyers_login.remove_profile(
+        str(profile), tries=3, pause=0, rmtree=stuck, sleep=lambda _s: None
+    )
+    assert fyers_login.remove_profile(
+        str(tmp_path / "never-made"), rmtree=fyers_login.shutil.rmtree
+    )
