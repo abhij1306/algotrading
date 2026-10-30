@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-from app.hat.daily.entries import sold_gain
+from app.hat.daily.books import sold_gain
 from app.hat.data.live import PRICE_OUT_OF_BAND, PRICE_STALE, PRICE_UNKNOWN
 from app.hat.engine.rotation import SELL, TOP_UP, TRIM, Order, Plan, book_equity, targets
 from app.hat.engine.rotation_live import (

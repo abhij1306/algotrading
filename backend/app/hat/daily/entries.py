@@ -47,10 +47,11 @@ from ..risk.policy_service import load_versions
 from ..risk.service import evaluate_signal
 from ..risk.sessions import SessionCalendar
 from ..time import trade_date_of, utc_now
+from .books import sold_gain
 from .gates import CalendarSource, GateBoard
 from .prices import LivePrices
 
-__all__ = ["LiveContexts", "LiveRoute", "sold_gain"]
+__all__ = ["LiveContexts", "LiveRoute"]
 
 RouterFor = Callable[[uuid.UUID], ExecutionRouter | None]
 FundsFor = Callable[[uuid.UUID], Decimal | None]
@@ -105,12 +106,6 @@ def _shadow_realised(session: Session, bot_id: uuid.UUID) -> Decimal:
         ),
         Decimal(0),
     )
-
-
-def sold_gain(entry: Decimal, qty: int, price: Decimal, fees: Decimal) -> Decimal:
-    """The realised P&L of selling `qty` shares bought at `entry` at `price`, less the sale's
-    `fees`: what the sale adds to the free cash beyond the cost of the shares it returns."""
-    return (price - entry) * qty - fees
 
 
 def _shadow_open_notional(session: Session, bot_id: uuid.UUID) -> Decimal:

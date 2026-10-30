@@ -10,6 +10,7 @@ export const queryKeys = {
     allocations: () => ["hat", "allocations"] as const,
     watchlist: () => ["hat", "watchlist"] as const,
     positions: () => ["hat", "positions"] as const,
+    books: () => ["hat", "books"] as const,
     events: (limit: number) => ["hat", "events", limit] as const,
     signals: (limit: number) => ["hat", "signals", limit] as const,
   },

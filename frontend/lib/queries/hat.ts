@@ -16,10 +16,13 @@ export type HatStatus = Schemas["StatusResponse"];
 export type HatAllocations = Schemas["AllocationsResponse"];
 export type HatWatchlist = Schemas["WatchlistView"][];
 export type HatPositions = Schemas["PositionView"][];
+export type HatBooks = Schemas["BooksResponse"];
 export type HatEvents = Schemas["EventView"][];
 export type HatSignals = Schemas["SignalView"][];
 
 const polling = { refetchInterval: HAT_REFRESH_MS, refetchIntervalInBackground: false };
+// The books move with the nightly closes; their read marks every position, so it polls slowly.
+export const HAT_BOOKS_REFRESH_MS = 300_000;
 
 export function useHatStatus() {
   return useQuery({
@@ -42,6 +45,15 @@ export function useHatWatchlist() {
     queryKey: queryKeys.hat.watchlist(),
     queryFn: () => unwrap(api.GET("/api/hat/watchlist")),
     ...polling,
+  });
+}
+
+export function useHatBooks() {
+  return useQuery({
+    queryKey: queryKeys.hat.books(),
+    queryFn: () => unwrap(api.GET("/api/hat/books")),
+    refetchInterval: HAT_BOOKS_REFRESH_MS,
+    refetchIntervalInBackground: false,
   });
 }
 
