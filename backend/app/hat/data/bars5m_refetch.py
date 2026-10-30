@@ -10,21 +10,27 @@ a NIFTY 500 member-day whose stored day has no 09:15 bar). A replay refuses both
 the minute-history download (`minute_history.load_symbol`: the same paced calls, candle screen,
 aggregation and raw-basis conversion), then judges each target day (`admit`) by the rules every
 5-minute day meets: it fits the raw daily bar (`check_day`), it is replayable (`on_basis`: the
-09:15 bar, a clean grid, the open within 5% of the daily open), it holds the 15:25 bar, it lacks
+09:15 bar, a clean grid, the open within 5% of the daily open), its 09:15 bar opens at the daily
+open, the pre-open auction's price (`open_off_auction`), it holds the 15:25 bar, it lacks
 no bucket the screen or the import refused, and its session volume reconciles with the
 bhavcopy's (`verify.bars5m.day_volume_fits`). The admitted days' bars go to the run folder
 (`bars5m_refetch/<name>` under the data root, `--run <name>`) with every target's outcome
-(`outcomes.csv`); nothing is written to the store, and a stopped fetch continues with `--resume`.
+(`outcomes.csv`); nothing is written to the store. A stopped fetch continues with `--resume`,
+which also retries the instruments whose history failed (`kept_outcomes`).
 
 `apply --run <name>` writes the admitted days of a fetch: it first saves every stored row of
 those (instrument, day) to `before.parquet` in the run folder (synced), then replaces each day
 whole (`BarStore.write`, one rewrite per day file), skipping a day whose stored bars changed since
 the fetch. It holds the minute-history and the data-update locks, so no other `bars_5m` writer
-runs with it. A day that is not admitted keeps its stored bars; the outcome says why.
+runs with it. A day that is not admitted keeps its stored bars; the outcome says why. A run
+whose days were restored from `before.parquet` is marked by a `rolled_back` file in its folder:
+`apply` refuses it and D4 no longer reads its days as Fyers' (`bars5m_gaps.refetched_days`).
 
 `gaps --run <name>` prints the `bars5m_gaps` rows the applied run leaves (`--write` writes them to
 `app.paths.BARS5M_GAPS`): a Kotak row whose short sessions were all admitted is dropped, the
-others keep only their spans of sessions still short, with the reason.
+others keep only their spans of sessions still short, with the reason; and every day an applied
+run wrote whose 09:15 bar opens off NSE's daily open gets a `fyers` row (`open_gaps`), so the
+replay refuses it while its bars stay.
 """
 
 from __future__ import annotations
@@ -49,21 +55,24 @@ import pyarrow.parquet as pq
 from ..backtest.intraday import lacks_refused, on_basis
 from ..time import IST, trade_date_of
 from .bars import Bar
-from .bars5m_gaps import APPLIED, REFETCH_DIR, Gap
+from .bars5m_gaps import APPLIED, OPEN_NOT_AUCTION, REFETCH_DIR, ROLLED_BACK, Gap
 from .bars_basis import DailyRange, check_day
 from .bars_store import SCHEMA, BarStore, row_from_bar
 from .minute_limits import HistoryLimits, MinuteHistoryError, Progress
-from .verify.bars5m import day_volume_fits
+from .verify.bars5m import day_volume_fits, open_off_auction
 
 if TYPE_CHECKING:
     from ..settings import HatSettings
     from .minute_history import Download
+    from .store import DataStore
 
 __all__ = [
     "NO_FIRST_BAR",
     "SHORT_CLOSE",
     "Target",
     "admit",
+    "kept_outcomes",
+    "open_gaps",
     "remaining_gaps",
     "run_folder",
     "short_spans",
@@ -76,6 +85,7 @@ ADMITTED = "admitted"
 FIRST_BAR = time(9, 15)
 LAST_BAR = time(15, 25)
 KOTAK = "kotak"
+FYERS = "fyers"
 OUTCOMES = "outcomes.csv"
 BARS_DIR = "bars"
 BEFORE = "before.parquet"
@@ -138,7 +148,9 @@ def admit(
 ) -> str | None:
     """None when a refetched day (`bars`, ordered by start, on the raw basis) may replace the
     stored one, else the first rule it breaks: `no_bars`, `screened_bucket` (the candle screen
-    refused `screened` candles of the day), the `check_day` code, `not_on_basis`, `no_last_bar`,
+    refused `screened` candles of the day), the `check_day` code, `not_on_basis`,
+    `open_not_auction` (the 09:15 bar opens off the daily open, the auction's price:
+    `verify.bars5m.open_off_auction`), `no_last_bar`,
     `lacks_refused` (a bucket the import refused, `refused`, is still missing) or
     `day_volume_differs` (against the bhavcopy's `daily_volume`)."""
     if not bars:
@@ -151,6 +163,8 @@ def admit(
     assert daily is not None  # check_day refuses a day without one
     if not on_basis(day, bars, daily.open):
         return "not_on_basis"
+    if open_off_auction(float(bars[0].open), float(daily.open)):
+        return OPEN_NOT_AUCTION
     if bars[-1].start.astimezone(IST).time() != LAST_BAR:
         return "no_last_bar"
     if lacks_refused(bars, refused):
@@ -158,6 +172,24 @@ def admit(
     if not daily_volume or not day_volume_fits(sum(b.volume for b in bars) / daily_volume):
         return "day_volume_differs"
     return None
+
+
+def kept_outcomes(
+    rows: Iterable[Mapping[str, str]], done: Collection[str]
+) -> list[Mapping[str, str]]:
+    """The outcome rows a resumed fetch keeps: those of the instruments it finished (`done`);
+    the rows of an instrument whose history failed go, so it is fetched again."""
+    return [r for r in rows if r["instrument_id"] in done]
+
+
+def open_gaps(days: Iterable[tuple[str, date]], run: str) -> list[Gap]:
+    """One `fyers` gap row per (ISIN, day) of `days`, the refetched sessions whose 09:15 bar opens
+    off NSE's daily open (`open_off_auction`), with the run that wrote them."""
+    reason = (
+        f"{OPEN_NOT_AUCTION}: the 09:15 bar the Fyers refetch of {run} wrote opens at the first "
+        "continuous trade, not NSE's daily open (the pre-open auction); bars kept, replay refuses"
+    )
+    return [Gap(FYERS, day, day, isin, reason) for isin, day in sorted(set(days))]
 
 
 def run_folder(root: Path, name: str) -> Path:
@@ -397,6 +429,10 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
         progress.done.clear()
         progress.failed.clear()
         (out / OUTCOMES).unlink(missing_ok=True)
+    elif (out / OUTCOMES).is_file():  # the failed instruments' rows go: they are fetched again
+        kept = kept_outcomes(_read_outcomes(out), progress.done)
+        (out / OUTCOMES).unlink()
+        _append(out / OUTCOMES, kept)
     targets = _targets(root, read_gaps(BARS5M_GAPS), args.first, args.last)
     by_instrument: dict[str, list[Target]] = defaultdict(list)
     for t in targets:
@@ -440,10 +476,15 @@ def _fetch(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
             if exc.code in ("history_daily_limit", "history_rate_limited", "history_plan_limit"):
                 stopped = exc.code
                 break
-            rows, kept = [_outcome(t, exc.code, (), None) for t in group], []
+            # recorded, but not done: a --resume fetches it again
+            _append(out / OUTCOMES, [_outcome(t, exc.code, (), None) for t in group])
+            progress.failed[instrument_id] = exc.code
+            progress.save()
+            continue
         if kept:
             _save_bars(out / BARS_DIR / f"{instrument_id}.parquet", kept, instrument_id)
         _append(out / OUTCOMES, rows)
+        progress.failed.pop(instrument_id, None)
         progress.done[instrument_id] = (group[0].day, group[-1].day)
         progress.save()
     _print_outcomes(out)
@@ -480,6 +521,9 @@ def _apply(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: n
 
     root = settings.data_root
     run = run_folder(root, args.run)
+    if (run / ROLLED_BACK).exists():
+        sys.stderr.write(f"refused: {run.name} was rolled back ({ROLLED_BACK} in its folder)\n")
+        return 2
     admitted = [r for r in _read_outcomes(run) if r["outcome"] == ADMITTED]
     by_day: dict[date, dict[str, dict[str, str]]] = defaultdict(dict)
     for r in admitted:
@@ -592,8 +636,13 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
         f"The Kotak export of 2026-10-28 ends at the 15:10 bar on these sessions and the Fyers "
         f"refetch of {run.name} could not make them whole"
     )
-    left = remaining_gaps(gaps, short, sessions, reason)
+    left = remaining_gaps(
+        [g for g in gaps if not g.reason.startswith(OPEN_NOT_AUCTION)], short, sessions, reason
+    )
     left = [g if g.vendor != KOTAK else _with_causes(g, outcomes, done) for g in left]
+    opened, symbols = _open_gaps(store, settings.data_root)
+    left += opened
+    names.update(symbols)
     target = BARS5M_GAPS if args.write else Path("/dev/stdout")
     with target.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle, lineterminator="\n")
@@ -603,9 +652,50 @@ def _gaps(args: argparse.Namespace, settings: HatSettings) -> int:  # pragma: no
     kept = sum(1 for g in left if g.vendor == KOTAK)
     sys.stderr.write(
         f"kotak rows {sum(1 for g in gaps if g.vendor == KOTAK)} -> {kept}; "
-        f"short sessions left {sum(why.values())}: {dict(why)}\n"
+        f"short sessions left {sum(why.values())}: {dict(why)}; "
+        f"{OPEN_NOT_AUCTION} rows {len(opened)}: {dict(Counter(str(g.first) for g in opened))}\n"
     )
     return 0
+
+
+def _open_gaps(
+    store: DataStore, root: Path
+) -> tuple[list[Gap], dict[str, str]]:  # pragma: no cover - real data
+    """`open_gaps` of every applied run not rolled back (its written days whose stored 09:15
+    bar opens off NSE's daily open), and the symbols of their ISINs."""
+    from .verify.bars5m import first_opens
+
+    by_run: dict[str, set[tuple[str, date]]] = {}
+    for path in sorted((root / REFETCH_DIR).glob(f"*/{APPLIED}")):
+        if (path.parent / ROLLED_BACK).exists():
+            continue
+        with path.open(encoding="utf-8", newline="") as handle:
+            by_run[path.parent.name] = {
+                (r["instrument_id"], date.fromisoformat(r["day"])) for r in csv.DictReader(handle)
+            }
+    wanted = set().union(*by_run.values())
+    _, opens = first_opens(store, wanted, whole_store=False)
+    names = _instrument_names({i for i, _ in wanted})
+    rows: list[Gap] = []
+    for name, days in by_run.items():
+        off = [
+            (names[i][0], d) for i, d in days if (o := opens.get((i, d))) and open_off_auction(*o)
+        ]
+        rows += open_gaps(off, name)
+    return rows, dict(names.values())
+
+
+def _instrument_names(ids: Collection[str]) -> dict[str, tuple[str, str]]:  # pragma: no cover
+    """The (ISIN, symbol) of the instruments `ids`."""
+    from sqlalchemy import select
+
+    from app.database import db_session_scope
+
+    from ..models import HatInstrument
+
+    with db_session_scope(writes_data=True) as db:
+        rows = db.execute(select(HatInstrument.id, HatInstrument.isin, HatInstrument.symbol)).all()
+    return {str(i): (isin, symbol) for i, isin, symbol in rows if str(i) in ids}
 
 
 def _with_causes(

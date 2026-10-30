@@ -6,7 +6,9 @@ copy is refused by where it is known to be short, never by how its prices moved.
 
 The rows in force: the sessions of 2026-08-03..2026-10-28 where the Kotak export of 2026-10-28
 ends at the 15:10 bar and the Fyers refetch (`bars5m_refetch`) could not make the stored day
-whole (16 sessions of 11 instruments, each row with the refetch's outcome), and
+whole (16 sessions of 11 instruments, each row with the refetch's outcome); the refetched
+sessions whose 09:15 bar opens off NSE's daily open (`open_not_auction`: Fyers' bar opens at the
+first continuous trade, not the pre-open auction; the bars are kept, the replay refuses them); and
 NSE's special sessions in the history's span ran shorter than the regular session (2024-03-02
 and 2024-05-18, the disaster-recovery site's live sessions)."""
 
@@ -23,6 +25,8 @@ from pathlib import Path
 EVERY = "*"
 REFETCH_DIR = "bars5m_refetch"  # under the data root: one folder per `bars5m_refetch` run
 APPLIED = "applied.csv"  # in a run folder: the (instrument id, day) its `apply` wrote
+ROLLED_BACK = "rolled_back"  # in a run folder: its written days were restored from before.parquet
+OPEN_NOT_AUCTION = "open_not_auction"  # a gap row's reason prefix: a refetched day's 09:15 open
 
 
 @dataclass(frozen=True)
@@ -83,15 +87,29 @@ def in_gap(spans: Mapping[str, tuple[tuple[date, date], ...]], isin: str | None,
     return any(first <= day <= last for first, last in found)
 
 
-__all__ = ["EVERY", "Gap", "gap_spans", "in_gap", "read_gaps", "spans_digest"]
+__all__ = [
+    "APPLIED",
+    "EVERY",
+    "OPEN_NOT_AUCTION",
+    "REFETCH_DIR",
+    "ROLLED_BACK",
+    "Gap",
+    "gap_spans",
+    "in_gap",
+    "read_gaps",
+    "refetched_days",
+    "spans_digest",
+]
 
 
 def refetched_days(root: Path) -> set[tuple[str, date]]:
     """The (instrument id, day) every applied `bars5m_refetch` run under the data root `root`
     wrote from Fyers' history (each run folder's `applied.csv`): days a vendor's short copy no
-    longer stands for."""
+    longer stands for. A run marked `ROLLED_BACK` (its days restored) wrote none."""
     out: set[tuple[str, date]] = set()
     for path in sorted((root / REFETCH_DIR).glob(f"*/{APPLIED}")):
+        if (path.parent / ROLLED_BACK).exists():
+            continue
         with path.open(encoding="utf-8", newline="") as handle:
             out |= {
                 (r["instrument_id"], date.fromisoformat(r["day"])) for r in csv.DictReader(handle)

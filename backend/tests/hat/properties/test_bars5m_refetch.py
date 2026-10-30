@@ -8,17 +8,20 @@ from pathlib import Path
 import pytest
 
 from app.hat.data.bars import Bar
-from app.hat.data.bars5m_gaps import Gap
+from app.hat.data.bars5m_gaps import APPLIED, REFETCH_DIR, ROLLED_BACK, Gap, refetched_days
 from app.hat.data.bars5m_refetch import (
     NO_FIRST_BAR,
     SHORT_CLOSE,
     admit,
+    kept_outcomes,
+    open_gaps,
     remaining_gaps,
     run_folder,
     short_spans,
     target_kind,
 )
 from app.hat.data.bars_basis import DailyRange
+from app.hat.data.verify.bars5m import judge_opens, open_off_auction
 from app.hat.time import IST
 
 DAY = date(2026, 9, 1)
@@ -59,6 +62,8 @@ def test_a_refetched_day_is_refused_by_the_first_rule_it_breaks() -> None:
     assert admit(DAY, bars, DAILY, volume, TOL, screened=1) == "screened_bucket"
     assert admit(DAY, bars, None, volume, TOL) == "no_daily_bar"
     assert admit(DAY, bars[1:], DAILY, volume, TOL) == "basis_mismatch"  # the range is at 09:15
+    late = Bar("X", bars[0].start, Decimal("100.05"), Decimal(102), Decimal(99), Decimal(101), 100)
+    assert admit(DAY, [late, *bars[1:]], DAILY, volume, TOL) == "open_not_auction"
     assert admit(DAY, _session(last=time(15, 20)), DAILY, volume, TOL) == "no_last_bar"
     lost = datetime.combine(DAY, time(15, 30), tzinfo=IST) - timedelta(minutes=5)
     gapped = [b for b in bars if b.start != datetime.combine(DAY, time(12, 0), tzinfo=IST)]
@@ -111,3 +116,51 @@ def test_a_run_is_named_by_a_bare_folder_name_under_the_refetch_folder() -> None
     for name in ("", ".", "..", "../x", "a/b", "/abs", ".hidden", "a\\b"):
         with pytest.raises(ValueError, match="refused"):
             run_folder(root, name)
+
+
+def test_a_first_open_is_the_auction_to_within_a_tick() -> None:
+    assert not open_off_auction(1234.5, 1234.5)
+    assert not open_off_auction(1234.51, 1234.5)
+    assert open_off_auction(1234.55, 1234.5)
+    assert open_off_auction(1213.6, 1234.5)
+
+
+def test_an_open_off_the_auction_fails_unless_a_gap_row_refuses_it() -> None:
+    day = date(2026, 7, 21)
+    opens = {("a", day): (101.0, 100.0), ("b", day): (99.0, 100.0), ("c", day): (100.0, 100.0)}
+    isins = {"a": "INE000A01011", "b": "INE000B01011", "c": "INE000C01011"}
+    outside, inside = judge_opens(opens, isins, {"INE000B01011": ((day, day),)})
+    assert [i["instrument_id"] for i in outside] == ["a"]
+    assert [i["instrument_id"] for i in inside] == ["b"]
+    assert outside[0] == {
+        "instrument_id": "a",
+        "isin": "INE000A01011",
+        "day": "2026-07-21",
+        "open_915": 101.0,
+        "nse_open": 100.0,
+    }
+
+
+def test_open_gap_rows_are_one_per_session_named_by_the_run() -> None:
+    days = [("INE000B01011", date(2026, 7, 23)), ("INE000A01011", date(2026, 7, 21))]
+    rows = open_gaps([*days, days[0]], "run-1")
+    assert [(g.vendor, g.isin, g.first, g.last) for g in rows] == [
+        ("fyers", "INE000A01011", date(2026, 7, 21), date(2026, 7, 21)),
+        ("fyers", "INE000B01011", date(2026, 7, 23), date(2026, 7, 23)),
+    ]
+    assert all(g.reason.startswith("open_not_auction: ") and "run-1" in g.reason for g in rows)
+
+
+def test_a_resumed_fetch_keeps_only_the_finished_instruments_outcomes() -> None:
+    rows = [{"instrument_id": "a", "outcome": "admitted"}, {"instrument_id": "b", "outcome": "x"}]
+    assert kept_outcomes(rows, {"a"}) == rows[:1]
+    assert kept_outcomes(rows, set()) == []
+
+
+def test_a_rolled_back_run_wrote_no_fyers_days(tmp_path: Path) -> None:
+    for name in ("run-a", "run-b"):
+        folder = tmp_path / REFETCH_DIR / name
+        folder.mkdir(parents=True)
+        (folder / APPLIED).write_text(f"instrument_id,day\n{name},2026-07-21\n", encoding="utf-8")
+    (tmp_path / REFETCH_DIR / "run-b" / ROLLED_BACK).write_text("restored\n", encoding="utf-8")
+    assert refetched_days(tmp_path) == {("run-a", date(2026, 7, 21))}

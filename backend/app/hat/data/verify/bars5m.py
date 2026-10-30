@@ -62,6 +62,11 @@ raw file, a bar that differs, or a bar on one side only fails (dated), except (`
 - a failed day the reviewed list names (`VERIFY_EXCEPTIONS["d4"]`: code, ISIN, day, the item's
   values when reviewed, such as `bars` with `worst` or `scale`, and the reason with its evidence),
   warned as `excepted` (`exceptions.py`).
+Every day `bars5m_refetch` wrote opens at NSE's daily open, the pre-open auction's price, to
+within `PRICE_TICK` (`open_off_auction`), else it fails (`open_not_auction`: Fyers' 09:15 bar
+can open at the first continuous trade) unless a `bars5m_gaps` row refuses it to the replay
+(`open_not_auction_in_gap`, warn). The whole store's 09:15 opens are summarised by year against
+NSE's open (`first_open_vs_nse`): most vendor days before November 2025 open at the first trade.
 The envelope check above holds each stored day to the raw daily bar, so the scale itself is
 checked there. The summary splits the compare by writer (`by_writer`) and gives the volume ratio
 by writer.
@@ -71,13 +76,13 @@ from __future__ import annotations
 
 import json
 from collections import Counter, defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.paths import BARS5M_GAPS, VERIFY_EXCEPTIONS
 
@@ -89,6 +94,9 @@ from ..bars_basis import BASIS_MISMATCH, DailyRange, check_day, fyers_factor
 from . import dated, seeded_sample
 from .context import Context
 from .exceptions import Exceptions, read_exceptions
+
+if TYPE_CHECKING:
+    from ..store import DataStore
 
 BASIS_STEP = 0.03  # a factor's mark: both extremes off by 3% or more, the same way and ratio
 AUCTION_NEAR = 0.01  # a missed extreme within 1% of the daily open: the auction's
@@ -255,6 +263,37 @@ def day_volume_fits(ratio: float) -> bool:
     above it and `DAY_VOLUME_SHORT` below (the bhavcopy also counts the pre-open auction and the
     closing session, which no session bar holds)."""
     return 1 - DAY_VOLUME_SHORT <= ratio <= 1 + DAY_VOLUME_OVER
+
+
+def open_off_auction(first_open: float, nse_open: float) -> bool:
+    """Whether a session's 09:15 bar opens off NSE's daily open, the pre-open auction's price, by
+    more than `PRICE_TICK` (both on the raw basis): the bar opens at the first continuous trade."""
+    return abs(first_open - nse_open) > PRICE_TICK
+
+
+def judge_opens(
+    opens: Mapping[tuple[str, date], tuple[float, float]],
+    isins: Mapping[str, str],
+    gaps: Mapping[str, tuple[tuple[date, date], ...]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The days of `opens` ((instrument, day): the stored 09:15 open and NSE's open) whose 09:15
+    bar is off the auction (`open_off_auction`), split into those outside any known coverage gap
+    (`bars5m_gaps`: the replay would read them) and those inside one (the replay refuses them)."""
+    outside: list[dict[str, Any]] = []
+    inside: list[dict[str, Any]] = []
+    for (instrument, day), (first, nse) in sorted(opens.items(), key=lambda kv: kv[0][::-1]):
+        if not open_off_auction(first, nse):
+            continue
+        isin = isins.get(instrument, "")
+        item = {
+            "instrument_id": instrument,
+            "isin": isin,
+            "day": day.isoformat(),
+            "open_915": first,
+            "nse_open": nse,
+        }
+        (inside if in_gap(gaps, isin, day) else outside).append(item)
+    return outside, inside
 
 
 LAST_BAR = time(15, 25)
@@ -636,6 +675,85 @@ def _refusals(
     return refused, screened, rules
 
 
+_FIRST_OPENS_SQL = """
+WITH f AS (
+    SELECT CAST(instrument_id AS VARCHAR) AS instrument_id,
+        CAST(timezone('Asia/Kolkata', bar_start) AS DATE) AS day, open
+    FROM read_parquet($files)
+    WHERE CAST(timezone('Asia/Kolkata', bar_start) AS TIME) = TIME '09:15'
+)
+SELECT f.instrument_id, f.day, f.open, r.open FROM f
+JOIN bars_daily_raw_latest r
+    ON CAST(r.instrument_id AS VARCHAR) = f.instrument_id AND r.date = f.day
+WHERE r.date BETWEEN $first AND $final AND r.open > 0
+"""
+
+
+def first_opens(
+    store: DataStore,
+    wanted: Collection[tuple[str, date]],
+    span: tuple[date, date] = (date.min, date.max),
+    *,
+    whole_store: bool = True,
+) -> tuple[dict[str, dict[str, int]], dict[tuple[str, date], tuple[float, float]]]:
+    """The stored 09:15 opens against NSE's daily open inside `span`: the days and those off the
+    auction (`open_off_auction`) by year, and the (09:15 open, NSE open) of the `wanted` days.
+    Without `whole_store` only the day files of the `wanted` days are read (no summary)."""
+    from ..bars_store import DATASET, FILE_NAME  # noqa: PLC0415
+
+    keep = set(wanted)
+    files = sorted((store.root / DATASET).glob(f"date=*/{FILE_NAME}"))
+    if not whole_store:
+        days = {d.isoformat() for _, d in keep}
+        files = [f for f in files if f.parent.name[5:] in days]
+    by_year: dict[str, Counter[str]] = defaultdict(Counter)
+    found: dict[tuple[str, date], tuple[float, float]] = {}
+    with closing(store.connect()) as con:
+        for at in range(0, len(files), 60):
+            chunk = files[at : at + 60]
+            first, final = (date.fromisoformat(f.parent.name[5:]) for f in (chunk[0], chunk[-1]))
+            rows = con.execute(
+                _FIRST_OPENS_SQL, {"files": [str(f) for f in chunk], "first": first, "final": final}
+            ).fetchall()
+            for instrument, day, opened, nse in rows:
+                if not span[0] <= day <= span[1]:
+                    continue
+                pair = (float(opened), float(nse))
+                if whole_store:
+                    year = by_year[str(day.year)]
+                    year["days"] += 1
+                    year["off_auction"] += open_off_auction(*pair)
+                if (instrument, day) in keep:
+                    found[(instrument, day)] = pair
+    return {y: dict(c) for y, c in sorted(by_year.items())}, found
+
+
+def _check_opens(ctx: Context) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover
+    """The 09:15 open of every day `bars5m_refetch` wrote against NSE's daily open: one off the
+    auction outside a known coverage gap fails (`open_not_auction`; the replay would enter at a
+    price the auction did not make), one inside a gap warns (`open_not_auction_in_gap`). The
+    whole store's 09:15 opens are summarised by year (`by_year`)."""
+    refetched = refetched_days(ctx.root)
+    by_year, opens = first_opens(ctx.store, refetched, (ctx.start, ctx.end))
+    isins = dict(ctx.rows("SELECT CAST(id AS TEXT), isin FROM hat_instrument"))
+    outside, inside = judge_opens(opens, isins, gap_spans(read_gaps(BARS5M_GAPS)))
+    summary = {
+        "by_year": by_year,
+        "refetched_days": len(opens),
+        "refetched_off_auction": len(outside) + len(inside),
+        "refetched_off_auction_in_gap": len(inside),
+        "tick": PRICE_TICK,
+    }
+    findings = []
+    if outside:
+        findings.append(
+            dated(finding("open_not_auction", FAIL, outside), [i["day"] for i in outside])
+        )
+    if inside:
+        findings.append({**finding("open_not_auction_in_gap", WARN, inside), "count": len(inside)})
+    return summary, findings
+
+
 def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     import pyarrow as pa  # noqa: PLC0415
 
@@ -656,6 +774,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
                 [{"instrument_id": i, "day": d.isoformat()} for i, d in misfits],
             )
         )
+    summary["first_open_vs_nse"], open_findings = _check_opens(ctx)
+    findings += open_findings
     refused, screened, rules = _refusals(ctx)
     summary["ledger_rows_by_rule"] = dict(rules)
     summary["refused_days"] = len(refused)
