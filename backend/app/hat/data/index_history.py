@@ -22,11 +22,12 @@ import csv
 import io
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -144,11 +145,28 @@ def mcp_index_source(client: McpClient) -> IndexSource:
     return source
 
 
+# NSE's index files whose `Index Date` reads month first (MM-DD-YYYY), checked by hand: the file
+# names and every row's levels are those sessions' (D7 holds them to the stored levels).
+MONTH_FIRST_FILES = frozenset({date(2023, 4, 6), date(2023, 4, 10), date(2023, 4, 11)})
+
+
+def dated_on(text: str, day: date) -> bool:
+    """Whether an index file row's `Index Date` (DD-MM-YYYY or DD/MM/YYYY; month first in the
+    `MONTH_FIRST_FILES` only) is `day`."""
+    parts = text.replace("/", "-").split("-")
+    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+        return False
+    first, second, year = (int(p) for p in parts)
+    found = (second, first) if day in MONTH_FIRST_FILES else (first, second)
+    return (year, found[1], found[0]) == (day.year, day.month, day.day)
+
+
 def parse_index_archive_csv(
     text: str, day: date, names: Collection[str] = INDEX_NAMES
 ) -> list[IndexPoint]:
-    """NSE's `ind_close_all_DDMMYYYY.csv` rows for the wanted indices. A line wider than the
-    header (an HTML page served in place of a missing file) keeps only its named fields."""
+    """NSE's `ind_close_all_DDMMYYYY.csv` rows for the wanted indices whose `Index Date` is `day`
+    (`dated_on`: a file served for another session gives no row). A line wider than the header
+    (an HTML page served in place of a missing file) keeps only its named fields."""
     wanted = {n.upper() for n in names}
     points = []
     for raw in csv.DictReader(io.StringIO(text)):
@@ -159,7 +177,7 @@ def parse_index_archive_csv(
         }
         name = row.get("index name", "").upper()
         name = INDEX_ALIASES.get(name, name)
-        if name not in wanted:
+        if name not in wanted or not dated_on(row.get("index date", ""), day):
             continue
         values = [
             exact(row.get(k), floats=True, grouped=True)
@@ -565,6 +583,22 @@ def changed_rows(stored: Mapping[str, IndexRow], found: Iterable[IndexRow]) -> l
     return [r for r in found if r.index_name in stored and stored[r.index_name] != r]
 
 
+RELOAD_BACKUPS = "index_reload"  # under the data root: the stored rows before each applied reload
+
+
+def write_reload_backup(path: Path, rows: Iterable[tuple[date, IndexRow]]) -> None:
+    """The stored rows of the days a reload changes (day, index, open, high, low, close), as
+    they were, written whole (and synced) before the reload touches the store."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        out = csv.writer(handle, lineterminator="\n")
+        out.writerow(["day", "index_name", "open", "high", "low", "close"])
+        for day, r in rows:
+            out.writerow([day.isoformat(), r.index_name, r.open, r.high, r.low, r.close])
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
 def reload_days(
     store: DataStore,
     source: IndexSource,
@@ -778,12 +812,23 @@ def _reload(
     store: DataStore, archive: ArchiveIndexSource, wanted: Sequence[date], *, apply: bool
 ) -> int:  # pragma: no cover - the network
     """The `reload` command: prints each changed row, the days without a file and the days
-    without daily bars (the archive reads only those); exit 1 when any day was not judged."""
+    without daily bars (the archive reads only those); exit 1 when any day was not judged. With
+    `apply`, every stored row of each day it changes is written to a backup file under
+    `RELOAD_BACKUPS` first (`write_reload_backup`), then the file's rows replace the changed
+    ones."""
     bar_days = set(store.days(DATASET_BARS))
-    changed = reload_days(store, archive, [d for d in wanted if d in bar_days], apply=apply)
+    changed = reload_days(store, archive, [d for d in wanted if d in bar_days], apply=False)
     sys.stdout.write(f"index reload ({'applied' if apply else 'dry run'})\n")
     for day, new, old in changed:
         sys.stdout.write(f"  {day} {new.index_name}: stored {old} -> file {new}\n")
+    if apply and changed:
+        days = sorted({day for day, _, _ in changed})
+        stamp = f"{datetime.now(UTC):%Y%m%dT%H%M%SZ}"
+        path = store.root / RELOAD_BACKUPS / f"before-{stamp}.csv"
+        write_reload_backup(path, [(d, r) for d in days for r in store.read_index(d)])
+        sys.stdout.write(f"  backup: {path}\n")
+        for day in days:
+            store.upsert_index(day, [new for d, new, _ in changed if d == day])
     missing = sorted(set(archive.not_found) | set(archive.errors))
     if missing:
         sys.stdout.write(f"  no file: {', '.join(str(d) for d in missing)}\n")

@@ -55,6 +55,7 @@ __all__ = [
     "EpTrace",
     "after_trigger",
     "traded_low_after",
+    "REPLAY_RULE",
     "on_basis",
     "lacks_refused",
     "screened_buckets",
@@ -129,15 +130,20 @@ def session_bars(
     return {k: tuple(v) for k, v in out.items()}
 
 
+REPLAY_RULE = "first_bar_clean_grid_open_5pct_no_refused_bucket_no_coverage_gap"
+
+
 def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
-    """Whether a session's 5-minute bars fit its daily bar: the regular session's first (09:15)
-    and last (15:25) bars present, every bar on the IST 5-minute grid of `day` and each once,
-    and the 09:15 open within `CLOSE_5M_PCT` of the daily open (both on one price basis). An
-    interior bucket may be empty: live's bar builder makes no bar for a window without a trade
-    (`data.bars`), so the replay sees what live saw; the 15:25 bar keeps a truncated day from
-    being replayed to miss its later lows. The data audit judges the last close
-    (`audit.basis_of`); a run decides before the close, so it reads the open. A session that
-    does not fit is decided on the daily estimate, so no run reads bars off their day."""
+    """Whether a session's 5-minute bars fit its daily bar, by what is known at the open only:
+    the regular session's first (09:15) bar present, every bar on the IST 5-minute grid of
+    `day` and each once, and the 09:15 open within `CLOSE_5M_PCT` of the daily open (both on
+    one price basis). A missing bucket, interior or trailing, is a window without a trade: live's
+    bar builder makes no bar for one (`data.bars`), so the replay sees what live saw and trades
+    nothing there. Nothing after the open decides it (no last bar, no close), so a session is
+    never chosen by how it ended; a truncated copy is refused by its coverage
+    (`bars5m_gaps`), a session lacking a bucket the import refused by `lacks_refused`. A
+    session that does not fit is decided on the daily estimate, so no run reads bars off their
+    day (`REPLAY_RULE`, in the run's conventions)."""
     if not bars or daily_open <= 0:
         return False
     opens = datetime.combine(day, SESSION_OPEN, tzinfo=IST)
@@ -149,7 +155,7 @@ def on_basis(day: date, bars: Sequence[Bar], daily_open: Decimal) -> bool:
             return False
         starts[start] = bar
     first = starts.get(opens)
-    if first is None or closes - BAR_WIDTH not in starts:
+    if first is None:
         return False
     return abs(first.open / daily_open - 1) * 100 <= _CLOSE_OFF_PCT
 

@@ -38,6 +38,9 @@ import polars as pl
 from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session
 
+from app.paths import BARS5M_GAPS
+
+from ..data.bars5m_gaps import gap_spans, read_gaps
 from ..data.bars_store import BarStore
 from ..data.ca_versions import digest as versions_digest
 from ..data.chains import stored_adjustment
@@ -224,6 +227,9 @@ class MarketData:
     # The 5-minute buckets the import refused, by (instrument, day) (`intraday.screened_buckets`):
     # a session whose bars lack one is decided on the daily estimate, since the gap traded.
     screened_5m: Mapping[tuple[str, date], frozenset[datetime]] = field(default_factory=dict)
+    # The 5-minute history's known coverage gaps by ISIN (`bars5m_gaps.gap_spans`): a session
+    # inside one is decided on the daily estimate, its copy being known short there.
+    gaps_5m: Mapping[str, tuple[tuple[date, date], ...]] = field(default_factory=dict)
     breadth: Mapping[date, Decimal] = field(default_factory=dict)
     skipped: frozenset[tuple[str, date]] = frozenset()
     pending: frozenset[tuple[str, date]] = frozenset()
@@ -1382,6 +1388,7 @@ def load_market(
         listed_on=listed_on,
         intraday=intraday if sessions_5m else None,
         screened_5m=_screened(intraday, sessions_5m),
+        gaps_5m=gap_spans(read_gaps(BARS5M_GAPS)) if sessions_5m else {},
         results=filings,
     )
     snapshot = {

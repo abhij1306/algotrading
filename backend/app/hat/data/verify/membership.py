@@ -23,13 +23,16 @@ constituent lists.
   from the Wayback Machine's captures of NSE's and niftyindices' `ind_nifty500list.csv`, and
   today's list from NSE's archive, fetched with `--fetch`) against the stored members of its
   capture's session (`list_session`: the last session closed by the capture's UTC stamp), by
-  ISIN. A difference that is
-  a demerger dummy warns, as does one within a session of a stored change (the capture may
-  predate the file's update) and a listed REIT or InvIT unit HAT has no instrument for (no
-  universe holds one: decisions.md "Stocks only"); any other fails, a listed member HAT has no
-  instrument for among them (survivorship). No list fails.
+  ISIN. The membership holds every constituent NSE publishes that HAT has an instrument for,
+  REIT and InvIT units included (universes drop them by ISIN: decisions.md "Stocks only"). A
+  difference that is a demerger dummy warns, as does one within a session of a stored change
+  (the capture may predate the file's update) and a listed REIT or InvIT unit HAT has no
+  instrument for (the instrument scan reads no RR or IV series row); any other fails, a listed
+  member HAT has no instrument for among them (survivorship). No list fails.
 - Exceptions: a failed change or list item the reviewed list names (`VERIFY_EXCEPTIONS["d3"]`:
-  code, symbol, day, reason) warns as `excepted` (`keyed_exceptions.py`).
+  code, ISIN, day, pin, reason) warns as `excepted` (`exceptions.py`). A notice names a symbol,
+  so its item takes the one ISIN that symbol has had (`isin_of_symbol`: the instruments, their
+  former symbols and the archived lists), or none when it has had two.
 """
 
 from __future__ import annotations
@@ -53,7 +56,7 @@ from ..nse_files import INDUSTRY_LIST_URL
 from ..sessions import SESSION_CLOSE
 from . import dated
 from .context import Context
-from .keyed_exceptions import Exceptions, read_exceptions
+from .exceptions import Exceptions, read_exceptions
 from .references import SYMBOL_CHANGES, SYMBOL_CHANGES_URL, read_symbol_changes, reference_file
 
 INDEX = "NIFTY 500"
@@ -348,7 +351,7 @@ def compare_list(
         if isin.startswith(DUMMY_PREFIX) or symbol.startswith("DUMMY"):
             explained.append({**item, "why": "demerger dummy"})
         elif isin in listed and isin not in known_isins and trust_unit(isin):
-            explained.append({**item, "why": "REIT or InvIT unit, no instrument (stocks only)"})
+            explained.append({**item, "why": "REIT or InvIT unit HAT has no instrument for"})
         elif isin in listed and isin not in known_isins:
             wrong.append({**item, "why": "listed member with no instrument in HAT (survivorship)"})
         elif isin in near_change or symbol in near_change:
@@ -456,7 +459,10 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     ]
     covered = [d for d in sessions if cover_start <= d <= cover_end]
     findings = scope_findings(sessions, cover_start, cover_end)
-    exceptions = Exceptions.of(read_exceptions(VERIFY_EXCEPTIONS["d3"]), _item_key)
+    if ctx.fetch:
+        _fetch_lists(ctx, sessions_all)
+    exceptions = Exceptions(read_exceptions(VERIFY_EXCEPTIONS["d3"], "D3"), key_of=_item_key)
+    lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     runs = size_runs(members, covered)
     off = [r for r in runs if r["count"] != SIZE]
     if off:
@@ -496,20 +502,34 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             "isin_change": sum("isin_change" in t for t in trace.traced),
         }
         summary["traced_examples"] = trace.traced[:10]
+        isins = isin_of_symbol(
+            [
+                *ctx.rows(
+                    "SELECT symbol, isin FROM hat_instrument UNION SELECT h.symbol, i.isin "
+                    "FROM hat_instrument_symbol_history h JOIN hat_instrument i "
+                    "ON i.id = h.instrument_id"
+                ),
+                *(
+                    (symbol, isin)
+                    for path in lists
+                    for isin, symbol in read_list(
+                        path.read_text(encoding="utf-8-sig", errors="replace")
+                    ).items()
+                ),
+            ]
+        )
+        unapplied = [{**i, "isin": isins.get(i["symbol"].upper())} for i in trace.unapplied]
         for code, found in (
             ("entry_without_notice", trace.entries),
             ("exit_without_notice", trace.exits),
-            ("notice_not_applied", trace.unapplied),
+            ("notice_not_applied", unapplied),
         ):
             if items := exceptions.split(code, found):
                 findings.append(dated(finding(code, FAIL, items), [i["day"] for i in items]))
     else:
         ctx.note("D3: no --notices folder with changes_parsed.json; changes not traced")
         findings.append(finding("notices_missing", FAIL, ["changes_parsed.json"]))
-    if ctx.fetch:
-        _fetch_lists(ctx, sessions_all)
     known = {isin for (isin,) in ctx.rows("SELECT isin FROM hat_instrument")}
-    lists = sorted(ctx.reference_dir(LIST_GROUP).glob("*.csv"))
     compared = []
     mismatched: list[dict[str, Any]] = []
     differences: list[dict[str, Any]] = []
@@ -555,9 +575,18 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     return check_result("D3", summary, findings)
 
 
-def _item_key(code: str, item: Mapping[str, Any]) -> tuple[str, str]:
-    """A D3 item's (symbol, day): a list item by the session its list shows."""
-    return item["symbol"], item["session"] if code == "list_mismatch" else item["day"]
+def _item_key(code: str, item: Mapping[str, Any]) -> tuple[str | None, str]:
+    """A D3 item's (ISIN, day): a list item by the session its list shows."""
+    return item.get("isin"), item["session"] if code == "list_mismatch" else item["day"]
+
+
+def isin_of_symbol(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
+    """Each symbol's ISIN, from (symbol, ISIN) pairs, for the symbols that have had one only."""
+    seen: dict[str, set[str]] = defaultdict(set)
+    for symbol, isin in pairs:
+        if symbol and isin:
+            seen[symbol.upper()].add(isin.upper())
+    return {s: next(iter(i)) for s, i in seen.items() if len(i) == 1}
 
 
 def scope_findings(sessions: Sequence[date], first: date, last: date) -> list[dict[str, Any]]:

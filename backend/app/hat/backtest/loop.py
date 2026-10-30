@@ -172,6 +172,7 @@ from ..configs.records import Bot
 from ..configs.unit import configs_of
 from ..costs import BacktestFills, CostModel
 from ..data.bars import Bar as DataBar
+from ..data.bars5m_gaps import in_gap
 from ..data.identity import series_as_of
 from ..data.preopen import meets_gap
 from ..engine import entries, exits, lifecycle, positions, rotation, shadow, trigger, watchlist
@@ -1341,9 +1342,9 @@ class _Run:
         self, day: date, instruments: Collection[str]
     ) -> dict[str, tuple[DataBar, ...]]:
         """The stored 5-minute bars of `day` of `instruments`, on the price basis, of each
-        session that fits its daily bar (`intraday.on_basis`) and lacks no refused bucket
-        (`intraday.lacks_refused`); none in a `daily` run or without
-        a `bars_5m` store."""
+        session that fits its daily bar (`intraday.on_basis`), lacks no refused bucket
+        (`intraday.lacks_refused`) and lies in no known coverage gap (`bars5m_gaps.in_gap`);
+        none in a `daily` run or without a `bars_5m` store."""
         store = self.data.intraday
         if store is None or self.spec.conventions.entry_bars != ENTRY_BARS_5M:
             return {}
@@ -1358,6 +1359,7 @@ class _Run:
             for i, bars in session_bars(store, day, scales).items()
             if (bar := self.view.bar(i, day)) is not None
             and not lacks_refused(bars, self.data.screened_5m.get((i, day), ()))
+            and not in_gap(self.data.gaps_5m, self.data.isins.get(i), day)
             and on_basis(day, bars, bar.open)
         }
 

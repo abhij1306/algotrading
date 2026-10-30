@@ -41,6 +41,7 @@ from .fills import (
     TOUCH,
     TRIGGER_PROXY,
 )
+from .intraday import REPLAY_RULE
 from .overlay import OverlayConfig
 from .overrides import Overrides
 from .slots import SLOT_ORDER_RS, SLOT_ORDER_TIME, is_slot_order
@@ -334,6 +335,8 @@ class RunConventions:
             "entry_fill_rule": self.entry_fill_rule,
             "gap_through_rule": GAP_THROUGH_RULE,
             "trigger_proxy": TRIGGER_5M if self.entry_bars == ENTRY_BARS_5M else TRIGGER_PROXY,
+            # which sessions replay their 5-minute bars (`intraday.on_basis`, `bars5m_gaps`)
+            "replay_rule": REPLAY_RULE if self.entry_bars == ENTRY_BARS_5M else None,
             # normalised, so 20 and 20.0 bps record (and hash) alike
             "slippage_bps": format(abs(fills.slippage_bps).normalize(), "f"),  # -0 is 0
             # the version and the digest of each dated file in force in the run's window

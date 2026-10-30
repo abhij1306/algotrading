@@ -6,14 +6,15 @@
   (filled from niftyindices or the MCP when NSE's archive had none) is compared with
   niftyindices' copy of the file (kept under `verify_reference/index/`, fetched with `--fetch`),
   else with niftyindices' price history of that index and year (`history_<index>_<year>.json`
-  there: the source the history build filled those days from, NSE Indices' own series); with
-  none of them it fails (unproven). Every calendar session from an index's first day
-  (`INDEX_STARTS`) must hold that index: a session missing it fails, so a whole absent day is
-  seen, unless the day's file shows NSE did not compute it (a close carried from the day before
-  with no open, high or low: `index_not_computed`, warn). The check covers sessions from the
-  first index day on.
+  there). That history is the source the history build filled those days from, so a day that
+  matches it is not verified, only consistent with its own source (`same_source_only`, warn); a
+  day that differs from it fails, and a day none of them has fails (unproven). Every calendar
+  session from an index's first day (`INDEX_STARTS`) must hold that index: a session missing it
+  fails, so a whole absent day is seen, unless the day's file shows NSE did not compute it (no
+  open, high or low, and the close the previous stored close, carried: `index_not_computed`,
+  warn). The check covers sessions from the first index day on.
 - Exceptions: a failed index item the reviewed list names (`VERIFY_EXCEPTIONS["d7"]`: code,
-  index, day, reason) warns as `excepted` (`keyed_exceptions.py`).
+  index under `key`, day, pin, reason) warns as `excepted` (`exceptions.py`).
 - `NIFTY 500 TRI` against niftyindices' answers kept under `raw_tri/`
   (`NIFTY_500_TRI_<from>_<to>.json`), read here by `read_tri_answers`, not by the importer's
   parser: every stored close in an answer's span equals the answer, and every answered day is
@@ -63,7 +64,7 @@ from ..index_history import (
 from ..store import DATASET_INDEX, newest
 from . import covered, dated
 from .context import Context
-from .keyed_exceptions import Exceptions, read_exceptions
+from .exceptions import Exceptions, read_exceptions
 from .references import reference_file
 
 PRICES = ("open", "high", "low", "close")
@@ -94,20 +95,27 @@ def read_index_file(text: str, names: Iterable[str]) -> dict[str, tuple[Decimal 
     return out
 
 
-def not_computed(levels: Sequence[Decimal | None]) -> bool:
-    """Whether a file row shows the index was not computed that day: a close (the day before's,
-    carried) with no open, high or low."""
-    return levels[3] is not None and all(v is None for v in levels[:3])
+def not_computed(levels: Sequence[Decimal | None], previous: Decimal | None) -> bool:
+    """Whether a file row shows the index was not computed that day: no open, high or low, and
+    the close the previous session's (`previous`, the stored close before it), carried."""
+    return (
+        levels[3] is not None
+        and previous is not None
+        and levels[3] == previous
+        and all(v is None for v in levels[:3])
+    )
 
 
 def compare_index_day(
     day: date,
     stored: Mapping[str, Sequence[Decimal]],
     source: Mapping[str, Sequence[Decimal | None]],
+    previous: Mapping[str, Decimal] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """A day's stored levels against its file: (mismatches, file indices not stored). A file
     value that is blank is no mismatch (NSE leaves a new index's open out on some days), and a
-    file index NSE did not compute that day (`not_computed`) is not one to store."""
+    file index NSE did not compute that day (`not_computed` against the previous stored close
+    in `previous`) is not one to store."""
     wrong = []
     for name, levels in stored.items():
         if name not in source:
@@ -128,7 +136,7 @@ def compare_index_day(
         for name, levels in source.items()
         if name not in stored
         and levels[3] is not None
-        and not not_computed(levels)
+        and not not_computed(levels, (previous or {}).get(name))
         and day >= INDEX_STARTS.get(name, day)
     ]
     return wrong, missing
@@ -366,8 +374,9 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     absent: list[dict[str, Any]] = []
     uncomputed: list[dict[str, Any]] = []
     unproven: list[dict[str, Any]] = []
+    same_source: list[dict[str, Any]] = []
+    previous: dict[str, Decimal] = {}  # each index's last stored close before the session
     compared = Counter[str]()
-    by_history = Counter[str]()
     histories: dict[tuple[str, int], dict[date, tuple[Decimal, ...]]] = {}
     tri_stored: dict[date, Decimal] = {}
     for day in sessions:
@@ -380,11 +389,12 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         data = _index_file(ctx, day)
         source = {} if data is None else read_index_file(data.decode("utf-8-sig", "replace"), names)
         for n in lacking:
-            kind = uncomputed if n in source and not_computed(source[n]) else absent
-            kind.append({"day": day.isoformat(), "index": n})
+            carried = n in source and not_computed(source[n], previous.get(n))
+            (uncomputed if carried else absent).append({"day": day.isoformat(), "index": n})
         if not stored:
             continue
-        bad, missing = compare_index_day(day, stored, source)
+        bad, missing = compare_index_day(day, stored, source, previous)
+        previous.update((n, levels[3]) for n, levels in stored.items())
         wrong += bad
         unstored += missing
         for index in stored:
@@ -399,10 +409,12 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
                 continue
             bad, _ = compare_index_day(day, {index: stored[index]}, {index: history[day]})
             wrong += [{**b, "reference": "niftyindices history"} for b in bad]
-            by_history[index] += 1
+            if not bad:  # the history filled the day: agreeing with it proves nothing more
+                same_source.append({"day": day.isoformat(), "index": index})
     findings = []
-    exceptions = Exceptions.of(
-        read_exceptions(VERIFY_EXCEPTIONS["d7"]), lambda _code, i: (i["index"], i["day"])
+    exceptions = Exceptions(
+        read_exceptions(VERIFY_EXCEPTIONS["d7"], "D7"),
+        key_of=lambda _code, i: (i["index"], i["day"]),
     )
     for code, found in (
         ("index_level_mismatch", wrong),
@@ -414,6 +426,10 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
             findings.append(_dated(code, items, [i["day"] for i in items]))
     if uncomputed:
         findings.append(finding("index_not_computed", WARN, uncomputed))
+    if same_source:
+        findings.append(
+            {**finding("same_source_only", WARN, same_source), "count": len(same_source)}
+        )
     findings += exceptions.findings()
     answers = _tri_answers(ctx.root / TRI_RAW_DIR)
     tri = compare_tri(tri_stored, answers, sessions, ctx.start, ctx.end)
@@ -432,7 +448,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
     summary = {
         "sessions": len(sessions),
         "index_days_compared": dict(compared),
-        "index_days_compared_to_history": dict(by_history),
+        "index_days_same_source_only": dict(Counter(i["index"] for i in same_source)),
         "tri_answers": len(answers),
         "tri_compared": len(set(tri_stored) & {d for a in answers for d in a.closes}),
         "tri_last_answer": None if last_answer is None else last_answer.isoformat(),

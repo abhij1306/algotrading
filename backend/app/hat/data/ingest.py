@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 JOB_INGEST = "ingest.nightly"
 SOURCE_MCP = "mcp"
+INDEX_FROM_CSV = "nse_index_csv"  # the levels came from NSE's daily index file
 
 PROBE_START = clock_time(18, 0)
 CUTOFF = clock_time(22, 0)
@@ -249,6 +250,7 @@ class IngestReport:
     actions_created: int = 0
     probes: int = 0
     index_rows: int = 0
+    index_source: str = ""  # which source supplied the levels: `INDEX_FROM_CSV` or `SOURCE_MCP`
     breadth_source: str = ""
     tri_stored: int = 0  # NIFTY 500 TRI closes written (the session's and earlier missing ones)
     tri_missing: list[date] = field(default_factory=list)  # bar days still without a TRI close
@@ -270,6 +272,7 @@ class IngestReport:
             "actions_created": self.actions_created,
             "probes": self.probes,
             "index_rows": self.index_rows,
+            "index_source": self.index_source,
             "breadth_source": self.breadth_source,
             "tri_stored": self.tri_stored,
             "tri_missing": [d.isoformat() for d in self.tri_missing],
@@ -424,8 +427,9 @@ def _lookup_actions(
 
 
 def _store_indices(deps: IngestDeps, trade_date: date, report: IngestReport) -> None:
-    """Store the day's index levels, NSE's file first; the run fails when NIFTY 500 or India VIX
-    is missing."""
+    """Store the day's index levels, NSE's file first (only its rows dated the session:
+    `index_history.dated_on`); the run fails when NIFTY 500 or India VIX is missing. The report
+    names the source that supplied them (`index_source`)."""
 
     def from_csv() -> list[IndexRow]:
         text = deps.index_csv(trade_date) if deps.index_csv is not None else None
@@ -440,11 +444,12 @@ def _store_indices(deps: IngestDeps, trade_date: date, report: IngestReport) -> 
             return []
         return index_rows_from_mcp(snap.rows) if snap.data_date == trade_date else []
 
-    for source in (from_csv, from_mcp):
+    for name, source in ((INDEX_FROM_CSV, from_csv), (SOURCE_MCP, from_mcp)):
         rows = source()
         if rows and has_required_indices(r.index_name for r in rows):
             deps.store.upsert_index(trade_date, rows)
             report.index_rows = len(rows)
+            report.index_source = name
             return
     raise JobError(CODE_INDEX_MISSING)
 

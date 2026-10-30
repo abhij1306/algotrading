@@ -12,13 +12,12 @@ from pathlib import Path
 
 import pytest
 
-from app.hat.data import audit, verify
+from app.hat.data import audit, bars5m_volume, verify
 from app.hat.data.bars_basis import DailyRange
 from app.hat.data.verify import (
     adjustments,
     bars5m,
     filings,
-    keyed_exceptions,
     membership,
     rawbars,
     references,
@@ -661,9 +660,15 @@ def test_d3_an_archived_list_difference_is_explained_or_named() -> None:
 
 
 def test_d3_a_listed_trust_unit_without_an_instrument_is_explained() -> None:
-    # BAGMANE (a REIT, type 25) has no HAT instrument: no universe may hold one
-    explained, wrong = membership.compare_list({"INE2OVN25015": "BAGMANE"}, {}, set(), set())
-    assert [e["why"] for e in explained] == ["REIT or InvIT unit, no instrument (stocks only)"]
+    # BAGMANE (a REIT, type 25) has no HAT instrument (it trades in RR only); EMBASSY has one
+    # and is a stored member like any constituent
+    explained, wrong = membership.compare_list(
+        {"INE2OVN25015": "BAGMANE", "INE041025011": "EMBASSY"},
+        {"INE041025011": "EMBASSY"},
+        {"INE041025011"},
+        set(),
+    )
+    assert [e["why"] for e in explained] == ["REIT or InvIT unit HAT has no instrument for"]
     assert wrong == []
 
 
@@ -737,14 +742,71 @@ def test_d4_the_last_bars_close_is_the_closing_auctions_on_one_side_only() -> No
     assert (result.price, result.close_convention) == (0, 1)
 
 
-def test_d4_a_stored_day_reaches_the_daily_extremes_only_exactly_and_bar_by_bar_whole() -> None:
-    t915, t920 = datetime(2024, 3, 1, 9, 15).time(), datetime(2024, 3, 1, 9, 20).time()
-    stored = {t915: (100.0, 102.0, 99.0, 101.0, 5), t920: (101.0, 103.0, 100.0, 102.0, 5)}
-    assert bars5m.reaches_daily(stored, 103.0, 99.0)
-    assert not bars5m.reaches_daily(stored, 103.5, 99.0)  # short of the high
-    # ACE 2026-07-23's Kotak 09:15 bar: an open above its own high
-    broken = {**stored, t915: (104.0, 102.0, 99.0, 101.0, 5)}
-    assert not bars5m.reaches_daily(broken, 103.0, 99.0)
+def _compared(**kw: object) -> bars5m.BarCompare:
+    base = {
+        "shift": 0,
+        "scale": 1.0,
+        "bars": 75,
+        "price": 0,
+        "volume": 0,
+        "stored_only": 0,
+        "source_only": 0,
+        "rule": True,
+        "worst": 0.0,
+        "stored_volume": 1000,
+        "source_volume": 1000,
+    }
+    return bars5m.BarCompare(**(base | kw))  # type: ignore[arg-type]
+
+
+def test_d4_a_bucket_boundary_day_warns_only_when_nothing_else_differs() -> None:
+    """A trade at a bucket edge filed in the neighbouring bar moves an open, a close or a volume
+    between adjacent bars: same bars, same day volume, same extremes, prices within the bound.
+    Harm: a wrong level or a lost trade excused as a vendor's bucketing."""
+    edge = _compared(price=2, volume=2, worst=0.001)
+    assert bars5m.judge_day(edge, False, True) == [("vendor_bucket_boundary", 4, True)]
+    for other in (
+        _compared(price=2, worst=0.006),  # a price beyond the bound
+        _compared(volume=2, stored_volume=990),  # the day's volume differs
+        _compared(price=1, worst=0.001, extremes=False),  # the day's high or low differs
+        _compared(price=1, worst=0.001, source_only=1),  # a traded bar missing
+    ):
+        assert all(not warn for _, _, warn in bars5m.judge_day(other, False, True))
+
+
+def test_d4_a_second_vendor_excuses_only_small_prices_and_reconciled_volume() -> None:
+    """Inside a Fyers window Kotak is a second vendor: its bars may differ by a few ticks, and
+    its volumes or missing bars only when the stored day's volume reconciles with the bhavcopy;
+    a traded Kotak bar the store lacks always fails. Harm: the store's own admission test used as
+    proof, a wrong or short day passed because two vendors disagree."""
+    small = _compared(price=3, worst=0.004, extremes=False)
+    big = _compared(price=3, worst=0.02, extremes=False)
+    assert bars5m.judge_day(small, True, False) == [("second_vendor_differs", 3, True)]
+    assert bars5m.judge_day(big, True, True) == [("bar_price_differs", 3, False)]
+    assert bars5m.judge_day(small, False, True) == [("bar_price_differs", 3, False)]
+    volume = _compared(volume=5, stored_only=2, stored_volume=900)
+    assert bars5m.judge_day(volume, True, True) == [
+        ("second_vendor_differs", 5, True),
+        ("second_vendor_differs", 2, True),
+    ]
+    assert [c for c, _, _ in bars5m.judge_day(volume, True, False)] == [
+        "bar_volume_differs",
+        "stored_bar_not_in_source",
+    ]
+    lost = _compared(source_only=1, stored_volume=900)
+    assert bars5m.judge_day(lost, True, True) == [("source_bar_not_stored", 1, False)]
+
+
+def test_d4_a_days_volume_reconciles_with_the_bhavcopy() -> None:
+    """The stored session volume may fall up to 10% short of the bhavcopy's (pre-open auction,
+    closing session) and exceed it by 1% at most. Harm: ANGELBRKG's volume stored at a tenth of
+    the day's (a split's factor applied to a raw volume) passed as two vendors agreeing."""
+    assert bars5m.day_volume_ratio(72815, 728254) == pytest.approx(0.09999, abs=1e-5)
+    assert bars5m.day_volume_ratio(5, None) is None
+    assert bars5m.day_volume_fits(0.95)
+    assert bars5m.day_volume_fits(1.005)
+    assert not bars5m.day_volume_fits(0.0999)
+    assert not bars5m.day_volume_fits(1.02)
 
 
 def test_d4_stored_bars_match_the_source_bar_by_bar() -> None:
@@ -756,12 +818,59 @@ def test_d4_stored_bars_match_the_source_bar_by_bar() -> None:
         _src("09:25", 102, 20),
         _src("15:30", 101),
     ]
-    stored = {t915: (50.0, 50.0, 50.0, 50.0, 20), t920: (51.0, 51.0, 51.0, 51.0, 40)}
+    stored = {t915: (50.0, 50.0, 50.0, 50.0, 10), t920: (51.0, 51.0, 51.0, 51.0, 20)}
     ok = bars5m.compare_bars(D1, stored, source)
     assert (ok.shift, ok.scale, ok.price, ok.volume, ok.stored_only) == (5, 0.5, 0, 0, 0)
+    assert (ok.stored_volume, ok.source_volume) == (30, 40)  # the 15:25 bar's 10 not stored
+    # the export's volume is raw: a volume cut by the bonus's factor differs
+    halved = {t915: (50.0, 50.0, 50.0, 50.0, 5), t920: (51.0, 51.0, 51.0, 51.0, 10)}
+    assert bars5m.compare_bars(D1, halved, source).volume == 2
     assert ok.source_only == 1  # the 15:25 bar (labelled 15:30) is not stored
     wrong = bars5m.compare_bars(D1, {**stored, t920: (51.5, 51.5, 51.5, 51.5, 40)}, source)
     assert wrong.price == 1
+
+
+def test_d4_the_export_restores_a_volume_only_when_it_proves_the_day() -> None:
+    """A day stored with its volume cut by a later bonus's factor gets the export's raw volume
+    back, bar by bar, only when every stored bar is an export bar of the same prices and the
+    restored volume reconciles with the bhavcopy's. Harm: a volume taken from another vendor's
+    bars, or a day rewritten that no reference vouches for."""
+    t915, t920 = datetime(2024, 3, 1, 9, 15).time(), datetime(2024, 3, 1, 9, 20).time()
+    source = [_src("09:15", 1, 0), _src("09:20", 100, 10), _src("09:25", 102, 20)]
+    source.append(_src("15:30", 101, 1))  # a traded 15:30 row: labelled by bar end
+    halved = {t915: (50.0, 50.0, 50.0, 50.0, 5), t920: (51.0, 51.0, 51.0, 51.0, 10)}
+    assert bars5m.restored_volumes(D1, halved, source, 31) == {t915: 10, t920: 20}
+    assert bars5m.restored_volumes(D1, halved, source, 60) is None  # still half the bhavcopy's
+    assert bars5m.restored_volumes(D1, halved, source, None) is None
+    moved = {**halved, t920: (51.5, 51.5, 51.5, 51.5, 10)}
+    assert bars5m.restored_volumes(D1, moved, source, 31) is None  # not the export's bar
+    at = datetime(2024, 3, 1, 3, 45, tzinfo=UTC)
+    stored = {t915: (at, halved[t915]), t920: (at + timedelta(minutes=5), halved[t920])}
+    found = bars5m_volume.changes_of("A", D1, stored, {t915: 10, t920: 10})
+    assert found == [bars5m_volume.Change("A", at, 5, 10)]
+
+
+def test_one_row_per_label() -> None:
+    # a day in a symbol's file and its former symbol's is one day of bars, not two
+    first, again = _src("09:15", 100, 10), _src("09:15", 101, 20)
+    assert bars5m.one_per_label([first, again, _src("09:20", 100)]) == [first, _src("09:20", 100)]
+
+
+def test_volume_repair_needs_one_common_factor() -> None:
+    """The repair undoes the import's conversion only: every bar's stored volume is the export's
+    times one factor. Harm: a second vendor's differing bars rewritten as if converted."""
+    assert bars5m_volume.common_factor([(10, 100), (21, 200), (0, 0)]) == pytest.approx(
+        0.1033, 1e-3
+    )
+    assert bars5m_volume.common_factor([(103, 100), (2060, 2000)]) == pytest.approx(1.03, 1e-3)
+    assert bars5m_volume.common_factor([(100, 100), (2300, 2000)]) is None  # bars disagree
+    boundary = [(600, 3000)] * 18 + [(345, 1823), (584, 2819)]  # one trade filed a bar later
+    assert bars5m_volume.common_factor(boundary) == pytest.approx(0.2, 1e-2)
+    assert bars5m_volume.common_factor([(5, 0)]) is None  # nothing in the export traded
+    assert bars5m_volume.is_candidate(50, 100, 100) == (True, False)  # half the bhavcopy's
+    assert bars5m_volume.is_candidate(97, 100, 94) == (False, True)  # fits, off the export's
+    assert bars5m_volume.is_candidate(97, 100, 97) == (False, False)
+    assert bars5m_volume.is_candidate(97, None, 0) == (False, False)
 
 
 def test_d4_bars_stored_a_bar_off_fail_and_never_pair_up() -> None:
@@ -1013,23 +1122,30 @@ def test_d7_an_index_nse_did_not_compute_is_not_one_to_store() -> None:
         "Nifty 50,12-02-2021,15100,15200,15000,15163.3\n"
     )
     source = series.read_index_file(text, ["INDIA VIX", "NIFTY 50"])
-    assert series.not_computed(source["INDIA VIX"])
-    assert not series.not_computed(source["NIFTY 50"])
+    assert series.not_computed(source["INDIA VIX"], Decimal("23.05"))
+    # a blank row whose close is not the day before's: not proven carried, so it is missing
+    assert not series.not_computed(source["INDIA VIX"], Decimal("22.80"))
+    assert not series.not_computed(source["INDIA VIX"], None)
+    assert not series.not_computed(source["NIFTY 50"], Decimal("15163.3"))
     stored = {"NIFTY 50": [Decimal(15100), Decimal(15200), Decimal(15000), Decimal("15163.3")]}
-    wrong, missing = series.compare_index_day(date(2021, 2, 12), stored, source)
+    previous = {"INDIA VIX": Decimal("23.05")}
+    wrong, missing = series.compare_index_day(date(2021, 2, 12), stored, source, previous)
     assert (wrong, missing) == ([], [])
+    _, missing = series.compare_index_day(date(2021, 2, 12), stored, source)
+    assert missing == [{"day": "2021-02-12", "index": "INDIA VIX"}]
 
 
 def test_exceptions_except_only_the_named_items_and_report_unused_rows(tmp_path: Path) -> None:
+    """D7's file names an index under `key`; its check keys items by index and day. Harm: a new
+    failure hidden by a stale row, or a stale row never seen."""
     path = tmp_path / "x.csv"
     path.write_text(
-        "code,key,day,reason\n"
-        "index_session_not_stored,india vix,2014-12-15,no source has it\n"
-        "index_session_not_stored,INDIA VIX,2015-01-01,stale row\n",
+        "code,key,day,pin,reason\n"
+        "index_session_not_stored,india vix,2014-12-15,index=INDIA VIX,no source has it\n"
+        "index_session_not_stored,INDIA VIX,2015-01-01,index=INDIA VIX,stale row\n",
         encoding="utf-8",
     )
-    rows = keyed_exceptions.read_exceptions(path)
-    found = keyed_exceptions.Exceptions.of(rows, lambda _code, i: (i["index"], i["day"]))
+    found = Exceptions(read_exceptions(path, "D7"), key_of=lambda _code, i: (i["index"], i["day"]))
     items = [
         {"index": "INDIA VIX", "day": "2014-12-15"},
         {"index": "INDIA VIX", "day": "2015-03-12"},
@@ -1039,16 +1155,66 @@ def test_exceptions_except_only_the_named_items_and_report_unused_rows(tmp_path:
     out = {f["code"]: f for f in found.findings()}
     assert out["excepted"]["items"][0]["reason"] == "no source has it"
     assert [u["day"] for u in out["exception_unused"]["items"]] == ["2015-01-01"]
-    path.write_text("code,key,day,reason\nx,Y,2015-01-01,\n", encoding="utf-8")
+    path.write_text("code,key,day,pin,reason\nx,Y,2015-01-01,a=1,\n", encoding="utf-8")
     with pytest.raises(ValueError, match="reason"):
-        keyed_exceptions.read_exceptions(path)
+        read_exceptions(path, "D7")
+
+
+def test_exceptions_pin_every_value_and_never_match_twice(tmp_path: Path) -> None:
+    """A D4 row pins the bars and the scale it was reviewed at; a row two items share (key and
+    day) excepts neither; a row listed twice is refused. Harm: a day that got worse, or a second
+    failure on the same day, passed under a row reviewed for something else."""
+    rule = Excepted("bar_price_differs", "INE1", "2025-11-18", "bars=62;scale=1.3367", "why")
+    day = {"isin": "INE1", "day": "2025-11-18", "bars": 62, "scale": 1.3367}
+    key = lambda _code, i: (i["isin"], i["day"])  # noqa: E731
+    assert Exceptions([rule], key_of=key).split("bar_price_differs", [day]) == []
+    worse = {**day, "bars": 63}
+    assert Exceptions([rule], key_of=key).split("bar_price_differs", [worse]) == [worse]
+    twice = [day, {**day, "bars": 1}]
+    assert Exceptions([rule], key_of=key).split("bar_price_differs", twice) == twice
+    path = tmp_path / "x.csv"
+    row = "bar_price_differs,INE1,ABC,2025-11-18,bars=62;scale=1.3367,why\n"
+    path.write_text("code,isin,symbol,day,pin,reason\n" + row + row, encoding="utf-8")
+    with pytest.raises(ValueError, match="twice"):
+        read_exceptions(path, "D4")
+    path.write_text("code,isin,symbol,day,pin,reason\n" + row.replace(";scale", ";"))
+    with pytest.raises(ValueError, match="pin"):
+        read_exceptions(path, "D4")
 
 
 def test_the_reviewed_exception_files_read() -> None:
-    from app.paths import VERIFY_EXCEPTIONS
+    from app.hat.data.bars5m_gaps import read_gaps
+    from app.paths import BARS5M_GAPS, VERIFY_EXCEPTIONS
 
-    for path in VERIFY_EXCEPTIONS.values():
-        keyed_exceptions.read_exceptions(path)
+    for check, path in VERIFY_EXCEPTIONS.items():
+        read_exceptions(path, check)
+    assert read_gaps(BARS5M_GAPS)
+
+
+def test_bars5m_gaps_refuse_by_coverage(tmp_path: Path) -> None:
+    """A gap names a vendor, a span and an ISIN (`*`: every instrument); a session inside one is
+    not replayed whatever its prices did. Harm: a truncated copy replayed, or a refusal chosen
+    by price behaviour."""
+    from app.hat.data import bars5m_gaps
+
+    path = tmp_path / "gaps.csv"
+    path.write_text(
+        "vendor,first,last,isin,symbol,reason\n"
+        "nse,2024-03-02,2024-03-02,*,,special session\n"
+        "kotak,2026-08-03,2026-10-28,ine1,ABC,ends at 15:10\n",
+        encoding="utf-8",
+    )
+    spans = bars5m_gaps.gap_spans(bars5m_gaps.read_gaps(path))
+    assert bars5m_gaps.in_gap(spans, "INE1", date(2026, 9, 1))
+    assert not bars5m_gaps.in_gap(spans, "INE1", date(2026, 10, 29))
+    assert not bars5m_gaps.in_gap(spans, "INE2", date(2026, 9, 1))
+    assert bars5m_gaps.in_gap(spans, None, date(2024, 3, 2))
+    path.write_text(
+        "vendor,first,last,isin,symbol,reason\nkotak,2026-08-03,2026-08-01,INE1,ABC,x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="span"):
+        bars5m_gaps.read_gaps(path)
 
 
 def test_d7_etf_factors_come_from_nses_unit_actions() -> None:

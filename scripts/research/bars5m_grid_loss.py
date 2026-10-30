@@ -1,17 +1,19 @@
-"""How many NIFTY 500 stock-days `backtest.intraday.on_basis` replays on 5-minute bars, against
-the full-grid rule before it, by year and liquidity bucket, and whether its empty buckets are
-windows without a trade.
+"""How many NIFTY 500 stock-days the replay rule (`backtest.intraday.REPLAY_RULE`) replays on
+5-minute bars, against the rules before it, by year and liquidity bucket, and whether its empty
+buckets are windows without a trade.
 
-The rule (`edges`): the 09:15 and 15:25 bars present, every bar on the IST 5-minute grid once,
-the 09:15 open within `CLOSE_5M_PCT` of the daily open. The rule before (`full`) wanted every
-bucket of the grid. A stock-day is a point-in-time NIFTY 500 member (`hat_index_member`) with a
+The rule: the 09:15 bar present, every bar on the IST 5-minute grid once, the 09:15 open within
+`CLOSE_5M_PCT` of the daily open (`intraday.on_basis`), no bucket the import refused missing
+(`intraday.lacks_refused`) and the session in no known coverage gap (`bars5m_gaps`). The rules
+before: `full_grid` wanted every bucket of the grid; `edges` the 09:15 and 15:25 bars (no
+coverage gaps). A stock-day is a point-in-time NIFTY 500 member (`hat_index_member`) with a
 stored daily bar, on a session the 5-minute store covers. Its liquidity bucket is its 20-session
-average traded value before the day (Rs crore). Each day with bars is one of:
+average traded value before the day (Rs crore). Each day with bars is the first of:
 
-- `full`: every bucket present, the open fits (both rules replay it);
-- `back`: the edges present, interior buckets empty, the open fits (only the rule replays it);
-- `no_first`, `no_last`, `no_edges`: the 09:15 bar, the 15:25 bar or both missing;
-- `off_grid`: a bar off the grid or twice; `open_off`: on the grid, the 09:15 open off.
+- `off_grid`: a bar off the grid or twice; `no_first`: no 09:15 bar; `open_off`: the 09:15 open
+  off; `refused`: a bucket the import refused is missing; `gap`: inside a coverage gap;
+- `full`: every bucket present (every rule replays it); `back`: some buckets empty (interior or
+  trailing: the rule replays it, as a window without a trade).
 
 Whether an empty bucket is a window without a trade, two ways:
 
@@ -22,11 +24,11 @@ Whether an empty bucket is a window without a trade, two ways:
   The export labels a bar by its end until it stops printing a traded 15:30 row (to 2022-01),
   by its start after; a day with a traded 15:30 row is read as end-labelled.
 
-What the rule reads to choose a day: the 09:15 bar and open (known at 09:20), the grid (a
-property of the stored file) and the 15:25 bar (known only at the close). The last is later
-data, so the report sets the days refused for it alone (`no_last`) beside the replayed days:
-how many, and how often they close at the day's high or low (a circuit lock leaves the close
-without trades).
+What the rule reads to choose a day: the 09:15 bar and open (known at 09:20), the grid and the
+refused buckets (properties of the stored file and the ledger) and the coverage gaps (the
+vendor's copy); never the last bar or the close. The report sets the replayed days without a
+15:25 bar (the edges rule refused them) beside the rest: how many, and how often they close at
+the day's high or low (a circuit lock leaves the close without trades).
 
     DB_NAME=hat_live PGOPTIONS="-c default_transaction_read_only=on" HAT_DATA_ROOT=<data> \\
         venv/bin/python scripts/research/bars5m_grid_loss.py [--kotak DIR] [--out FILE.json]
@@ -55,17 +57,19 @@ from sqlalchemy import select, text  # noqa: E402
 from app.database import db_session_scope  # noqa: E402
 from app.hat.data.audit import CLOSE_5M_PCT  # noqa: E402
 from app.hat.data.bars import BAR_WIDTH  # noqa: E402
+from app.hat.data.bars5m_gaps import gap_spans, in_gap, read_gaps  # noqa: E402
+from app.hat.data.bars_store import BarStore  # noqa: E402
 from app.hat.data.sessions import SESSION_CLOSE, SESSION_OPEN  # noqa: E402
-from app.hat.models import HatEvent, HatIndexMember  # noqa: E402
+from app.hat.models import HatEvent, HatIndexMember, HatInstrument  # noqa: E402
 from app.hat.settings import operator_settings  # noqa: E402
-from app.paths import PROJECT_ROOT  # noqa: E402
+from app.paths import BARS5M_GAPS, PROJECT_ROOT  # noqa: E402
 
 # the grid `on_basis` reads: the regular session's 5-minute bars, in minutes after midnight IST
 FIRST_MIN = SESSION_OPEN.hour * 60 + SESSION_OPEN.minute
 WIDTH_MIN = int(BAR_WIDTH.total_seconds()) // 60
 LAST_MIN = SESSION_CLOSE.hour * 60 + SESSION_CLOSE.minute - WIDTH_MIN
 GRID_BARS = (LAST_MIN - FIRST_MIN) // WIDTH_MIN + 1
-KINDS = ("full", "back", "no_first", "no_last", "no_edges", "off_grid", "open_off")
+KINDS = ("full", "back", "off_grid", "no_first", "open_off", "refused", "gap")
 _FLOATS = ("adv", "open_off", "vol_ratio", "ret")
 BUCKETS = ((0, 10), (10, 25), (25, 50), (50, 100), (100, None))  # ADV20, Rs crore
 VOLUME_BANDS = (1.0, 5.0)  # |5-minute volume / daily volume - 1|, percent
@@ -110,6 +114,7 @@ members as (
 )
 select m.instrument_id, m.date, d.symbol, year(m.date) as year, d.adv, d.adv_n,
        f.n, f.n_distinct, f.on_grid, f.has_first, f.has_last,
+       coalesce(r.n, 0) as refused_missing,
        abs(f.first_open / d.open - 1) * 100 as open_off,
        f.volume / nullif(d.volume, 0) as vol_ratio,
        d.close / d.open - 1 as ret,
@@ -117,6 +122,19 @@ select m.instrument_id, m.date, d.symbol, year(m.date) as year, d.adv, d.adv_n,
 from members m
 join daily d on d.instrument_id = m.instrument_id and d.date = m.date
 left join five_days f on f.instrument_id = m.instrument_id and f.date = m.date
+left join refused_days r on r.instrument_id = m.instrument_id and r.date = m.date
+"""
+
+# the buckets the import refused (ledger rows with a bar start) that the stored day lacks
+_REFUSED_SQL = """
+insert into refused_days
+    select r.instrument_id, r.day, count(*)
+    from rejects r
+    anti join (select instrument_id, bar_start from read_parquet($five, hive_partitioning = true)
+               where date >= cast($start as date) and date < cast($stop as date)) f
+      on f.instrument_id = r.instrument_id and f.bar_start = r.bar_start
+    where r.day >= cast($start as date) and r.day < cast($stop as date)
+    group by 1, 2
 """
 
 # the empty buckets of the `back` days, against the export's row for each
@@ -181,15 +199,20 @@ def classify(row: dict[str, Any]) -> str:
         return "no_bars"
     if row["on_grid"] != row["n"] or row["n_distinct"] != row["n"]:
         return "off_grid"
-    if not (row["has_first"] or row["has_last"]):
-        return "no_edges"
     if not row["has_first"]:
         return "no_first"
-    if not row["has_last"]:
-        return "no_last"
     if row["open_off"] is None or row["open_off"] > CLOSE_5M_PCT:
         return "open_off"
+    if row["refused_missing"]:
+        return "refused"
+    if row["in_gap"]:
+        return "gap"
     return "full" if row["n"] == GRID_BARS else "back"
+
+
+def edges(row: dict[str, Any], kind: str) -> bool:
+    """Whether the edges rule (the 15:25 bar too, no coverage gaps) replayed the day."""
+    return (kind in ("full", "back", "gap")) and bool(row["has_last"])
 
 
 def volume_fit(ratios: Iterable[float]) -> dict[str, Any]:
@@ -221,7 +244,7 @@ def _selection(rows: list[dict[str, Any]]) -> dict[str, Any]:
 
 def tally(rows: list[dict[str, Any]]) -> dict[str, Any]:
     """Counts by year and bucket, the volume fit of `full` and `back` days, the empty-bucket
-    counts of `back` days and the days refused for the 15:25 bar alone beside the replayed."""
+    counts of `back` days and the replayed days without a 15:25 bar beside the rest."""
     table: dict[tuple[int, str], dict[str, int]] = {}
     ratios: dict[str, list[float]] = {"full": [], "back": []}
     empty: dict[str, int] = {}
@@ -231,15 +254,14 @@ def tally(rows: list[dict[str, Any]]) -> dict[str, Any]:
         cell = table.setdefault((row["year"], bucket_of(row["adv"], row["adv_n"])), {})
         cell["member_days"] = cell.get("member_days", 0) + 1
         cell[kind] = cell.get(kind, 0) + 1
+        cell["edges"] = cell.get("edges", 0) + edges(row, kind)
         if kind in ratios and row["vol_ratio"] is not None:
             ratios[kind].append(row["vol_ratio"])
         if kind == "back":
             band = _empty_band(GRID_BARS - row["n"])
             empty[band] = empty.get(band, 0) + 1
         if kind in ("full", "back"):
-            chosen["replayed"].append(row)
-        elif kind == "no_last" and row["open_off"] is not None and row["open_off"] <= CLOSE_5M_PCT:
-            chosen["no_last"].append(row)  # refused for the 15:25 bar alone
+            chosen["replayed" if row["has_last"] else "no_last"].append(row)
     return {
         "cells": [{"year": y, "bucket": b, **c} for (y, b), c in sorted(table.items())],
         "volume_fit": {k: volume_fit(v) for k, v in ratios.items()},
@@ -261,15 +283,19 @@ def markdown(cells: list[dict[str, Any]], key: str) -> str:
             if k not in ("year", "bucket"):
                 total[k] = total.get(k, 0) + v
     cols = ("member_days", "no_bars", *KINDS)
-    lines = [f"| {key} | " + " | ".join(cols) + " | replayed % before | replayed % now |"]
-    lines.append("|" + " --- |" * (len(cols) + 3))
+    heads = ("% full grid", "% edges", "% now")
+    lines = [f"| {key} | " + " | ".join((*cols, *heads)) + " |"]
+    lines.append("|" + " --- |" * (len(cols) + len(heads) + 1))
     for k, total in sorted(sums.items(), key=lambda kv: str(kv[0])):
         days = total.get("member_days", 0)
-        full, back = total.get("full", 0), total.get("back", 0)
-        before = f"{100 * full / days:.1f}" if days else "-"
-        now = f"{100 * (full + back) / days:.1f}" if days else "-"
+        replayed = (
+            total.get("full", 0),
+            total.get("edges", 0),
+            total.get("full", 0) + total.get("back", 0),
+        )
+        pcts = [f"{100 * n / days:.1f}" if days else "-" for n in replayed]
         lines.append(
-            f"| {k} | " + " | ".join(str(total.get(c, 0)) for c in cols) + f" | {before} | {now} |"
+            f"| {k} | " + " | ".join([*(str(total.get(c, 0)) for c in cols), *pcts]) + " |"
         )
     return "\n".join(lines)
 
@@ -304,6 +330,10 @@ def main(argv: list[str] | None = None) -> int:
                 select(HatIndexMember).where(HatIndexMember.index_name == "NIFTY 500")
             )
         ]
+        isins = {
+            str(i): isin
+            for i, isin in session.execute(select(HatInstrument.id, HatInstrument.isin))
+        }
     con = duckdb.connect()
     con.execute("set memory_limit = '1500MB'")
     con.execute("set threads = 2")
@@ -319,21 +349,34 @@ def main(argv: list[str] | None = None) -> int:
         " n_distinct bigint, on_grid bigint, has_first boolean, has_last boolean,"
         " first_open double, volume hugeint)"
     )
+    con.execute(
+        "create temp table rejects (instrument_id varchar, day date, bar_start timestamptz)"
+    )
+    con.executemany(
+        "insert into rejects values (?, ?, ?)",
+        [
+            (r.instrument_id, r.day, r.bar_start)
+            for r in BarStore(root).read_rejects()
+            if r.bar_start is not None and r.day is not None
+        ],
+    )
+    con.execute("create temp table refused_days (instrument_id varchar, date date, n bigint)")
     for year in range(2021, date.today().year + 1):
-        con.execute(
-            _FIVE_SQL,
-            {"five": five, "start": f"{year}-01-01", "stop": f"{year + 1}-01-01", **grid},
-        )
+        span = {"start": f"{year}-01-01", "stop": f"{year + 1}-01-01"}
+        con.execute(_FIVE_SQL, {"five": five, **span, **grid})
+        con.execute(_REFUSED_SQL, {"five": five, **span})
     con.execute(_SQL, {"daily": str(root / "bars_daily_raw" / "*" / PARQUET)})
-    cur = con.execute("select * exclude (instrument_id, date, symbol) from day_rows")
+    gaps = gap_spans(read_gaps(BARS5M_GAPS))
+    cur = con.execute("select * exclude (symbol) from day_rows")
     names = [d[0] for d in cur.description]
-    rows = [
-        {
+    rows = []
+    for r in cur.fetchall():
+        row = {
             k: (float(v) if k in _FLOATS and v is not None else v)
             for k, v in zip(names, r, strict=True)
         }
-        for r in cur.fetchall()
-    ]
+        row["in_gap"] = in_gap(gaps, isins.get(row.pop("instrument_id")), row.pop("date"))
+        rows.append(row)
     report = tally(rows)
     print(markdown(report["cells"], "year"))
     print()
@@ -341,11 +384,11 @@ def main(argv: list[str] | None = None) -> int:
     print()
     print("5-minute volume over daily volume:", report["volume_fit"])
     print("back days by empty buckets:", report["back_empty_buckets"])
-    print("days chosen, by what the rule reads at the close:", report["selection"])
+    print("replayed days with and without a 15:25 bar:", report["selection"])
     if args.kotak is not None:
         con.execute(
             "create temp table back_days as select instrument_id, date, symbol from day_rows "
-            "where n is not null and on_grid = n and n_distinct = n and has_first and has_last "
+            "where n is not null and on_grid = n and n_distinct = n and has_first "
             "and n < $grid_bars and open_off <= $open_pct",
             {"grid_bars": GRID_BARS, "open_pct": CLOSE_5M_PCT},
         )

@@ -64,7 +64,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   InvIT and REIT units and rights entitlements never enter any strategy's universe, live, gap
   scan, nightly scan or backtest alike (`watchlist._tradable_members`, by ISIN:
   `isin.ordinary_equity`). They reach the store because NSE lists them in the EQ series beside
-  stocks; their price data stays.
+  stocks; their price data stays. Index membership is stored as NSE publishes it, REIT and InvIT
+  units included wherever HAT has an instrument for them (EMBASSY and BIRET in the NIFTY 500
+  from 2026-09-30; BAGMANE has none, as it trades only in the RR series the instrument scan does
+  not read), and the universes drop them by ISIN.
 - **S4 research tests two exits (owner 2026-10-25).** S4's research must test both a close below
   the 10 or 20 EMA exit (`close_below_ema`) and the seed's close below the SMA50 before either is
   chosen; the seed keeps the SMA50 until then.
@@ -220,26 +223,32 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   builder drops those prints, and zero-volume rows are kept (`REJECT_RULES` has no such rule). It
   carries most splits, bonuses and rights but not most demergers (nor a few splits and bonuses),
   so each stored action is judged carried or not from the sessions before its ex-date, and every
-  day must still fit the raw daily bar. Known gap: for 213 of the 497 symbols (the first
-  downloaded) the days from 2026-08-03 have no 15:15-15:25 bars. Those days are written when they
-  fit; the stored Fyers days cover them to 2026-10-21. A rule that needs the closing bars (the
-  close's volume, a last-bar exit) must treat a day without a 15:25 bar as incomplete. Known gap:
+  day must still fit the raw daily bar. The export's prices carry the later actions but its
+  volume does not (it is the bhavcopy's traded quantity as it was), so the import converts the
+  prices only; days imported before 2026-10-30 had their volume cut by the factor and are
+  restored from the export by `bars5m_volume` (each day only when the export's bars, the bhavcopy's volume and
+  one common factor across the day's bars prove it). Known gap: for 219 instruments the export ends at the 15:10 bar on
+  every session of 2026-08-03..2026-10-28. Those days are written when they fit; the stored Fyers
+  days cover some of them to 2026-10-21. The known coverage gaps of the history are listed by
+  vendor, span and ISIN in `bars5m_gaps.csv` (`app/hat/data/bars5m_gaps.py`). Known gap:
   in 2026 the export's 09:15 bar opens at the pre-open auction price, often outside the bar's own
   high and low; such a bar is refused (`bars_5m_rejects`, rule `ohlc`), never repaired, so the
   day has no 09:15 bar and a run decides it on the daily estimate.
-- **A 5-minute session is replayed on its edges** (orchestrator, 2026-10-30). A run replays a
-  session's stored bars (`intraday.on_basis`) when its 09:15 and 15:25 bars are there, every bar
-  is on the IST 5-minute grid once and the 09:15 open is within 5% of the daily open; other
-  sessions are decided on the daily estimate. An empty interior bucket is a window without a
-  trade, as live's bar builder sees it (`data.bars` makes no bar for one): of the empty buckets
-  the broker export also covers, it has a traded bar for 0.4%, all on six dates where the stored
-  vendor folded the trades into the next bar (volume kept, seen up to 25 minutes late). A bucket
-  the import refused (`bars_5m_rejects` with a bar start) did trade, so a session whose bars lack
-  one is decided on the daily estimate (`intraday.lacks_refused`). Why:
-  wanting every bucket refused the quiet days of thin stocks (a quarter of the under Rs 10 crore
-  days) by how the afternoon traded, data the morning does not have. The 15:25 bar is still read
-  at the close; the days refused for it alone are vendor truncations, and a run decides them on
-  the daily estimate rather than dropping them.
+- **A 5-minute session is replayed from its open** (orchestrator, 2026-10-30, replacing the
+  edges rule). A run replays a session's stored bars (`intraday.on_basis`) when its 09:15 bar is
+  there, every bar is on the IST 5-minute grid once, the 09:15 open is within 5% of the daily
+  open, no bucket the import refused is missing (`intraday.lacks_refused`: a refused bucket did
+  trade) and the session lies in no known coverage gap (`bars5m_gaps`: the Kotak 15:10 cut of
+  2026-08-03..2026-10-28 for its 219 instruments, and NSE's special sessions of 2024-03-02 and
+  2024-05-18); other sessions are decided on the daily estimate. A missing bucket, interior or
+  trailing, is a window without a trade, as live's bar builder sees it (`data.bars` makes no bar
+  for one), so the replay trades nothing there: of the empty buckets the broker export also
+  covers, it has a traded bar for 0.4%, all on six dates where the stored vendor folded the
+  trades into the next bar. Why: a rule that read the 15:25 bar chose sessions by how they
+  ended; before 2026 the sessions it refused were mostly circuit locks (no trade after the lock,
+  so no last bar), which a run must see. A known vendor truncation is refused by where it is
+  known to be, never by price behaviour. The rule's version is recorded in each run's
+  conventions (`replay_rule`, so `config_digest` tells runs before and after it apart).
 - **Backtests from 2016-01-01** (owner, 2026-10-25). The NIFTY 500 history starts 2016-01-01:
   the 2011-2015 notices are incomplete (they do not fit the archived lists of 2014 and 2015).
   Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run

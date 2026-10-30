@@ -1,4 +1,4 @@
-code,key,day,reason
-index_session_not_stored,INDIA VIX,2014-12-15,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_15122014.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX. The regime reads 251 of its 252 VIX values around it"
-index_session_not_stored,INDIA VIX,2015-03-12,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_12032015.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX"
-index_session_not_stored,INDIA VIX,2015-07-08,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_08072015.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX"
+code,key,day,pin,reason
+index_session_not_stored,INDIA VIX,2014-12-15,index=INDIA VIX,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_15122014.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX. The regime reads 251 of its 252 VIX values around it"
+index_session_not_stored,INDIA VIX,2015-03-12,index=INDIA VIX,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_12032015.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX"
+index_session_not_stored,INDIA VIX,2015-07-08,index=INDIA VIX,"No source has the session: neither NSE's archive nor niftyindices has ind_close_all_08072015.csv, and niftyindices' price history (which fills NIFTY 50 and 500 that day) does not serve India VIX"

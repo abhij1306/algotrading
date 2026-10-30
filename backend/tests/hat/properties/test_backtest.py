@@ -237,18 +237,19 @@ def test_after_trigger() -> None:
 
 def test_on_basis() -> None:
     """A session's 5-minute bars are read only when they fit its daily bar, by what is known at
-    the open: the 09:15 and 15:25 bars present, every bar on the IST 5-minute grid of the
-    session once, and the 09:15 open within 5% of the daily open (never the close). An empty
-    interior bucket is a window without a trade, as live's bar builder sees it. Harm: an entry
-    decided on bars of another price basis or another day, a session chosen by its close, a
-    truncated day replayed without its later lows, or a quiet day refused for its quiet."""
+    the open: the 09:15 bar present, every bar on the IST 5-minute grid of the session once,
+    and the 09:15 open within 5% of the daily open (never the close or the last bar). An empty
+    bucket, interior or trailing, is a window without a trade, as live's bar builder sees it.
+    Harm: an entry decided on bars of another price basis or another day, a session chosen by
+    how it ended (a circuit lock has no late trade), or a quiet day refused for its quiet."""
     day = date(2024, 3, 1)
     bars = tuple(_bar(m, "104", "99") for m in range(0, 375, 5))  # 75 bars, each opening at 99
     assert on_basis(day, bars, D(99))
     assert on_basis(day, bars, D("94.3"))  # 4.98% off
     assert not on_basis(day, bars, D("104.5"))  # the first open 5.3% off
     assert not on_basis(day, (), D(99))
-    assert not on_basis(day, bars[:-1], D(99))  # no 15:25 bar: a truncated day
+    assert on_basis(day, bars[:-1], D(99))  # no trade in 15:25-15:30 (a locked close)
+    assert on_basis(day, bars[:60], D(99))  # nothing after 14:15: no trade, as live
     assert on_basis(day, bars[:10] + bars[11:], D(99))  # no trade in 10:05-10:10
     assert on_basis(day, (bars[0], bars[-1]), D(99))  # traded only at the open and the close
     assert not on_basis(day, bars[1:], D(99))  # no 09:15 bar
