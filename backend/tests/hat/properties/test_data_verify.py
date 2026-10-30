@@ -644,6 +644,7 @@ def test_d2_second_source_fails_on_too_little_compared() -> None:
     assert adjustments.judge_second_source(100, 82, 311) == []
     assert adjustments.judge_second_source(100, 69, 300)[0]["code"] == "second_source_not_run"
     assert adjustments.judge_second_source(100, 90, 249)[0]["code"] == "second_source_not_run"
+    assert adjustments.judge_second_source(0, 0, 0)[0]["code"] == "second_source_not_run"
     assert adjustments.years_only_theirs(
         {2022: 1.0}, {2022: 1.0, 2023: 2.0, 2026: 3.0}, 2022, 2025
     ) == [2023]
@@ -656,23 +657,107 @@ def test_d2_pull_date_is_read_from_the_pulls_note() -> None:
     assert ca_import.collected_on("Collected 31-Feb-2026.") is None
 
 
-def test_d2_nse_base_against_the_stored_factor() -> None:
+def test_d2_bhavcopy_prev_close_against_the_stored_factor() -> None:
     ex = date(2022, 10, 6)
-    # AHLEAST: NSE's base 233.55 over the last close 350.35 is the 1:2 bonus alone (2/3)
+    # AHLEAST: the bhavcopy's previous close 233.55 over the last close 350.35 is the 1:2 bonus
+    # alone (2/3); bars are (day, open, previous close, close, volume)
     bars = [
-        (date(2022, 10, 4), 333.7, 350.35),
-        (ex, 233.55, 175.75),
-        (date(2022, 10, 7), 175.75, 167.0),
+        (date(2022, 10, 4), 340.0, 333.7, 350.35, 1000),
+        (ex, 184.95, 233.55, 175.75, 3000),
+        (date(2022, 10, 7), 176.0, 175.75, 167.0, 2500),
     ]
-    found = adjustments.nse_factor(bars, ex)
+    found = adjustments.bhavcopy_factor(bars, ex)
     assert found is not None
-    nse, base, last = found
+    seen, base, last = found
     assert (base, last) == (233.55, 350.35)
-    assert adjustments.nse_base_verdict(2 / 3, nse, last) == "agrees"
-    assert adjustments.nse_base_verdict(0.5017, nse, last) == "differs"  # bonus and demerger
-    # NSE kept the raw close as the base: the bhavcopy's previous close is the last close
-    assert adjustments.nse_base_verdict(0.5, 1.0, 1377.85) == "unadjusted"
-    assert adjustments.nse_factor(bars[1:], ex) is None  # no bar before the ex-date
+    assert adjustments.bhavcopy_verdict(2 / 3, seen, last) == "agrees"
+    assert adjustments.bhavcopy_verdict(0.5017, seen, last) == "differs"  # bonus and demerger
+    # the bhavcopy kept the raw close: no evidence on the factor, not an agreement
+    assert adjustments.bhavcopy_verdict(0.5, 1.0, 1377.85) == "no_evidence"
+    assert adjustments.bhavcopy_factor(bars[1:], ex) is None  # no bar before the ex-date
+
+
+def test_d2_split_bonus_open_and_volume_evidence() -> None:
+    ex = date(2024, 1, 5)  # NESTLEIND 1:10 split: last close 26,600, first open 2,702.40
+    before = [(ex - timedelta(days=d), 0.0, 0.0, 26600.0, 40_000) for d in range(20, 0, -1)]
+    after = [(ex + timedelta(days=d), 0.0, 0.0, 2650.0, 400_000) for d in range(1, 20)]
+    bars = [*before, (ex, 2702.4, 26600.0, 2650.0, 400_000), *after]
+    assert adjustments.open_evidence(bars, ex) == 2702.4 / 26600.0
+    assert adjustments.volume_evidence(bars, ex) == 0.1
+    assert adjustments.volume_evidence(bars[15:], ex) is None  # 5 sessions before: under half
+    assert adjustments.open_evidence(bars[20:], ex) is None  # no bar before the ex-date
+
+
+def test_d2_share_count_evidence() -> None:
+    # IRB 1:1 bonus ex 2026-03-30: the Mar-31 filing may precede the allotment, so Jun-30 counts
+    rows = [
+        (date(2025, 12, 31), 6_039_000_000.0, 1.0),
+        (date(2026, 3, 31), 6_039_000_000.0, 1.0),
+        (date(2026, 6, 30), 12_078_000_000.0, 1.0),
+    ]
+    found = adjustments.count_evidence(
+        rows, date(2026, 3, 30), 100, {date(2026, 3, 30): 0.5}, split=False
+    )
+    assert found == (0.5, 0.5, 0.0)
+    # NESTLEIND 10:1 split: the filings kept face value 10 on both sides, so no count
+    split = [(date(2023, 12, 31), 964_200_000.0, 10.0), (date(2024, 3, 31), 964_200_000.0, 10.0)]
+    assert (
+        adjustments.count_evidence(
+            split, date(2024, 1, 5), 100, {date(2024, 1, 5): 0.1}, split=True
+        )
+        is None
+    )
+    restated = [split[0], (date(2024, 3, 31), 964_200_000.0, 1.0)]
+    found = adjustments.count_evidence(
+        restated, date(2024, 1, 5), 100, {date(2024, 1, 5): 0.1}, split=True
+    )
+    assert found is not None
+    assert abs(found[0] - 0.1) < 1e-12
+    # BCG: two bonuses inside one year's span both count; screener's whole crores give slack
+    capital = [(date(2021, 3, 31), 1_020_000_000.0, 1.0), (date(2022, 3, 31), 4_040_000_000.0, 1.0)]
+    found = adjustments.count_evidence(
+        capital,
+        date(2021, 8, 18),
+        400,
+        {date(2021, 8, 18): 0.8, date(2022, 3, 15): 0.6},
+        split=False,
+        rounding=5_000_000.0,
+    )
+    assert found is not None
+    assert abs(found[1] - 0.48) < 1e-12
+    assert abs(found[2] - (5_000_000 / 1_020_000_000 + 5_000_000 / 4_040_000_000)) < 1e-12
+
+
+def test_d2_evidence_verdicts() -> None:
+    assert adjustments.evidence_verdict(0.5, 0.5531, 0.223) == "agrees"
+    assert adjustments.evidence_verdict(0.5, 0.75, 0.223) == "disagrees"  # a 1:2 bonus, not 1:1
+    # a 1:10 bonus and an open near 1: nothing tells it from no action
+    assert adjustments.evidence_verdict(0.9091, 0.95, 0.223) == "no_evidence"
+    # a 10:1 bonus (0.0909) stored as 1:10 (0.9091), or as 1: the open's 0.09 disagrees
+    assert adjustments.evidence_verdict(0.9091, 0.0925, 0.223) == "disagrees"
+    assert adjustments.evidence_verdict(1.0, 0.0925, 0.223) == "disagrees"
+    assert adjustments.evidence_verdict(0.5, None, 0.223) == "no_evidence"
+    assert adjustments.factor_contradicted({"open": "disagrees", "volume": "disagrees"})
+    assert not adjustments.factor_contradicted(
+        {"open": "agrees", "volume": "disagrees", "shares": "disagrees"}
+    )
+    # the open alone shows a factor wrong when nothing else agrees
+    assert adjustments.factor_contradicted({"open": "disagrees", "volume": "no_evidence"})
+    assert not adjustments.factor_contradicted({"open": "disagrees", "capital": "agrees"})
+    assert not adjustments.factor_contradicted({"open": "no_evidence", "volume": "disagrees"})
+
+
+def test_d2_chain_day_factors_count_a_copy_once() -> None:
+    # BHEL's 2017 1:2 bonus stored on the chain's old and current ISINs is one bonus, not two
+    ex = date(2017, 9, 28)
+    stored = [
+        adjustments.StoredAction("new", ex, "bonus", Fraction(2, 3), None, False, "nse"),
+        adjustments.StoredAction("old", ex, "bonus", Fraction(2, 3), None, False, "nse"),
+        adjustments.StoredAction("new", ex, "dividend", Fraction(1), None, False, "nse"),
+    ]
+    heads = {"old": ("new", 1), "new": ("new", 0)}
+    every, split_bonus, bonus = adjustments.chain_day_factors(stored, heads)
+    assert every == split_bonus == bonus == {("new", ex): Fraction(2, 3)}
 
 
 def test_d2_dividends_count_against_the_chains_series() -> None:
