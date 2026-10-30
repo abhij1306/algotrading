@@ -575,10 +575,7 @@ NSE sha in `results_events` (filings stored under an older ISIN of the same comp
 chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and
 D6 judge stocks only, so ETF unit splits and consolidations, fund listing status and the funds'
 adjusted series are stored but unverified; an ETF overlay needs them verified first. D2/D6
-follow-ups: check each demerger factor against the company's published cost-of-acquisition ratio
-(today it is checked only against the same raw bars it was taken from); pin the NSE-side value in
-an exception beside the stored one; undo a face-value change for rights as of the NSE pull's
-date, not the last bar; and read a stock's series as of each day for `series_in`, not today's.
+follow-up: read a stock's series as of each day for `series_in`, not today's.
 
 ## Defaults awaiting owner confirmation
 

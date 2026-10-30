@@ -24,6 +24,7 @@ from app.hat.data.verify import (
     series,
     sessions,
     snapshot,
+    yahoo,
 )
 from app.hat.data.verify.adjustments import RefAction, StoredAction
 from app.hat.data.verify.exceptions import Excepted, Exceptions, read_exceptions
@@ -533,6 +534,10 @@ def test_d2_moves_are_classed_by_what_explains_them() -> None:
     assert adjustments.classify_move(crash, False, 100.0) == "unexplained"
     band = plain | {"move_pct": 19.98, "raw_move_pct": 19.98}  # a 20% band's upper circuit
     assert adjustments.classify_move(band, False, 100.0) == "circuit"
+    # 20% on 6.60 is 7.92, traded at the next tick, 7.95: a band's move of 20.45%
+    tick = plain | {"move_pct": 20.45, "raw_move_pct": 20.45}
+    assert adjustments.classify_move(tick, False, 6.60) == "circuit"
+    assert adjustments.classify_move(tick, False, 418.10) == "unexplained"
     # a day the median stock fell 11%: a 30% fall that day is the market's, a rise is not
     assert adjustments.classify_move(crash, False, 100.0, market=-11.0) == "market"
     assert adjustments.classify_move(crash, False, 100.0, market=-2.0) == "unexplained"
@@ -568,6 +573,67 @@ def test_d2_second_source_returns_by_calendar_year() -> None:
     ours = adjustments.year_returns([(date(2021, 12, 31), 50.0), (date(2022, 12, 30), 56.0)])
     rows = adjustments.compare_returns(ours, {2022: 10.0}, 2022, 2022)
     assert rows == [{"year": 2022, "hat_pct": 12.0, "yahoo_pct": 10.0, "gap_pp": 2.0}]
+    # a 404's "no such symbol" is an answer: kept, and read as no returns
+    missing = b'{"chart":{"result":null,"error":{"code":"Not Found"}}}'
+    assert adjustments.yahoo_year_returns(missing) == {}
+    assert yahoo.keepable(yahoo.Answer(404, missing))
+    assert not yahoo.keepable(yahoo.Answer(429, b"Too Many Requests"))
+    assert not yahoo.keepable(yahoo.Answer(200, b"<html>"))
+
+
+def test_d2_second_source_backs_off_on_refusals() -> None:
+    assert yahoo.backoff_s(1, None) == yahoo.BACKOFF_S
+    assert yahoo.backoff_s(2, None) == 2 * yahoo.BACKOFF_S
+    assert yahoo.backoff_s(10, None) == yahoo.BACKOFF_MAX_S
+    assert yahoo.backoff_s(3, 120.0) == 120.0  # the server's Retry-After
+    assert yahoo.backoff_s(1, 1.0) == yahoo.INTERVAL_S  # never faster than the pace
+    assert yahoo.retry_after_s("300") == 300.0
+    assert yahoo.retry_after_s("Wed, 21 Oct 2026 07:28:00 GMT") is None
+    name, url = adjustments.yahoo_request("M&M", date(2011, 6, 22), date(2026, 10, 29))
+    assert name == "M&M_2011_2026.json"
+    assert "M%26M.NS" in url
+    assert "interval=1mo" in url
+
+
+def test_d2_dividends_count_against_the_chains_series() -> None:
+    # JBCHEPHARM: the Rs 40 special of 2011 is stored on the old ISIN; the adjusted series
+    # carries the chain's current instrument, so the cash must be keyed by it
+    def dividend(instrument: str, cash: str) -> StoredAction:
+        return StoredAction(instrument, D2, "dividend", Fraction(1), Decimal(cash), False, "x")
+
+    heads = {"old": ("new", 1), "new": ("new", 0)}
+    paid = adjustments.dividends_by_chain(
+        [dividend("old", "40"), dividend("old", "2"), dividend("solo", "1")], heads
+    )
+    assert paid == {("new", D2): 42.0, ("solo", D2): 1.0}
+    # a copy on the current ISIN wins over the old one's
+    paid = adjustments.dividends_by_chain([dividend("old", "40"), dividend("new", "39")], heads)
+    assert paid == {("new", D2): 39.0}
+
+
+def test_d2_demerger_factors_against_cost_splits() -> None:
+    rows = [
+        {"isin": "INE000A01011", "ex_date": "2020-01-21", "parent_pct": "47.54", "source_url": "u"},
+        {"isin": "INE000B01011", "ex_date": "2023-07-20", "parent_pct": "95.32", "source_url": "u"},
+        {"isin": "INE000B01011", "ex_date": "2023-07-20", "parent_pct": "90", "source_url": "u"},
+        {"isin": "INE000C01011", "ex_date": "2023-07-20", "parent_pct": "100", "source_url": "u"},
+        {"isin": "INE000D01011", "ex_date": "20-Jul-2023", "parent_pct": "50", "source_url": "u"},
+        {"isin": "INE000E01011", "ex_date": "2023-07-20", "parent_pct": "50", "source_url": ""},
+    ]
+    splits, unread = adjustments.read_cost_splits(rows)
+    assert unread == 4  # a second row, 100%, a non-ISO day, no source
+    assert splits[("INE000B01011", date(2023, 7, 20))].parent == Fraction(9532, 10000)
+    stored = [
+        ("INE000A01011", "SUVEN", date(2020, 1, 21), Fraction(504, 10000)),  # far: book vs market
+        ("INE000B01011", "RELIANCE", date(2023, 7, 20), Fraction(9079, 10000)),  # within 0.10
+        ("INE000F01011", "OTHER", date(2024, 1, 1), Fraction(1, 2)),  # no published split
+    ]
+    summary, findings = adjustments.compare_cost_splits(stored, splits)
+    assert (summary["compared"], summary["within"], summary["far"]) == (2, 1, 1)
+    codes = {f["code"]: f for f in findings}
+    assert codes["demerger_cost_split_far"]["items"][0]["symbol"] == "SUVEN"
+    assert codes["demerger_cost_split_far"]["items"][0]["gap"] == "-0.425"
+    assert codes["demerger_cost_split_missing"]["count"] == 1
 
 
 # --- D3 -----------------------------------------------------------------------------------------

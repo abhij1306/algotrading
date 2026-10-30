@@ -33,6 +33,9 @@ D5_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "
 # D2's and D6's reviewed exceptions (code, isin, day, reason), read through
 # `app/hat/data/verify/exceptions.py`.
 D2_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d2_exceptions.csv"
+# D2's reference of demerged parents' published cost-of-acquisition splits (symbol, isin, ex
+# date, parent's percent, source), read by `app/hat/data/verify/adjustments.py`.
+D2_COST_SPLITS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d2_cost_splits.csv"
 D6_EXCEPTIONS = PROJECT_ROOT / "backend" / "app" / "hat" / "data" / "verify" / "d6_exceptions.csv"
 # D3, D4 and D7's reviewed exceptions (code, ISIN or key, day, pin, reason), read through
 # `app/hat/data/verify/exceptions.py`.

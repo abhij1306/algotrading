@@ -48,7 +48,7 @@ import sys
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import closing
 from dataclasses import replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from fractions import Fraction
 from pathlib import Path
 from typing import Any
@@ -56,6 +56,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from ..money import exact
+from ..time import IST
 from .ca_apply import (
     KIND_DEMERGER,
     Context,
@@ -98,7 +99,7 @@ from .corporate_actions import (
 )
 from .isin import voting_equity
 from .ratios import split_pair_numbers
-from .store import DATASET_BARS, DataStore
+from .store import DataStore
 
 SOURCE_FILE = "nse_ca_file"
 CHILD_DAYS = 366  # a resulting company lists within a year of the ex-date (a leap year too)
@@ -373,8 +374,8 @@ def proposals(
 ) -> list[Proposal]:
     """What each row of the file proposes, as far as its text goes; a rights row is priced at
     the face value of its ex-date, from the file's own face-value splits of the same company
-    (same ISIN or symbol) that took effect by `asof` (the newest stored session: a split still
-    to come has not changed the file's `faceVal`)."""
+    (same ISIN or symbol) that took effect by `asof` (the day the file was pulled from NSE: a
+    split after it had not changed the file's `faceVal`)."""
     changes: dict[str, list[FaceValueChange]] = {}
     for row in tables.get(T_SPLITS, ()):
         day, ratio = nse_date(row["exDate"]), face_value_changes(row["subject_raw"])
@@ -547,11 +548,13 @@ def _demerger_leg(
 
 
 def evaluate(
-    session: Session, store: DataStore, tables: Mapping[str, Sequence[Mapping[str, str]]]
+    session: Session,
+    store: DataStore,
+    tables: Mapping[str, Sequence[Mapping[str, str]]],
+    pulled: date | None = None,
 ) -> list[Outcome]:
-    """Every row's outcome; nothing is written."""
-    days = store.days(DATASET_BARS)
-    props = proposals(tables, days[-1] if days else None)
+    """Every row's outcome, the file pulled from NSE on `pulled`; nothing is written."""
+    props = proposals(tables, pulled)
     reference = load_reference(session)
     needs_children = any(p.demerger is not None and not p.status for p in props)
     ctx = Context(
@@ -603,7 +606,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
 
     store = DataStore(settings.data_root, memory_limit=settings.duckdb_memory)
     with HatDataSessionLocal() as session:
-        outcomes = evaluate(session, store, tables)
+        pulled = datetime.fromtimestamp(path.stat().st_mtime, IST).date()  # the file's pull
+        outcomes = evaluate(session, store, tables, pulled)
         if args.apply:
             journal = {"source": SOURCE_FILE, "file_sha256": digest(path)}
             created = apply(session, outcomes, journal=journal, now=utc_now())

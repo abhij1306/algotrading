@@ -7,11 +7,11 @@
      the instrument and day must match within `FACTOR_TOLERANCE`;
    - rights (`rights_issues_*.csv`): the theoretical ex-rights factor (N*P + M*S) / ((N+M)*P)
      for M new shares per N held at S = face value + premium, P the raw close before the ex-date
-     (1 when S >= P). The face value is the reference's (`faceVal`, today's) taken back through
-     the reference's later face-value splits to the issue day (`issue_face_value`), or the
-     subject's `@ Rs X`. The tolerance is on the discount, 1 - factor: the stored discount
-     within `RIGHTS_TOLERANCE` of the expected one (relative), so a 1:100 issue stored as 1.0
-     fails;
+     (1 when S >= P). The face value is the reference's (`faceVal`, as of the file's pull,
+     `pulled_on`) taken back through the reference's face-value splits after the issue day up
+     to the pull (`issue_face_value`), or the subject's `@ Rs X`. The tolerance is on the
+     discount, 1 - factor: the stored discount within `RIGHTS_TOLERANCE` of the expected one
+     (relative), so a 1:100 issue stored as 1.0 fails;
    - demergers (`demergers_*.csv`): a stored demerger on the day (the factor is the market's gap
      by the owner's rule, so its size is not compared);
    - dividends (`dividends/ca_YYYY-MM.json`): the cash per share of the day's dividends; the
@@ -77,9 +77,10 @@ from fractions import Fraction
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from app.paths import D2_EXCEPTIONS
+from app.paths import D2_COST_SPLITS, D2_EXCEPTIONS
 
 from ...money import exact
+from ...time import IST
 from ..audit import FAIL, JUMP_PCT, PASS, WARN, action_shaped, check_result, finding, jumps
 from ..isin import ordinary_equity
 from ..lineage import issuer
@@ -102,6 +103,7 @@ SAMPLE_SEED = 20261029
 SECOND_SOURCE_PP = 2.0
 CIRCUIT_BANDS = (5.0, 10.0, 20.0)  # NSE's price bands, percent
 CIRCUIT_SLACK = 0.25  # percentage points: a band's move after the tick rounding
+TICK = 0.05  # rupees: NSE's largest equity tick; a band's price is rounded to it
 MARKET_PCT = 3.0  # percent: a day the median stock moved this far is a market-wide move
 MARKET_STOCKS = 100  # stocks: fewer traded that day, no market move is read
 # A market day explains a stock's move only up to a size: within `MARKET_SPREAD` points of the
@@ -113,6 +115,7 @@ EXPLAINED_LISTED = ("circuit", "results", "market")
 PENNY = 5.0  # rupees: below it a tick of 0.05 (0.01 since 2023) is 1% or more
 PREV_DAYS = 20  # calendar days: a reference's close before the ex-date is looked for this far back
 DEMERGER_GAP = Fraction(5, 100)  # a demerger not stored whose close gap is beyond this fails
+COST_SPLIT_GAP = Fraction(10, 100)  # a stored factor this far from the parent's cost share warns
 FUND_PREFIX = "INF"  # mutual-fund units (ETFs): not stocks, not judged
 NON_EQUITY = frozenset({"preference", "debentures", "warrants"})
 PRICE_TYPES = ("split", "bonus")
@@ -124,6 +127,12 @@ _REF_DATE = "%d-%b-%Y"
 
 
 # --- the reference's terms, parsed here -------------------------------------------------------
+
+
+def pulled_on(paths: Iterable[Path]) -> date | None:  # pragma: no cover - files
+    """The day the oldest of `paths` was pulled from NSE: its modification day (IST)."""
+    times = [p.stat().st_mtime for p in paths]
+    return datetime.fromtimestamp(min(times), IST).date() if times else None
 
 
 def ref_date(raw: str) -> date | None:
@@ -220,9 +229,9 @@ _AT_PAR = re.compile(r"(?:\bat|@)\s*par\b")
 def issue_face_value(
     face_value: Decimal | None, ex_date: date, splits: Sequence[tuple[date, Fraction]]
 ) -> Decimal | None:
-    """The face value on a rights issue's ex-date from the reference's (today's) face value and
-    its later face-value splits (ex date, new/old): today's divided by each later split's
-    new/old."""
+    """The face value on a rights issue's ex-date from the reference's face value (as of the
+    day it was pulled) and its face-value splits after the ex-date up to that day (ex date,
+    new/old): the pulled face value divided by each such split's new/old."""
     if face_value is None:
         return None
     value = Fraction(face_value)
@@ -409,8 +418,9 @@ def combine_legs(legs: Sequence[RefAction]) -> RefAction:
 
 def read_reference(
     folder: Path,
-) -> tuple[list[RefAction], Counter[str]]:  # pragma: no cover - files
-    """Every reference action of `folder` and the rows that could not be read, by kind."""
+) -> tuple[list[RefAction], Counter[str], date | None]:  # pragma: no cover - files
+    """Every reference action of `folder`, the rows that could not be read, by kind, and the
+    day the rights files were pulled (`pulled_on`)."""
     out: list[RefAction] = []
     skipped: Counter[str] = Counter()
     legs: dict[tuple[frozenset[str], date], dict[str, RefAction]] = defaultdict(dict)
@@ -434,12 +444,14 @@ def read_reference(
         for p in sorted(folder.glob("rights_issues_*.csv"))
         if not {"invit", "sme"} & set(p.stem.split("_"))  # equities only
     ]
+    pulled = pulled_on(paths)  # `faceVal` is as of the pull: a split after it changed nothing
     splits: dict[frozenset[str], list[tuple[date, Fraction]]] = defaultdict(list)
     for row in _rows(sorted(folder.glob("splits_bonus_*.csv"))):  # face-value changes only
         day = ref_date(row.get("exDate", ""))
         ratio = split_factor(row.get("subject_raw", ""), row.get("fv_change", ""))
         if "split" in row.get("action_type", "") and day is not None and ratio is not None:
-            splits[_keys(row)].append((day, ratio))
+            if pulled is None or day <= pulled:
+                splits[_keys(row)].append((day, ratio))
     for row in _rows(paths):
         action = _rights(row, splits)
         if action is None:
@@ -490,7 +502,7 @@ def read_reference(
         )
         for (keys, day), rows in amounts.items()
     ]
-    return out, skipped
+    return out, skipped, pulled
 
 
 WANTED = {
@@ -593,14 +605,16 @@ def judge_ref(
             "source": ",".join(sources),
         }
     assert ref.entitlement is not None
+    terms = "{}:{}".format(*ref.entitlement)  # NSE's: new shares per shares held
     if ref.price is None:
-        return "no_issue_price", {"stored": str(float(products[0]))}
+        return "no_issue_price", {"stored": str(float(products[0])), "entitlement": terms}
     if prev_close is None:
-        return "no_prev_close", {"stored": str(float(products[0]))}
+        return "no_prev_close", {"stored": str(float(products[0])), "entitlement": terms}
     judged = [judge_rights(p, *ref.entitlement, ref.price, prev_close) for p in products]
     n, (code, expected) = min(enumerate(judged), key=lambda j: j[1][0] != "equal")
     return code, {
         "stored": str(float(products[n])),
+        "entitlement": terms,
         "expected": str(float(expected)),
         "prev_close": str(prev_close),
         "issue_price": str(ref.price),
@@ -873,6 +887,90 @@ def compare_factors(
     return {k: counts[k] for k in sorted(counts)}, findings
 
 
+# --- demerger factors against the cost-of-acquisition split ---------------------------------------
+
+
+@dataclass(frozen=True)
+class CostSplit:
+    """A demerger's published apportionment of the parent's cost of acquisition: `parent` is the
+    share (0 to 1) that stays with the parent's shares."""
+
+    isin: str
+    ex_date: date
+    parent: Fraction
+    source: str
+
+
+def read_cost_splits(
+    rows: Iterable[Mapping[str, str]],
+) -> tuple[dict[tuple[str, date], CostSplit], int]:
+    """The reference's splits by (parent ISIN, ex-date) and the rows that could not be read: a
+    row needs an ISIN, an ISO ex-date, a `parent_pct` strictly between 0 and 100 and a
+    `source_url`; a second row for the same ISIN and day is not read."""
+    out: dict[tuple[str, date], CostSplit] = {}
+    unread = 0
+    for row in rows:
+        isin = (row.get("isin") or "").strip().upper()
+        try:
+            day = date.fromisoformat((row.get("ex_date") or "").strip())
+            pct = Fraction((row.get("parent_pct") or "").strip())
+        except ValueError:
+            unread += 1
+            continue
+        source = (row.get("source_url") or "").strip()
+        if not (_ISIN.match(isin) and 0 < pct < 100 and source) or (isin, day) in out:
+            unread += 1
+            continue
+        out[(isin, day)] = CostSplit(isin, day, pct / 100, source)
+    return out, unread
+
+
+def compare_cost_splits(
+    demergers: Iterable[tuple[str, str, date, Fraction]],
+    splits: Mapping[tuple[str, date], CostSplit],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Each stored demerger (ISIN, symbol, ex-date, factor) against its company's published
+    cost-of-acquisition split. The split is a tax apportionment by book value (Income-tax Act
+    s.49(2C)), the factor the market's gap, so the two differ by design and a far one is a
+    lead, not a defect: beyond `COST_SPLIT_GAP` it warns (`demerger_cost_split_far`, listed),
+    as does a demerger with no published split (`demerger_cost_split_missing`)."""
+    far, missing, gaps = [], [], []
+    for isin, symbol, day, factor in demergers:
+        split = splits.get((isin, day))
+        item: dict[str, Any] = {"isin": isin, "symbol": symbol, "ex_date": day.isoformat()}
+        if split is None:
+            missing.append(item)
+            continue
+        gap = factor - split.parent
+        gaps.append(abs(gap))
+        if abs(gap) > COST_SPLIT_GAP:
+            far.append(
+                item
+                | {
+                    "stored": str(round(float(factor), 6)),
+                    "cost_split": str(round(float(split.parent), 6)),
+                    "gap": str(round(float(gap), 4)),
+                    "source": split.source,
+                }
+            )
+    gaps.sort()
+    summary = {
+        "compared": len(gaps),
+        "within": sum(g <= COST_SPLIT_GAP for g in gaps),
+        "far": len(far),
+        "no_split": len(missing),
+        "median_gap": str(round(float(gaps[len(gaps) // 2]), 4)) if gaps else None,
+        "gap_limit": str(float(COST_SPLIT_GAP)),
+    }
+    far.sort(key=lambda r: -abs(float(r["gap"])))
+    findings = []
+    if far:
+        findings.append(finding("demerger_cost_split_far", WARN, far))
+    if missing:
+        findings.append(finding("demerger_cost_split_missing", WARN, missing))
+    return summary, findings
+
+
 # --- the move scan -----------------------------------------------------------------------------
 
 
@@ -884,9 +982,14 @@ def explained_by_results(
     return any(first <= a.announced.date() <= day for a in announcements)
 
 
-def at_band(move_pct: float) -> bool:
-    """Whether a move is a price band's (`CIRCUIT_BANDS`, within `CIRCUIT_SLACK`)."""
-    return any(abs(abs(move_pct) - band) <= CIRCUIT_SLACK for band in CIRCUIT_BANDS)
+def at_band(move_pct: float, prev_raw_close: float = 0.0) -> bool:
+    """Whether a move is a price band's (`CIRCUIT_BANDS`): within `CIRCUIT_SLACK`, or, given the
+    raw close before it, within one `TICK` of the band's price (NSE rounds the band's price to
+    the tick: 20% on 6.60 is 7.92, traded at 7.95, a move of 20.45%)."""
+    slack = CIRCUIT_SLACK
+    if prev_raw_close > 0:
+        slack = max(slack, 100 * TICK / prev_raw_close)
+    return any(abs(abs(move_pct) - band) <= slack for band in CIRCUIT_BANDS)
 
 
 def market_move(moves: Sequence[float]) -> float | None:
@@ -897,6 +1000,24 @@ def market_move(moves: Sequence[float]) -> float | None:
     ordered = sorted(moves)
     mid = len(ordered) // 2
     return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def dividends_by_chain(
+    stored: Iterable[StoredAction], heads: Mapping[str, tuple[str, int]]
+) -> dict[tuple[str, date], float]:
+    """Each chain's dividend cash per ex-date, keyed by the chain's current instrument (as the
+    adjusted series is: a dividend stored on an older ISIN of the chain counts against its
+    moves): an instrument's dividends of one day are summed, then the copy nearest the chain's
+    current ISIN wins (`chains.chain_dividends`)."""
+    from ..chains import chain_dividends  # noqa: PLC0415
+
+    per_day: dict[tuple[str, date], Decimal] = defaultdict(Decimal)
+    for a in stored:
+        if a.action_type == "dividend" and a.cash:
+            per_day[(a.instrument_id, a.ex_date)] += a.cash
+    rows = [(i, d, cash) for (i, d), cash in per_day.items()]
+    paid = chain_dividends(rows, heads)
+    return {(str(c.instrument_id), c.ex_date): float(c.amount) for c in paid}
 
 
 def classify_move(
@@ -923,7 +1044,7 @@ def classify_move(
         return "penny"
     if action_shaped(move["raw_move_pct"]):
         return "action_shaped"
-    if at_band(move["move_pct"]) or at_band(move["raw_move_pct"]):
+    if at_band(move["move_pct"]) or at_band(move["raw_move_pct"], prev_raw_close):
         return "circuit"
     if explained:
         return "results"
@@ -1111,28 +1232,46 @@ WHERE instrument_id = ? AND date BETWEEN ? AND ? ORDER BY date
 """
 
 
+def second_source_sample(symbols: Mapping[str, str], members: Iterable[str]) -> list[str]:
+    """The seeded `SAMPLE_SIZE` of the NIFTY 500's past and present members (instrument ids)
+    that have a symbol."""
+    pool = sorted(i for i in members if i in symbols)
+    return seeded_sample(pool, SAMPLE_SIZE, SAMPLE_SEED)
+
+
+def yahoo_request(symbol: str, start: date, end: date) -> tuple[str, str]:
+    """The kept file's name and the URL of `symbol`'s monthly chart for the window's years (from
+    the December before the first, so the first whole year has a base)."""
+    first = int(datetime(start.year - 1, 12, 1, tzinfo=UTC).timestamp())
+    last = int(datetime(end.year, 1, 31, tzinfo=UTC).timestamp())
+    url = YAHOO_URL.format(symbol=symbol.replace("&", "%26"), start=first, end=last)
+    return f"{symbol}_{start.year}_{end.year}.json", url
+
+
+def nifty500_members(ctx: Context) -> dict[str, list[tuple[date, date | None]]]:
+    members: dict[str, list[tuple[date, date | None]]] = defaultdict(list)
+    for i, a, b in ctx.rows(
+        "SELECT CAST(instrument_id AS TEXT), effective_from, effective_to FROM hat_index_member "
+        "WHERE index_name = 'NIFTY 500'"
+    ):
+        members[i].append((a, b))
+    return members
+
+
 def _second_source(
     ctx: Context,
     con: duckdb.DuckDBPyConnection,
     members: Mapping[str, Sequence[tuple[date, date | None]]],
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:  # pragma: no cover - the network  # noqa: ANN401
     symbols = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
-    pool = sorted(i for i in members if i in symbols)
-    sample = seeded_sample(pool, SAMPLE_SIZE, SAMPLE_SEED)
+    sample = second_source_sample(symbols, members)
     first_year, last_year = ctx.start.year + 1, ctx.end.year - 1  # whole years only
-    start = int(datetime(ctx.start.year - 1, 12, 1, tzinfo=UTC).timestamp())
-    end = int(datetime(ctx.end.year, 1, 31, tzinfo=UTC).timestamp())
     compared, off, missing = 0, [], []
     gaps: list[float] = []
     for instrument in sample:
         symbol = symbols[instrument]
-        data = reference_file(
-            ctx,
-            "yahoo",
-            f"{symbol}_{ctx.start.year}_{ctx.end.year}.json",
-            YAHOO_URL.format(symbol=symbol.replace("&", "%26"), start=start, end=end),
-            valid=lambda d: b'"result":[' in d,
-        )
+        name, url = yahoo_request(symbol, ctx.start, ctx.end)
+        data = reference_file(ctx, "yahoo", name, url, valid=lambda d: b'"result":[' in d)
         theirs = yahoo_year_returns(data) if data else {}
         if not theirs:
             missing.append(symbol)
@@ -1171,12 +1310,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
 
     findings: list[dict[str, Any]] = []
     summary: dict[str, Any] = {}
-    members: dict[str, list[tuple[date, date | None]]] = defaultdict(list)
-    for i, a, b in ctx.rows(
-        "SELECT CAST(instrument_id AS TEXT), effective_from, effective_to FROM hat_index_member "
-        "WHERE index_name = 'NIFTY 500'"
-    ):
-        members[i].append((a, b))
+    members = nifty500_members(ctx)
     announcements: tuple[Mapping, Mapping] = ({}, {})
     coverage = None
     exceptions = Exceptions(read_exceptions(D2_EXCEPTIONS, "D2"))
@@ -1191,7 +1325,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         )
     ]
     if ctx.ca_data is not None and ctx.ca_data.is_dir():
-        refs, skipped = read_reference(ctx.ca_data)
+        refs, skipped, rights_pulled = read_reference(ctx.ca_data)
         refs = [r for r in refs if ctx.start <= r.ex_date <= ctx.end]
         keys_of, held, isin_of = _identities(ctx)
         by_key = _by_key(keys_of)
@@ -1221,6 +1355,8 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         factor_summary, factor_findings = compare_factors(
             refs, stored, keys_of, prev, deleted, starts, held, ends, exceptions, stores
         )
+        if rights_pulled is not None:
+            ends = {**ends, "rights": rights_pulled}
         summary["reference_pulled"] = {k: d.isoformat() for k, d in sorted(ends.items())}
         coverage = factor_coverage(starts, ctx.end)
         summary["factors"] = factor_summary
@@ -1228,6 +1364,19 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         for kind in KINDS:
             if kind not in starts:
                 findings.append(finding(f"{kind}_reference_missing", FAIL, [kind]))
+        splits, unread = read_cost_splits(_rows([D2_COST_SPLITS]))
+        if unread:
+            skipped["cost_split"] += unread
+        symbol_of = dict(ctx.rows("SELECT CAST(id AS TEXT), symbol FROM hat_instrument"))
+        summary["cost_splits"], cost_findings = compare_cost_splits(
+            sorted(
+                (isin_of[a.instrument_id], symbol_of.get(a.instrument_id, ""), a.ex_date, a.factor)
+                for a in stored
+                if a.demerger and a.instrument_id in isin_of
+            ),
+            splits,
+        )
+        findings += cost_findings
         summary["reference_rows_unread"] = dict(skipped)
         findings += factor_findings
         for kind, n in sorted(skipped.items()):
@@ -1240,10 +1389,7 @@ def run(ctx: Context) -> dict[str, Any]:  # pragma: no cover - real data
         ctx.note("D2: no --ca-data folder; factors unchecked and moves not explained by results")
         findings.append(finding("reference_missing", FAIL, ["ca-data"]))
     with ctx.store.connect(stored_adjustment(ctx.session)) as con:
-        paid: dict[tuple[str, date], float] = defaultdict(float)
-        for a in stored:
-            if a.action_type == "dividend" and a.cash:
-                paid[(a.instrument_id, a.ex_date)] += float(a.cash)
+        paid = dividends_by_chain(stored, chains(stored_links(ctx.session)))
         summary["moves"], move_findings = _moves(ctx, con, announcements, members, paid, exceptions)
         findings += move_findings
         summary["second_source"], second = _second_source(ctx, con, members)
