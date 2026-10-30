@@ -72,8 +72,11 @@ __all__ = [
     "HistoryReport",
     "history_pacer",
     "load_minute_history",
+    "load_symbol",
     "main",
+    "raw_basis",
     "run_lock",
+    "session_history",
 ]
 
 _PLAN_REFUSAL = "historical data available for your plan"
@@ -250,7 +253,7 @@ class Download:
     batch: _Batch = field(default_factory=_Batch)
 
 
-def _load_symbol(dl: Download, instrument_id: str, symbol: str, start: date, end: date) -> _Loaded:
+def load_symbol(dl: Download, instrument_id: str, symbol: str, start: date, end: date) -> _Loaded:
     """The raw-basis 5-minute bars of `symbol` for `start..end` (or from where the plan serves,
     when a call is refused for its depth). Calls span at most `chunk_days`; each response is
     screened, aggregated and converted with the factors as of the day it was fetched as it
@@ -435,7 +438,7 @@ def _attempt(dl: Download, instrument_id: str, symbol: str, first: date, end: da
         return "history_plan_limit"  # the plan serves nothing of the period
     progress, report, batch = dl.progress, dl.report, dl.batch
     try:
-        loaded = _load_symbol(dl, instrument_id, symbol, first, end)
+        loaded = load_symbol(dl, instrument_id, symbol, first, end)
     except MinuteHistoryError as exc:
         if exc.code not in _RUN_STOPS:
             report.failed[symbol] = progress.failed[symbol] = exc.code
@@ -577,7 +580,6 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real F
 
 def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and DB
     from ..settings import operator_settings
-    from .provider.fyers_websocket import fyers_history
 
     settings = operator_settings()
     limits = HistoryLimits.from_settings(
@@ -593,10 +595,18 @@ def _run(args: argparse.Namespace) -> int:  # pragma: no cover - real Fyers and 
     logging.basicConfig(level=logging.INFO)
     root = settings.data_root
     with run_lock(root / PROGRESS_FILE.with_suffix(".lock")):
-        return _download(args, days, limits, root, _basis(settings), fyers_history)
+        return _download(args, days, limits, root, raw_basis(settings), session_history)
 
 
-def _basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
+def session_history() -> HistoryCall | None:  # pragma: no cover - real Fyers
+    """The history call on HAT's Fyers session, or None when logged out (the one way into the
+    provider from outside it; `bars5m_refetch` asks through it too)."""
+    from .provider.fyers_websocket import fyers_history
+
+    return fyers_history()
+
+
+def raw_basis(settings: HatSettings) -> RawBasis:  # pragma: no cover - real DB
     """The factors the adjusted views apply (`chains.stored_adjustment`: once per chain, under
     its current id) and the raw daily bars of the data root."""
     from app.database import db_session_scope
