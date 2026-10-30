@@ -490,15 +490,14 @@ def pct_of(value: Decimal | None, whole: Decimal | None) -> float | None:
 
 @dataclass(frozen=True)
 class BookTrade:
-    """A closed trade as the metrics read it: net of costs, its hold in sessions, the session
-    of its last sale; `mfe_r` and `mae_r` None where the book keeps none (a real trade)."""
+    """A closed trade as the metrics read it: net of costs, its hold in sessions; `mfe_r` and
+    `mae_r` None where the book keeps none (a real trade)."""
 
     symbol: str
     r: Decimal
     net_pnl: Decimal
     fees: Decimal
     hold: int
-    exit_day: date
     mfe_r: Decimal | None = None
     mae_r: Decimal | None = None
 
@@ -587,11 +586,8 @@ def book_metrics(
         else None,
         "avg_hold_sessions_win": rounded(mean_of([t.hold for t in wins])),
         "avg_hold_sessions_loss": rounded(mean_of([t.hold for t in losses])),
-        # in exit order: a streak is the losses as they were taken (a stable sort keeps entry
-        # order within a session)
-        "max_consecutive_losses": max_consecutive_losses(
-            [t.r for t in sorted(trades, key=lambda t: t.exit_day)]
-        ),
+        # over the trades in the order given (entry order, as every run.json so far)
+        "max_consecutive_losses": max_consecutive_losses(rs),
         "symbols_traded": len(by_symbol),
         "top5_trades_pnl_share_pct": rounded(top_share_pct(top5, 5, net)),
         "top10_symbols_pnl_share_pct": rounded(top_share_pct(by_symbol.values(), 10, net)),

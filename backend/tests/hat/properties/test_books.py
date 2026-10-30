@@ -3,11 +3,12 @@ closes, an open position's mark, and the report on the backtest's own metric cod
 
 from __future__ import annotations
 
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
 from app.hat.backtest.standard import BookSession, BookTrade, book_metrics
 from app.hat.daily.books import (
+    ANNUALISED,
     BookFill,
     ClosedTrade,
     book_curve,
@@ -93,14 +94,17 @@ def test_report_uses_the_backtest_metrics_on_the_same_inputs() -> None:
         benchmark=bench,
     )
     curve = book_curve(START, DAYS, fills, [], closes)
-    assert report.metrics == book_metrics(
-        [BookTrade("A", D("1.9"), D("958"), D("42"), 2, DAYS[2])],
+    expected = book_metrics(
+        [BookTrade("A", D("1.9"), D("958"), D("42"), 2)],
         [(s.day, s.equity) for s in curve],
         curve,
         START,
         DAYS[0],
         bench,
     )
+    # the run's metrics exactly, but the annual ones a four-session book does not show yet
+    assert report.metrics == {**expected, **dict.fromkeys(ANNUALISED)}
+    assert expected["cagr_pct"] is not None
     assert report.equity == D("100958") - D("2004") + D("2100")
     assert report.day_pnl == report.equity - D("100958")
     assert (report.realised, report.realised_today) == (D("958"), D("0"))
@@ -136,17 +140,19 @@ def test_text_and_json_show_every_book() -> None:
     assert books_text(DAYS[3], []).splitlines()[-1] == "No book: no bot has an allocation yet."
 
 
-def test_loss_streak_is_counted_in_exit_order() -> None:
-    """Entered A (loss), B (win), C (loss); B exits last, so the two losses are a streak."""
+def test_loss_streak_runs_in_entry_order() -> None:
+    """Entered A (loss, exits DAYS[1]), B (win, exits DAYS[3]), C (loss, exits DAYS[2]): in
+    exit order the two losses would be a streak of 2; the metric keeps entry order, as every
+    run.json so far, so it is 1."""
 
-    def trade(r: str, entry: int, exit_: int) -> BookTrade:
-        return BookTrade("X", D(r), D(r) * 100, D("1"), exit_ - entry, DAYS[exit_])
+    def trade(r: str, hold: int) -> BookTrade:
+        return BookTrade("X", D(r), D(r) * 100, D("1"), hold)
 
-    trades = [trade("-1", 0, 1), trade("2", 0, 3), trade("-1", 1, 2)]
+    trades = [trade("-1", 1), trade("2", 3), trade("-1", 1)]  # entry order
     curve = [(d, START) for d in DAYS]
     sessions = [BookSession(d, START, D(0), 0) for d in DAYS]
     metrics = book_metrics(trades, curve, sessions, START, DAYS[0])
-    assert metrics["max_consecutive_losses"] == 2
+    assert metrics["max_consecutive_losses"] == 1
 
 
 def test_dividends_are_credited_on_their_ex_dates() -> None:
@@ -206,3 +212,70 @@ def test_paper_trades_carry_mfe_and_mae_into_the_metrics() -> None:
         benchmark=[],
     )
     assert (report.metrics["avg_mfe_r"], report.metrics["avg_mae_r"]) == (2.5, -0.4)
+
+
+def _report(**kw: object) -> object:
+    base = {
+        "bot": "s1",
+        "kind": "paper",
+        "start": START,
+        "period_start": DAYS[0],
+        "days": DAYS,
+        "fills": [],
+        "dividends": [],
+        "closes": {},
+        "trades": [],
+        "positions": [],
+        "benchmark": [],
+    }
+    return book_report(**{**base, **kw})
+
+
+def test_annual_figures_wait_for_a_trading_year() -> None:
+    """Four sessions up 1% would read as a CAGR in the hundreds: the report shows n/a and
+    leads with the return against the TRI; from 252 sessions the figures show."""
+    fills = [BookFill(DAYS[0], "a", 100, D("100"), D("0"))]
+    closes = {"a": [(DAYS[3], D("110"))]}
+    short = _report(fills=fills, closes=closes)
+    assert short.sessions == 4
+    assert short.metrics["total_return_pct"] == 1.0
+    assert all(short.metrics[k] is None for k in ANNUALISED)
+    text = books_text(DAYS[3], [short])
+    assert "Return 1.00% vs NIFTY 500 TRI n/a over 4 sessions" in text
+    assert "CAGR and Sharpe from 252 sessions" in text
+    year = [date(2025, 1, 1) + timedelta(days=n) for n in range(252)]
+    long = _report(
+        period_start=year[0],
+        days=year,
+        fills=[BookFill(year[0], "a", 100, D("100"), D("0"))],
+        closes={"a": [(year[-1], D("110"))]},
+    )
+    assert long.metrics["cagr_pct"] is not None
+    assert "CAGR and Sharpe from" not in books_text(year[-1], [long])
+
+
+def test_a_trim_is_realised_not_unrealised() -> None:
+    """100 bought at 100 (fees 20), 40 sold at 120 (fees 8), 60 left marked at 110."""
+    sold = D("40") * (D("120") - D("100")) - D("8")  # sold_gain: 792
+    row = open_row(
+        symbol="ABC",
+        qty=60,
+        avg_entry=D("100"),
+        initial_stop=D("95"),
+        current_stop=D("98"),
+        opened=DAYS[0],
+        fill_cash=D("-10020") + D("4800") - D("8"),
+        mark=D("110"),
+        sold=sold,
+        sold_today=sold,
+    )
+    assert row.unrealised == D("580")  # 60 x (110 - 100) less the buy's fees
+    assert row.realised == D("792")
+    report = _report(positions=[row])
+    assert (report.realised, report.realised_today, report.unrealised) == (sold, sold, D("580"))
+
+
+def test_a_close_without_its_result_is_flagged() -> None:
+    report = _report(missing_results=["ABC"])
+    assert report.missing_results == ["ABC"]
+    assert "Closed with no trade result yet: ABC" in books_text(DAYS[3], [report])

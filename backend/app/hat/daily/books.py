@@ -29,7 +29,14 @@ from datetime import date
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
-from ..backtest.standard import BookSession, BookTrade, book_metrics, rounded, sessions_held
+from ..backtest.standard import (
+    TRADING_DAYS,
+    BookSession,
+    BookTrade,
+    book_metrics,
+    rounded,
+    sessions_held,
+)
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -49,10 +56,23 @@ __all__ = [
     "open_row",
     "read_books",
     "report_doc",
+    "sold_gain",
 ]
 
 LIVE = "live"
 PAPER = "paper"
+# A book younger than a trading year has no annual figure worth reading (three days up 1% would
+# read as 236% a year): the report shows these as n/a and leads with the total return against
+# the TRI's over the same sessions. `book_metrics` itself, a run's code, is left as it is.
+ANNUALISED = (
+    "cagr_pct",
+    "mar",
+    "sharpe",
+    "sortino",
+    "benchmark_cagr_pct",
+    "cagr_ex_top5_trades_pct",
+)
+MIN_ANNUAL_SESSIONS = TRADING_DAYS
 _ZERO = Decimal(0)
 _HUNDRED = Decimal(100)
 
@@ -83,9 +103,13 @@ class OpenRow:
     current_stop: Decimal
     mark: Decimal | None
     value: Decimal
-    unrealised: Decimal  # its fills' net cash and dividends earned + its shares at the mark
+    # its fills' net cash and dividends earned + its shares at the mark, less its partial
+    # sales' realised P&L
+    unrealised: Decimal
     open_r: Decimal | None  # (mark - entry) / (entry - initial stop)
     opened: date
+    realised: Decimal = Decimal(0)  # its partial sales' (a trim, an exit partial)
+    realised_today: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)
@@ -108,10 +132,13 @@ class BookReport:
     kind: str  # LIVE or PAPER
     as_of: date
     period_start: date
+    sessions: int  # the book's sessions through `as_of`
     start_capital: Decimal
     equity: Decimal
     day_pnl: Decimal
-    realised: Decimal  # the closed trades', net of costs, with their dividends
+    # the closed trades', net of costs, with their dividends, and the open positions' partial
+    # sales (`daily.entries.sold_gain`, as the shadow book's free cash counts them)
+    realised: Decimal
     realised_today: Decimal
     unrealised: Decimal
     fees: Decimal  # every fill's, closed and open
@@ -122,6 +149,8 @@ class BookReport:
     metrics: dict[str, Any]
     positions: list[OpenRow] = field(default_factory=list)
     trades: list[ClosedTrade] = field(default_factory=list)
+    # positions closed by `as_of` with no trade result yet: in the curve, not in the trades
+    missing_results: list[str] = field(default_factory=list)
 
 
 # --- the rules -------------------------------------------------------------------------------
@@ -201,6 +230,7 @@ def book_report(
     trades: Sequence[ClosedTrade],
     positions: Sequence[OpenRow],
     benchmark: Sequence[tuple[date, Decimal]],
+    missing_results: Sequence[str] = (),
 ) -> BookReport:
     """The report of one book through the last of `days` (its sessions from `period_start`)."""
     curve = book_curve(start, days, fills, dividends, closes)
@@ -209,26 +239,28 @@ def book_report(
     before = curve[-2].equity if len(curve) > 1 else start
     ordered = sorted(trades, key=lambda t: (t.entry, t.symbol, t.exit))
     metrics = book_metrics(
-        [
-            BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.exit, t.mfe_r, t.mae_r)
-            for t in ordered
-        ],
+        [BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.mfe_r, t.mae_r) for t in ordered],
         [(s.day, s.equity) for s in curve],
         curve,
         start,
         period_start,
         benchmark,
     )
+    if len(curve) < MIN_ANNUAL_SESSIONS:
+        metrics = {**metrics, **dict.fromkeys(ANNUALISED)}
     return BookReport(
         bot=bot,
         kind=kind,
         as_of=as_of,
         period_start=period_start,
+        sessions=len(curve),
         start_capital=start,
         equity=today.equity,
         day_pnl=today.equity - before,
-        realised=sum((t.net_pnl for t in trades), _ZERO),
-        realised_today=sum((t.net_pnl for t in trades if t.exit == as_of), _ZERO),
+        realised=sum((t.net_pnl for t in trades), _ZERO)
+        + sum((p.realised for p in positions), _ZERO),
+        realised_today=sum((t.net_pnl for t in trades if t.exit == as_of), _ZERO)
+        + sum((p.realised_today for p in positions), _ZERO),
         unrealised=sum((p.unrealised for p in positions), _ZERO),
         fees=sum((f.fees for f in fills if not f.rescale), _ZERO),
         fees_today=sum((f.fees for f in fills if f.day == as_of and not f.rescale), _ZERO),
@@ -240,7 +272,14 @@ def book_report(
         metrics=metrics,
         positions=list(positions),
         trades=ordered,
+        missing_results=list(missing_results),
     )
+
+
+def sold_gain(entry: Decimal, qty: int, price: Decimal, fees: Decimal) -> Decimal:
+    """The realised P&L of selling `qty` shares bought at `entry` at `price`, less the sale's
+    `fees`: what the sale adds to the free cash beyond the cost of the shares it returns."""
+    return (price - entry) * qty - fees
 
 
 def open_row(
@@ -253,10 +292,13 @@ def open_row(
     opened: date,
     fill_cash: Decimal,
     mark: Decimal | None,
+    sold: Decimal = _ZERO,
+    sold_today: Decimal = _ZERO,
 ) -> OpenRow:
     """An open position marked at `mark` (None: at its entry): its value, its unrealised P&L
     (`fill_cash`, the net cash of its fills and the dividends it earned, plus its shares at the
-    mark, so its costs are in) and its open R."""
+    mark, so its costs are in, less `sold`, the realised P&L of its partial sales, which is its
+    `realised`) and its open R."""
     price = avg_entry if mark is None else mark
     value = qty * price
     risk = avg_entry - initial_stop
@@ -268,9 +310,11 @@ def open_row(
         current_stop=current_stop,
         mark=mark,
         value=value,
-        unrealised=fill_cash + value,
+        unrealised=fill_cash + value - sold,
         open_r=(price - avg_entry) / risk if risk > 0 else None,
         opened=opened,
+        realised=sold,
+        realised_today=sold_today,
     )
 
 
@@ -401,17 +445,29 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                     position = by_id[event.aggregate_id]
                     steps.append((as_utc(event.occurred_at), position.signal_id, qty, 0, 0, True))
             fills, cash, held = [], defaultdict(lambda: _ZERO), defaultdict(int)
+            sold, sold_today = defaultdict(lambda: _ZERO), defaultdict(lambda: _ZERO)
             for at, signal_id, qty, price, fee, rescale in sorted(steps, key=lambda s: s[0]):
                 day = trade_date_of(at)
                 if day > as_of:
                     continue
-                instrument = str(by_signal[signal_id].instrument_id)
-                fills.append(BookFill(day, instrument, qty, Decimal(price), Decimal(fee), rescale))
+                position = by_signal[signal_id]
+                fills.append(
+                    BookFill(
+                        day, str(position.instrument_id), qty, Decimal(price), Decimal(fee), rescale
+                    )
+                )
                 if rescale:
                     held[signal_id] = qty
                     continue
                 cash[signal_id] += -qty * Decimal(price) - Decimal(fee)
                 held[signal_id] += qty
+                if qty < 0:  # a sale: its realised P&L, as the shadow book's free cash counts it
+                    gain = sold_gain(
+                        Decimal(position.avg_entry), -qty, Decimal(price), Decimal(fee)
+                    )
+                    sold[signal_id] += gain
+                    if day == as_of:
+                        sold_today[signal_id] += gain
             days = sorted(
                 d
                 for d, row in (calendar.days.items() if calendar else ())
@@ -419,7 +475,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
             )
             ids = sorted({f.instrument_id for f in fills})
             closes = _closes(store, ids, period_start, as_of)
-            trades, dividends, open_rows = [], [], []
+            trades, dividends, open_rows, missing = [], [], [], []
             # each position's dividends on their ex-dates, through its exit or `as_of`
             earned_by = positions_dividend_credits(
                 session,
@@ -452,6 +508,9 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                         )
                     )
                     dividends.extend(earned)
+                elif closed is not None and closed <= as_of:  # closed, its result not written
+                    dividends.extend(earned)
+                    missing.append(symbol)
                 elif opened <= as_of and held[p.signal_id] > 0:  # its shares on `as_of`
                     dividends.extend(earned)
                     series = closes.get(str(p.instrument_id), ())
@@ -465,6 +524,8 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                             opened=opened,
                             fill_cash=cash[p.signal_id] + sum((c for _, c in earned), _ZERO),
                             mark=_close_on(series, as_of),
+                            sold=sold[p.signal_id],
+                            sold_today=sold_today[p.signal_id],
                         )
                     )
             reports.append(
@@ -480,6 +541,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                     trades=trades,
                     positions=open_rows,
                     benchmark=benchmark,
+                    missing_results=missing,
                 )
             )
     return reports
@@ -513,17 +575,23 @@ def books_text(as_of: date, reports: Sequence[BookReport], *, detail: bool = Fal
             "",
             f"{r.bot} {r.kind} (since {r.period_start.isoformat()}, "
             f"start {_money(r.start_capital)})",
-            f"Equity {_money(r.equity)}  day {_money(r.day_pnl)}  return "
-            f"{_pct(m.get('total_return_pct'))} vs NIFTY 500 TRI {_pct(r.benchmark_return_pct)}",
+            f"Return {_pct(m.get('total_return_pct'))} vs NIFTY 500 TRI "
+            f"{_pct(r.benchmark_return_pct)} over {r.sessions} sessions",
+            f"Equity {_money(r.equity)}  day {_money(r.day_pnl)}",
             f"Realised {_money(r.realised)} (today {_money(r.realised_today)})  unrealised "
             f"{_money(r.unrealised)}  costs {_money(r.fees)} (today {_money(r.fees_today)})",
             f"Invested {_pct(r.invested_pct)} today, {_pct(m.get('invested_pct'))} mean  "
             f"open {len(r.positions)}  value {_money(r.position_value)}",
             f"Trades {m.get('trades')}  win {_pct(m.get('win_pct'))}  exp "
-            f"{_num(m.get('expectancy_r'))}R  max DD {_pct(m.get('max_dd_pct'))}  CAGR "
-            f"{_pct(m.get('cagr_pct'))} vs {_pct(m.get('benchmark_cagr_pct'))}  Sharpe "
-            f"{_num(m.get('sharpe'))}  cost share {_pct(m.get('cost_share_pct'))}",
+            f"{_num(m.get('expectancy_r'))}R  max DD {_pct(m.get('max_dd_pct'))}  cost share "
+            f"{_pct(m.get('cost_share_pct'))}",
+            f"CAGR {_pct(m.get('cagr_pct'))} vs {_pct(m.get('benchmark_cagr_pct'))}  Sharpe "
+            f"{_num(m.get('sharpe'))}"
+            if r.sessions >= MIN_ANNUAL_SESSIONS
+            else f"CAGR and Sharpe from {MIN_ANNUAL_SESSIONS} sessions",
         ]
+        if r.missing_results:
+            lines.append(f"Closed with no trade result yet: {', '.join(r.missing_results)}")
         closed = r.trades if detail else [t for t in r.trades if t.exit == r.as_of]
         for t in closed:
             lines.append(

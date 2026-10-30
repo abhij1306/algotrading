@@ -727,6 +727,8 @@ export interface components {
       opened: string;
       /** Qty */
       qty: number;
+      /** Realised */
+      realised: string;
       /** Symbol */
       symbol: string;
       /** Unrealised */
@@ -790,6 +792,8 @@ export interface components {
       metrics: {
         [key: string]: number | boolean | string | null;
       };
+      /** Missing Results */
+      missing_results: string[];
       /**
        * Period Start
        * Format: date
@@ -803,6 +807,8 @@ export interface components {
       realised: string;
       /** Realised Today */
       realised_today: string;
+      /** Sessions */
+      sessions: number;
       /** Start Capital */
       start_capital: string;
       /** Trades */

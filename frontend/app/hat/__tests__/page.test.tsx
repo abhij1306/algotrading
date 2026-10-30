@@ -151,6 +151,7 @@ const BOOKS = {
       kind: "paper",
       as_of: "2026-10-20",
       period_start: "2026-10-01",
+      sessions: 14,
       start_capital: "100000",
       equity: "101250.5",
       day_pnl: "320.25",
@@ -175,9 +176,11 @@ const BOOKS = {
           unrealised: "102.5",
           open_r: "0.06125",
           opened: "2026-10-15",
+          realised: "0",
         },
       ],
       trades: [],
+      missing_results: [],
     },
   ],
 };
@@ -359,6 +362,7 @@ describe("HatPage", () => {
     const drawer = await screen.findByRole("dialog", { name: "s1 · paper" });
     const open = within(drawer).getByText(/4,012\.25/);
     expect(open.textContent).toContain("stop 3,875.50");
+    expect(within(drawer).getByText(/CAGR, MAR, Sharpe, Sortino from 252/)).toBeInTheDocument();
   });
 
   it("opens a signal's details in a drawer", async () => {

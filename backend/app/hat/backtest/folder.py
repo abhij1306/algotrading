@@ -630,7 +630,6 @@ def _metrics(
                 t.row.realized_pnl,
                 t.row.fees,
                 t.hold,
-                t.row.exit_date,
                 t.row.mfe_r,
                 t.row.mae_r,
             )

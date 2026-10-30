@@ -647,7 +647,10 @@ is a failure), each closed trade's R, and the Backtest Result Standard's headlin
 `max_dd_pct`, `invested_pct`, `cost_share_pct` and the rest compare one to one with the
 strategy's evidence run) against the NIFTY 500 TRI. Telegram sends it at 23:45 IST after
 `ca.adjust` (`telegram.books`); the dashboard's Books panel (`/api/hat/books`) and `$ADMIN
-books` show it on demand.
+books` show it on demand. It leads with the return against the TRI over the book's sessions;
+CAGR, MAR, Sharpe and Sortino show from 252 sessions (n/a before). A partial sale's gain is
+realised when it fills, as the shadow book's free cash counts it; a position closed with no
+trade result yet is listed under its book.
 
 ## Alerts and failures
 

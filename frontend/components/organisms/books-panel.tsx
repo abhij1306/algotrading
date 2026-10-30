@@ -26,6 +26,9 @@ const COLUMNS = [
   { label: "Exp R", numeric: true },
 ];
 
+// A book younger than this shows no annual figure (`daily/books.py` MIN_ANNUAL_SESSIONS).
+const ANNUAL_SESSIONS = 252;
+
 // The headline metrics shown in a book's details, as the backtest run page names them.
 const METRICS: ReadonlyArray<readonly [string, string, "pct" | "num"]> = [
   ["win_pct", "Win rate", "pct"],
@@ -58,6 +61,15 @@ function BookDetails({ book: b, onClose }: Readonly<{ book: Book; onClose: () =>
       onClose={onClose}
     >
       <DetailList>
+        <LabelledValue label="Sessions">
+          <span className="font-mono tabular-nums">{b.sessions}</span>
+          {b.sessions < ANNUAL_SESSIONS ? " (CAGR, MAR, Sharpe, Sortino from 252)" : null}
+        </LabelledValue>
+        {b.missing_results.length > 0 ? (
+          <LabelledValue label="Closed, no trade result yet">
+            {b.missing_results.join(", ")}
+          </LabelledValue>
+        ) : null}
         {METRICS.map(([key, label, kind]) => (
           <LabelledValue key={key} label={label}>
             <span className="font-mono tabular-nums">

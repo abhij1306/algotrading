@@ -494,6 +494,7 @@ class BookPositionView(BaseModel):
     unrealised: str
     open_r: str | None
     opened: date
+    realised: str
 
 
 class BookTradeView(BaseModel):
@@ -515,6 +516,7 @@ class BookView(BaseModel):
     kind: str
     as_of: date
     period_start: date
+    sessions: int
     start_capital: str
     equity: str
     day_pnl: str
@@ -529,6 +531,7 @@ class BookView(BaseModel):
     metrics: dict[str, float | int | bool | str | None]
     positions: list[BookPositionView]
     trades: list[BookTradeView]
+    missing_results: list[str]
 
 
 class BooksResponse(BaseModel):
@@ -546,6 +549,7 @@ def _book(r: daily_books.BookReport) -> BookView:
         kind=r.kind,
         as_of=r.as_of,
         period_start=r.period_start,
+        sessions=r.sessions,
         start_capital=str(r.start_capital),
         equity=str(r.equity),
         day_pnl=str(r.day_pnl),
@@ -570,6 +574,7 @@ def _book(r: daily_books.BookReport) -> BookView:
                 unrealised=str(p.unrealised),
                 open_r=_text(p.open_r),
                 opened=p.opened,
+                realised=str(p.realised),
             )
             for p in r.positions
         ],
@@ -586,6 +591,7 @@ def _book(r: daily_books.BookReport) -> BookView:
             )
             for t in r.trades
         ],
+        missing_results=list(r.missing_results),
     )
 
 
