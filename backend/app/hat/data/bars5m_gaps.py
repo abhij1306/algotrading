@@ -12,6 +12,7 @@ and 2024-05-18, the disaster-recovery site's live sessions)."""
 from __future__ import annotations
 
 import csv
+import hashlib
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
@@ -64,10 +65,19 @@ def gap_spans(gaps: Iterable[Gap]) -> dict[str, tuple[tuple[date, date], ...]]:
     return {isin: tuple(sorted(spans)) for isin, spans in out.items()}
 
 
+def spans_digest(spans: Mapping[str, tuple[tuple[date, date], ...]]) -> str:
+    """A digest of `spans` (`gap_spans`), whatever their order or the file's layout: the gaps a
+    run's replay refused sessions by, as its conventions record them."""
+    text = repr(
+        sorted((isin, [(a.isoformat(), b.isoformat()) for a, b in s]) for isin, s in spans.items())
+    )
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
 def in_gap(spans: Mapping[str, tuple[tuple[date, date], ...]], isin: str | None, day: date) -> bool:
     """Whether `day` lies in a gap of the instrument of `isin` or of every instrument."""
     found = (*spans.get(EVERY, ()), *(spans.get(isin.upper(), ()) if isin else ()))
     return any(first <= day <= last for first, last in found)
 
 
-__all__ = ["EVERY", "Gap", "gap_spans", "in_gap", "read_gaps"]
+__all__ = ["EVERY", "Gap", "gap_spans", "in_gap", "read_gaps", "spans_digest"]

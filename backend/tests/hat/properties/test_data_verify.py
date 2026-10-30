@@ -5,7 +5,7 @@ reads."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
@@ -875,6 +875,20 @@ def test_volume_repair_needs_one_common_factor() -> None:
     assert bars5m_volume.is_candidate(97, None, 0) == (False, False)
 
 
+def test_a_repaired_day_agrees_and_is_not_left() -> None:
+    """A candidate whose stored bars already have the export's volumes agrees (a repaired day,
+    still a candidate by the edge bars); one factor off restores; else unproven. Harm: a correct
+    repair growing the list of days left unproven."""
+    a, b = time(9, 15), time(9, 20)
+    v = bars5m_volume.verdict
+    assert v({a: 10, b: 20}, {a: 10, b: 20}) == bars5m_volume.AGREES
+    assert v({a: 50, b: 100}, {a: 10, b: 20}) == bars5m_volume.RESTORED
+    assert v({a: 1000, b: 2000}, {a: 1000, b: 2001}) == bars5m_volume.UNPROVEN  # factor ~1
+    assert v({a: 10, b: 20}, {a: 10, b: 90}) == bars5m_volume.UNPROVEN  # no common factor
+    assert v({a: 10}, None) == bars5m_volume.UNPROVEN
+    assert v({}, {}) == bars5m_volume.UNPROVEN
+
+
 def test_d4_bars_stored_a_bar_off_fail_and_never_pair_up() -> None:
     # second review item 3: a day whose stored labels are all 5 minutes late pairs up perfectly
     # under the other alignment; it fails the rule and its bars differ
@@ -1217,6 +1231,22 @@ def test_bars5m_gaps_refuse_by_coverage(tmp_path: Path) -> None:
     )
     with pytest.raises(ValueError, match="span"):
         bars5m_gaps.read_gaps(path)
+
+
+def test_bars5m_gaps_digest_follows_the_spans_not_the_layout() -> None:
+    """A run's conventions record the gaps it replayed under (`spans_digest`): the same spans in
+    another order give the same digest, another span another. Harm: two runs under different
+    gap lists recorded alike, or a reordered file changing every run's digest."""
+    from app.hat.data import bars5m_gaps
+
+    a = {
+        "*": ((date(2024, 3, 2), date(2024, 3, 2)),),
+        "INE1": ((date(2026, 8, 3), date(2026, 10, 28)),),
+    }
+    b = dict(reversed(list(a.items())))
+    assert bars5m_gaps.spans_digest(a) == bars5m_gaps.spans_digest(b)
+    c = {**a, "INE1": ((date(2026, 8, 3), date(2026, 10, 27)),)}
+    assert bars5m_gaps.spans_digest(a) != bars5m_gaps.spans_digest(c)
 
 
 def test_d7_etf_factors_come_from_nses_unit_actions() -> None:
