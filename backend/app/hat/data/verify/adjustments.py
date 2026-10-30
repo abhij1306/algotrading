@@ -80,7 +80,8 @@
    (`split_bonus_evidence`, pass). A disagreement warns (`split_bonus_<kind>_disagrees`, a
    reviewed one excepted), except a volume one that another kind's agreement outvotes
    (`OUTVOTED`, counted); two kinds disagreeing with none agreeing fails
-   (`split_bonus_factor_contradicted`: the factor is shown wrong).
+   (`split_bonus_factor_contradicted`, as does the open disagreeing with none agreeing: the factor
+   is shown wrong).
 Every failed finding is dated by its ex-dates.
 Ex-date moves at a price band (`CIRCUIT_BANDS`) are the market's and moves from a raw close
 under `PENNY` are ticks: both are counted, not listed.
@@ -1535,19 +1536,24 @@ def count_evidence(
 
 
 def evidence_verdict(expected: float, observed: float | None, tolerance: float) -> str:
-    """`no_evidence` without an observation or when the expected factor is within `tolerance`
-    (log) of 1 (the evidence cannot tell it from no action), else `disagrees` when the observed
-    factor is more than `tolerance` from the expected one, else `agrees`."""
-    if observed is None or observed <= 0 or expected <= 0 or abs(log(expected)) <= tolerance:
+    """`no_evidence` without an observation, or when both the expected and the observed factor
+    are within `tolerance` (log) of 1 (the evidence cannot tell the action from no action); else
+    `disagrees` when the observed factor is more than `tolerance` from the expected one (so a
+    factor stored near 1 that the evidence puts far from it disagrees), else `agrees`."""
+    if observed is None or observed <= 0 or expected <= 0:
+        return "no_evidence"
+    if abs(log(expected)) <= tolerance and abs(log(observed)) <= tolerance:
         return "no_evidence"
     return "disagrees" if abs(log(observed / expected)) > tolerance else "agrees"
 
 
 def factor_contradicted(verdicts: Mapping[str, str]) -> bool:
-    """A stored factor is shown wrong when at least two independent kinds of evidence disagree
-    with it and none agrees."""
+    """A stored factor is shown wrong when no kind of evidence agrees with it and the open (the
+    market's first price on the new share, the most direct) or at least two kinds disagree."""
     seen = list(verdicts.values())
-    return seen.count("disagrees") >= 2 and "agrees" not in seen
+    if "agrees" in seen:
+        return False
+    return verdicts.get("open") == "disagrees" or seen.count("disagrees") >= 2
 
 
 def chain_day_factors(
@@ -1727,7 +1733,9 @@ def _stored_against_market(
             "open": open_evidence(bars[n], ex),
             "volume": volume_evidence(bars[n], ex),
         }
-        expected = {"open": stored_factor, "volume": stored_factor}
+        # the open takes the whole day's factor (a demerger or rights issue moves the price too);
+        # the volume only the splits and bonuses, which alone change the number of shares
+        expected = {"open": stored_factor, "volume": float(split_bonus[(head, ex)])}
         slack: dict[str, float] = {}
         for kind, table in counts.items():
             if kind == "capital" and (head, ex) not in bonus:

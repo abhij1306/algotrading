@@ -731,15 +731,20 @@ def test_d2_share_count_evidence() -> None:
 def test_d2_evidence_verdicts() -> None:
     assert adjustments.evidence_verdict(0.5, 0.5531, 0.223) == "agrees"
     assert adjustments.evidence_verdict(0.5, 0.75, 0.223) == "disagrees"  # a 1:2 bonus, not 1:1
-    assert (
-        adjustments.evidence_verdict(0.9091, 0.5, 0.223) == "no_evidence"
-    )  # 1:10 bonus: too near 1
+    # a 1:10 bonus and an open near 1: nothing tells it from no action
+    assert adjustments.evidence_verdict(0.9091, 0.95, 0.223) == "no_evidence"
+    # a 10:1 bonus (0.0909) stored as 1:10 (0.9091), or as 1: the open's 0.09 disagrees
+    assert adjustments.evidence_verdict(0.9091, 0.0925, 0.223) == "disagrees"
+    assert adjustments.evidence_verdict(1.0, 0.0925, 0.223) == "disagrees"
     assert adjustments.evidence_verdict(0.5, None, 0.223) == "no_evidence"
     assert adjustments.factor_contradicted({"open": "disagrees", "volume": "disagrees"})
     assert not adjustments.factor_contradicted(
         {"open": "agrees", "volume": "disagrees", "shares": "disagrees"}
     )
-    assert not adjustments.factor_contradicted({"open": "disagrees", "volume": "no_evidence"})
+    # the open alone shows a factor wrong when nothing else agrees
+    assert adjustments.factor_contradicted({"open": "disagrees", "volume": "no_evidence"})
+    assert not adjustments.factor_contradicted({"open": "disagrees", "capital": "agrees"})
+    assert not adjustments.factor_contradicted({"open": "no_evidence", "volume": "disagrees"})
 
 
 def test_d2_chain_day_factors_count_a_copy_once() -> None:
