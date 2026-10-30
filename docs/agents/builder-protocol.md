@@ -103,3 +103,9 @@ The orchestrator reads the verdict from your turn's final message (a Claude Code
 must be the last line of that message, not an earlier one, and a turn with no verdict reads as
 stalled. Above the final line: PR URL, what was built, verification, how each review
 finding was handled, deviations, follow-ups. Keep it short.
+
+The orchestrator also watches the builder panes: it runs `scripts/agents/watch_builders.sh`
+under a Monitor (persistent, one notification per line), which prints a line when a pane goes
+idle or stops at a question or permission prompt (with its last message), shows a new
+`READY TO MERGE` line, or is gone; a pane whose own background job still runs counts as busy.
+`HAT_WORKTREES` and `WATCH_EVERY` (seconds, default 30) override the worktree root and the poll.
