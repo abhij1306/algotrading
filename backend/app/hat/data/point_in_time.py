@@ -7,7 +7,8 @@ backtest turns them into factor-pending (chain, session) pairs (`ca_versions.pen
 value available yet, or an as-of value other than the series'.
 
 Nothing here dates a row: a value stored without `known_on` stays undated until the owner's
-correction dates it (`correct-action --known-on`), and a backtest skips the name from its ex-date.
+correction dates it (`correct-action --known-on`), and a backtest skips the name from its ex-date;
+D2 fails such an applied value (`verify.adjustments.undated_values`).
 """
 
 from __future__ import annotations

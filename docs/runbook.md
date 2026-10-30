@@ -574,11 +574,13 @@ Alerts:
 Owner corrections (journalled; no load rewrites them):
 
 - `$ADMIN correct-action --isin ISIN --ex-date D --type T (--factor F [--as T2] | --cash RS |
-  --delete) --note TEXT [--known-on DATE]`. Without `--known-on` (when the value was public) the
-  value is undated and a backtest skips the name from its ex-date.
+  --delete) --note TEXT [--known-on DATE]`. `--known-on` is when the value was public: a factor
+  without one is refused (`known_on_required`); a dividend's amount without one is dated at its
+  ex-date (NSE announces it before). D2 fails any applied value left undated
+  (`ca_value_undated`): a backtest would skip the name from its ex-date on.
 - `$ADMIN correct-actions --list NAME.tsv [--apply]`: columns `op isin ex_date type factor
   new_ex_date note`, optional `cash` and `known_on`; ops replace, delete, move, add. All or
-  nothing. A demerger is added as type `demerger` (stored as an `other` flagged one); a move
+  nothing; a line writing a factor without `known_on` refuses the list. A demerger is added as type `demerger` (stored as an `other` flagged one); a move
   keeps the row's own text and flag.
 
 Known raw-bar artefacts (raw bars are immutable; kept, not corrected):

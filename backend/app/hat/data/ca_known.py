@@ -21,10 +21,11 @@ date a backtest could have used it, and `known_basis` says which fact that was:
   priced from it (CA1) or whose market gap a dated ratio cross-check confirms;
 - `research_source_date`: the research row's `source_date`, never before the ex-date, for a value
   only research supplies;
-- `correction`: the owner's correction line's `known_on`, never before the ex-date.
+- `correction`: the owner's correction line's `known_on`, never before the ex-date (a factor
+  correction without one is refused; a dividend's amount without one is `ex_open`).
 
-Both are NULL when nobody knows (a research row or a correction without a date, an MCP factor of
-another type): the date is never guessed, and such a factor keeps its name factor-pending from
+Both are NULL when nobody knows (a research row without a date, an MCP factor of another type):
+the date is never guessed, and such a factor keeps its name factor-pending from
 its ex-date on. A linked ISIN succession records the last bar its rules read
 (`hat_isin_lineage.known_on`), reported beside the actions but not a pending window: the rules
 read what bars there are, so a nightly build can link a chain after its first session.

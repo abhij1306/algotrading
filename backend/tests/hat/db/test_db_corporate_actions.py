@@ -95,9 +95,12 @@ def test_a_moved_demerger_keeps_its_text_and_flag(conn: Connection) -> None:
     session = Session(bind=conn)
     iid = _instrument(session, "INE000000772", "DMRG")
     owner = {"chat_id": 1, "user_id": uuid.uuid4(), "now": datetime.now(UTC)}
-    header = "op\tisin\tex_date\ttype\tfactor\tnew_ex_date\tnote\n"
-    added = "add\tINE000000772\t2024-09-20\tdemerger\t0.7108\t\tDemerger 1:1 X [market gap]\n"
-    moved = "move\tINE000000772\t2024-09-20\tother\t\t2024-09-23\tex-date per bars\n"
+    header = "op\tisin\tex_date\ttype\tfactor\tnew_ex_date\tnote\tknown_on\n"
+    added = (
+        "add\tINE000000772\t2024-09-20\tdemerger\t0.7108\t\tDemerger 1:1 X [market gap]"
+        "\t2024-09-26\n"
+    )
+    moved = "move\tINE000000772\t2024-09-20\tother\t\t2024-09-23\tex-date per bars\t2024-09-27\n"
     for line in (added, moved):
         apply_list(session, parse_list(header + line), apply=True, **owner)
     row = session.scalars(

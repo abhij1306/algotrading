@@ -25,7 +25,7 @@ from app.hat.data.ca_known import (
 )
 from app.hat.data.ca_research import Priced, demerger_known, research_supplied
 from app.hat.data.ca_research_rows import ResultingLeg, Source
-from app.hat.data.corporate_actions import correction_known, default_known
+from app.hat.data.corporate_actions import ActionCorrectionError, correction_known, default_known
 from app.hat.data.point_in_time import log_path, series_events
 
 EX = date(2024, 9, 20)  # ROSSELLIND's demerger, a Friday
@@ -71,8 +71,10 @@ def test_correction_known() -> None:
         date(2026, 10, 24), CORRECTION
     )
     assert correction_known(EX, date(2024, 1, 1), price_neutral=False) == Known(EX, CORRECTION)
-    assert correction_known(EX, None, price_neutral=False) == UNKNOWN
+    # a dividend's amount (price-neutral) is known at the ex-date open; a factor needs a date
     assert correction_known(EX, None, price_neutral=True) == Known(EX, EX_OPEN)
+    with pytest.raises(ActionCorrectionError, match="known_on_required"):
+        correction_known(EX, None, price_neutral=False)
 
 
 def test_lag_sessions() -> None:

@@ -8,16 +8,17 @@ import pytest
 from app.hat.data.ca_corrections import CorrectionListError, parse_list
 
 HEADER = "op\tisin\tex_date\ttype\tfactor\tnew_ex_date\tnote\n"
+DATED = HEADER.rstrip("\n") + "\tknown_on\n"
 
 
 def test_parse_list() -> None:
     items = parse_list(
-        HEADER
+        DATED
         + "# a comment\n"
-        + "add\tINE280A01010\t2011-06-23\tbonus\t0.5\t\tTITAN bonus 1:1 leg missing\n"
-        + "replace\tINE258A01016\t2022-09-08\tother\t0.7961\t\tmarket gap\n"
-        + "delete\tINE477B01010\t2021-08-05\tbonus\t\t\tpreference-share bonus\n"
-        + "move\tINE000X01010\t2020-01-01\tsplit\t\t2020-01-03\tdate per NSE\n"
+        + "add\tINE280A01010\t2011-06-23\tbonus\t0.5\t\tTITAN bonus 1:1 leg missing\t2011-06-23\n"
+        + "replace\tINE258A01016\t2022-09-08\tother\t0.7961\t\tmarket gap\t2022-09-14\n"
+        + "delete\tINE477B01010\t2021-08-05\tbonus\t\t\tpreference-share bonus\t\n"
+        + "move\tINE000X01010\t2020-01-01\tsplit\t\t2020-01-03\tdate per NSE\t2020-01-03\n"
     )
     assert [i.op for i in items] == ["add", "replace", "delete", "move"]
     assert items[0].factor == Decimal("0.5")
@@ -29,10 +30,10 @@ def test_parse_list() -> None:
 
 
 def test_parse_list_reads_a_demerger_add_as_a_flagged_other() -> None:
-    line = "add\tINE000X01010\t2024-09-20\tdemerger\t0.7108\t\tmarket gap\n"
-    (item,) = parse_list(HEADER + line)
+    line = "add\tINE000X01010\t2024-09-20\tdemerger\t0.7108\t\tmarket gap\t2024-09-26\n"
+    (item,) = parse_list(DATED + line)
     assert (item.action_type, item.demerger) == ("other", True)
-    other = parse_list(HEADER + line.replace("demerger", "other"))[0]
+    other = parse_list(DATED + line.replace("demerger", "other"))[0]
     assert (other.action_type, other.demerger) == ("other", False)
 
 
@@ -48,6 +49,8 @@ def test_parse_list_reads_a_demerger_add_as_a_flagged_other() -> None:
         ("replace\tINE1\t2020-13-01\tsplit\t0.5\t\tn\n", "bad_date@2"),
         ("replace\tINE1\t2020-01-01\tsplit\t0.5\n", "bad_columns@2"),
         ("replace\tINE1\t2020-01-01\tdemerger\t0.5\t\tn\n", "bad_type@2"),
+        ("add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n", "known_on_required@2"),
+        ("move\tINE1\t2020-01-01\tsplit\t\t2020-01-03\tn\n", "known_on_required@2"),
     ],
 )
 def test_parse_list_refuses(line: str, code: str) -> None:
@@ -58,7 +61,7 @@ def test_parse_list_refuses(line: str, code: str) -> None:
 
 def test_parse_list_needs_the_header() -> None:
     with pytest.raises(CorrectionListError) as exc:
-        parse_list("add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")
+        parse_list("add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\t2020-01-01\n")
     assert exc.value.code == "bad_header"
 
 
@@ -89,17 +92,19 @@ def test_parse_list_refuses_a_bad_cash(line: str) -> None:
 
 
 def test_parse_list_reads_the_optional_known_on_column() -> None:
-    header = HEADER.rstrip("\n") + "\tknown_on\n"
     items = parse_list(
-        header
+        DATED
         + "add\tINE847C01020\t2024-09-20\tother\t0.2892\t\tmarket gap\t2024-09-26\n"
-        + "replace\tINE258A01016\t2022-09-08\tother\t0.7961\t\tmarket gap\t\n"
+        + "replace\tINE258A01016\t2022-09-08\tdividend\t1\t\tamount misread\t\n"
     )
     assert [i.known_on for i in items] == [date(2024, 9, 26), None]
-    assert parse_list(HEADER + "add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")[0].known_on is None
+    assert parse_list(HEADER + "delete\tINE1\t2020-01-01\tbonus\t\t\tn\n")[0].known_on is None
     with pytest.raises(CorrectionListError) as exc:
-        parse_list(header + "add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")
+        parse_list(DATED + "add\tINE1\t2020-01-01\tbonus\t0.5\t\tn\n")
     assert exc.value.code == "bad_columns@2"
+    with pytest.raises(CorrectionListError) as undated:  # a factor is never written undated
+        parse_list(DATED + "replace\tINE258A01016\t2022-09-08\tother\t0.7961\t\tgap\t\n")
+    assert undated.value.code == "known_on_required@2"
     both = HEADER.rstrip("\n") + "\tcash\tknown_on\n"
     item = parse_list(both + "add\tINE1\t2024-08-19\tdividend\t1\t\tNSE file\t10\t2024-08-30\n")[0]
     assert (item.cash, item.known_on) == (Decimal(10), date(2024, 8, 30))

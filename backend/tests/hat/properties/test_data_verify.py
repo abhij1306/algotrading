@@ -14,6 +14,8 @@ import pytest
 
 from app.hat.data import audit, bars5m_volume, ca_import, verify
 from app.hat.data.bars_basis import DailyRange
+from app.hat.data.ca_versions import ACCEPTED, CONFLICT, Version
+from app.hat.data.point_in_time import Event
 from app.hat.data.verify import (
     adjustments,
     bars5m,
@@ -26,7 +28,7 @@ from app.hat.data.verify import (
     sessions,
     snapshot,
 )
-from app.hat.data.verify.adjustments import RefAction, StoredAction
+from app.hat.data.verify.adjustments import RefAction, StoredAction, undated_values
 from app.hat.data.verify.exceptions import Excepted, Exceptions, read_exceptions
 from app.hat.time import IST
 
@@ -799,6 +801,22 @@ def test_d2_demerger_factors_against_cost_splits() -> None:
     assert codes["demerger_cost_split_far"]["items"][0]["symbol"] == "SUVEN"
     assert codes["demerger_cost_split_far"]["items"][0]["gap"] == "-0.425"
     assert codes["demerger_cost_split_missing"]["count"] == 1
+
+
+def test_d2_fails_a_value_the_series_applies_undated() -> None:
+    """A correction stored without a date holds its name factor-pending from the ex-date on."""
+    ex = date(2015, 7, 23)
+    feed = Version(1, ACCEPTED, Decimal(1), Decimal(62), ex)
+    owner = Version(2, ACCEPTED, Decimal(1), Decimal("62.50"))  # the owner's fix, undated
+    dated = Version(3, ACCEPTED, Decimal(1), Decimal("62.50"), ex)
+    late = Version(2, CONFLICT, Decimal(1), Decimal(7))  # evidence only, never applied
+    misread = Event("i1", ex, "dividend", (Decimal(1), Decimal("62.50")), (feed, owner))
+    fixed = Event("i1", ex, "dividend", (Decimal(1), Decimal("62.50")), (feed, owner, dated))
+    conflict = Event("i2", ex, "dividend", (Decimal(1), Decimal(62)), (feed, late))
+    found = undated_values([misread, conflict], {"i1": "GLAXO"})
+    assert (found["code"], found["severity"]) == ("ca_value_undated", audit.FAIL)
+    assert found["items"] == ["GLAXO 2015-07-23 dividend"]
+    assert undated_values([fixed, conflict], {})["severity"] == audit.PASS
 
 
 # --- D3 -----------------------------------------------------------------------------------------
