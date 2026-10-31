@@ -67,6 +67,7 @@ __all__ = [
     "LEVEL_BREAK_ESTIMATED",
     "LOWER_CIRCUIT_RULE",
     "OVERLAP_FUNDING",
+    "OVERLAP_FUNDING_ESTIMATED",
     "OVERLAP_GAPS",
     "OVERLAP_ROTATION_CAPITAL",
     "REGIME_MULT_ONE",
@@ -239,11 +240,14 @@ OVERLAY_GAPS = (
 # sells rotation holdings for the shortfall, the weakest first (`OVERLAP_FUNDING`: the lowest
 # rank on the last rebalance's close, an unranked holding before any ranked one), and the
 # rotation's next rebalance sizes on its weight of the equity less what its sales still fund
-# (`OVERLAP_ROTATION_CAPITAL`, `rotation.overlap_capital`). Recorded in the conventions as both
-# rules, and reported as a gap: live has no such funding.
+# at their mark (`OVERLAP_ROTATION_CAPITAL`, `rotation.overlap_capital`). Recorded in the
+# conventions as both rules, and reported as a gap: live has no such funding. A funding sale after
+# 09:20 without the name's 5-minute bar at the entry's instant (a `daily` run, a coverage gap) is
+# priced at its 09:20 price, a stale one, and the run reports `OVERLAP_FUNDING_ESTIMATED`.
 OVERLAP_FUNDING = "rotation_sells_weakest_rank_first"
-OVERLAP_ROTATION_CAPITAL = "weight_x_equity_less_open_funded"
+OVERLAP_ROTATION_CAPITAL = "weight_x_equity_less_open_funded_at_mark"
 OVERLAP_GAPS = ("overlap_funding_not_live",)
+OVERLAP_FUNDING_ESTIMATED = "overlap_funding_priced_at_0920"
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
@@ -556,7 +560,8 @@ def weights_fit(
 def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[str]:
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
     of them when not known yet: a run that did not finish may have any), the touch fill
-    under `touch`, and `PROVISIONAL_0920` while its 09:20 estimate is unmeasured."""
+    under `touch`, an overlap run's (`OVERLAP_GAPS`, `OVERLAP_FUNDING_ESTIMATED`) and
+    `PROVISIONAL_0920` while its 09:20 estimate is unmeasured."""
     found = set(ESTIMATE_GAPS if estimated is None else estimated)
     return [
         # a portfolio run's account caps bind across its sleeves, as live
@@ -564,6 +569,13 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(CO_SLEEVE_GAPS if spec.co_sleeves else ()),
         *(OVERLAY_GAPS if spec.overlay is not None else ()),
         *(OVERLAP_GAPS if spec.conventions.overlap else ()),
+        # an overlap run's stale funding price, any run's that did not finish
+        *(
+            [OVERLAP_FUNDING_ESTIMATED]
+            if spec.conventions.overlap
+            and (estimated is None or OVERLAP_FUNDING_ESTIMATED in found)
+            else []
+        ),
         *(ROTATION_GAPS if _rotates(spec) else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),

@@ -37,7 +37,8 @@ and when it takes more than the free cash the book sells for the shortfall (`fun
 holding first (`funding_order`: unranked on the last rebalance's close, then the lowest rank),
 the fewest shares that cover it (`shares_to_fund`), each sale a `sell` or `trim` row with the
 reason `rotation_funding` (`FUNDING`), its exit reason too when it closes the trade. The next
-rebalance sizes the book on `overlap_capital`, so it does not buy back what the setups still hold.
+rebalance sizes the book on `overlap_capital`, so it does not buy back what the setups still hold
+at their mark.
 """
 
 from __future__ import annotations
@@ -185,13 +186,14 @@ def shares_to_fund(need: Decimal, held: int, proceeds: Callable[[int], Decimal])
 
 
 def overlap_capital(
-    weight: Decimal, equity: Decimal, funded: Iterable[tuple[Decimal, int, int]]
+    weight: Decimal, equity: Decimal, funded: Iterable[tuple[Decimal, int, Decimal]]
 ) -> Decimal:
-    """A rotation's capital at an overlap run's rebalance: `weight` of `equity` less what its
-    funding sales still pay for, each funded setup position's (cash its sales covered, shares
-    still open, shares bought) counting the cash in the share of its shares still open; never
-    below 0."""
-    held = sum((cash * left / bought for cash, left, bought in funded if bought > 0), _ZERO)
+    """A rotation's capital at an overlap run's rebalance: `weight` of `equity` less the setup
+    positions its sales funded at their mark, each funded position's (share of its entry cost
+    the sales covered, shares still open, mark) counting that share of its marked value, so a
+    loser's funding is not left idle and a winner's does not over-size the book; never below
+    0."""
+    held = sum((share * left * mark for share, left, mark in funded), _ZERO)
     return max(_ZERO, weight * equity - held)
 
 

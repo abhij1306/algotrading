@@ -8,18 +8,23 @@ from __future__ import annotations
 import uuid
 from datetime import date
 from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from hat_risk_support import policy_with
 
+from app.hat.backtest.discipline import knobs_of
 from app.hat.backtest.portfolio import parse_portfolio
 from app.hat.backtest.rotation import funding_order, overlap_capital, shares_to_fund
 from app.hat.backtest.spec import (
     ENTRY_BARS_DAILY,
     OVERLAP_FUNDING,
+    OVERLAP_FUNDING_ESTIMATED,
     OVERLAP_ROTATION_CAPITAL,
     BacktestError,
     RunConventions,
+    known_gaps,
     weights_fit,
 )
 from app.hat.engine.portfolio.allocator import SleeveInput, allocate
@@ -100,13 +105,34 @@ def test_shares_to_fund_are_the_fewest_that_cover_the_need() -> None:
     assert shares_to_fund(D(10_000), 10, net) == 10  # short: all of them
 
 
-def test_the_rotation_sizes_on_its_weight_less_what_it_still_funds() -> None:
+def test_the_rotation_sizes_on_its_weight_less_what_it_funds_at_mark() -> None:
     equity = D(1_000_000)
     assert overlap_capital(D(1), equity, []) == equity
-    # 50,000 funded a position half sold since; 20,000 one still whole
-    funded = [(D(50_000), 50, 100), (D(20_000), 10, 10)]
-    assert overlap_capital(D(1), equity, funded) == D(955_000)
+    # fully funded, 100 shares open marked at 400 (a loser bought at 500): 40,000, not its cost;
+    # half funded, 10 shares marked at 2,000 (a winner): 10,000
+    funded = [(D(1), 100, D(400)), (D("0.5"), 10, D(2_000))]
+    assert overlap_capital(D(1), equity, funded) == D(950_000)
     assert overlap_capital(D("0.01"), equity, funded) == 0  # never below 0
+
+
+def test_overlap_is_a_knob_only_when_set() -> None:
+    def knobs(conventions: RunConventions) -> dict[str, str]:
+        return knobs_of(conventions, D(20), "v1", None)
+
+    assert "overlap" not in knobs(RunConventions())
+    assert knobs(RunConventions(overlap=True))["overlap"] == "true"
+
+
+def test_a_stale_funding_price_is_a_gap_of_an_overlap_run_only() -> None:
+    plain = spec(config(), sessions(30))
+    assert OVERLAP_FUNDING_ESTIMATED not in known_gaps(plain, [OVERLAP_FUNDING_ESTIMATED])
+    # what known_gaps reads of a spec; a real overlap spec needs a rotation leg's config
+    overlap: Any = SimpleNamespace(
+        config=plain.config, co_sleeves=(), overlay=None, conventions=RunConventions(overlap=True)
+    )
+    assert OVERLAP_FUNDING_ESTIMATED in known_gaps(overlap, [OVERLAP_FUNDING_ESTIMATED])
+    assert OVERLAP_FUNDING_ESTIMATED not in known_gaps(overlap, [])
+    assert OVERLAP_FUNDING_ESTIMATED in known_gaps(overlap, None)
 
 
 def test_overlap_is_recorded_only_when_set() -> None:

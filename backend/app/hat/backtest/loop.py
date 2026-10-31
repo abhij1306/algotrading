@@ -297,6 +297,7 @@ from .spec import (
     EP_TRIGGER_ESTIMATED,
     GAP_OVER_ESTIMATED,
     LEVEL_BREAK_ESTIMATED,
+    OVERLAP_FUNDING_ESTIMATED,
     REGIME_MULT_ONE,
     VOLUME_PACE_ESTIMATED,
     VOLUME_PACE_FULL_DAY,
@@ -364,6 +365,10 @@ _AT_CLOSE = time(15, 10)
 # A close entry (`entry_timing: daily_close`): after the close phase, before the 15:15 cut-off.
 _AT_CLOSE_ENTRY = time(15, 11)
 _AT_END = time(15, 14)
+# What an overlap run's funding sale was priced from (`_funding_quote`): the 5-minute bar at the
+# entry's instant, the daily close at a close entry, the 09:20 price at 09:20, or a stale 09:20.
+_FUNDING_BAR, _FUNDING_CLOSE = "bar_5m", "close"
+_FUNDING_AT_0920, _FUNDING_0920 = "at_0920", "stale_0920"
 
 
 @dataclass(frozen=True)
@@ -657,9 +662,12 @@ class _Run:
         }
         self.tr_closes = TrCloses(data.bars, self.days) if self.books else None
         # an overlap run's rotation book, which funds the setup entries, and per setup position
-        # it funded (the cash its sales covered, the shares the position bought)
+        # it funded the share of its entry cost the sales covered; its funding sales by what
+        # their price was read from (`_FUNDING_BAR`, ...)
         self.funder = next(iter(self.books.values()), None) if spec.conventions.overlap else None
-        self.funded: dict[uuid.UUID, tuple[Decimal, int]] = {}
+        self.funded: dict[uuid.UUID, Decimal] = {}
+        self.funding_fills: dict[str, int] = {}
+        self._funding_sources: dict[tuple[str, date], str] = {}
         self._funding_bars: tuple[date | None, dict[str, tuple[DataBar, ...]]] = (None, {})
         self.rotation_dividends = _ZERO
         # each rotation fill by what its 09:20 price was read from (`fill_0920.REAL`, `ESTIMATED`)
@@ -1016,7 +1024,7 @@ class _Run:
         equity = self.account_equity[day]
         capital = equity * allocation.final_weight
         if book is self.funder:  # less what its sales still fund (`overlap_capital`)
-            capital = overlap_capital(allocation.final_weight, equity, self._funded_open())
+            capital = overlap_capital(allocation.final_weight, equity, self._funded_open(day))
         book.rebalance(day, plan, capital, market)
         self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
@@ -1183,28 +1191,34 @@ class _Run:
             ),
         )
 
-    def _funded_open(self) -> list[tuple[Decimal, int, int]]:
-        """Each setup position the rotation funded: (the cash its sales covered, the shares
-        still open, the shares bought); a closed position is dropped."""
-        out: list[tuple[Decimal, int, int]] = []
-        for position_id, (cash, bought) in list(self.funded.items()):
+    def _funded_open(self, day: date) -> list[tuple[Decimal, int, Decimal]]:
+        """Each setup position the rotation funded: (the share of its entry cost the sales
+        covered, the shares still open, its mark on `day`, `_mark_price`); a closed position is
+        dropped."""
+        out: list[tuple[Decimal, int, Decimal]] = []
+        for position_id, share in list(self.funded.items()):
             position = self.session.get(HatPosition, position_id)
             if position is None or position.closed_at is not None:
                 del self.funded[position_id]
                 continue
-            out.append((cash, position.qty_open, bought))
+            mark = self._mark_price(str(position.instrument_id), day, Decimal(position.avg_entry))
+            out.append((share, position.qty_open, mark))
         return out
 
     def _funding_quote(self, instrument_id: str, day: date, at: datetime) -> Quote:
         """The price an overlap run's funding sale of a rotation holding fills at for a setup
         entry at `at`, never before 09:20: blocked as a rotation sale is (`_quote`), else at a
         close entry the daily close, else the close of the name's 5-minute bar that ended in the
-        five minutes up to then where its session may be read, else the 09:20 price."""
+        five minutes up to then where its session may be read, else the 09:20 price (stale
+        after 09:20, `OVERLAP_FUNDING_ESTIMATED`). What the price was read from is kept for
+        `funding_fills`."""
         price, blocked = self._quote(instrument_id, day, "sell")
         if price is None:
             return None, blocked
+        key = (instrument_id, day)
         bar = self.view.bar(instrument_id, day)
         if at.astimezone(IST).time() >= _AT_CLOSE and bar is not None:
+            self._funding_sources[key] = _FUNDING_CLOSE
             return bar.close, None
         when = max(at, _at(day, _AT_LOW))
         if self._funding_bars[0] != day and self.funder is not None:
@@ -1218,7 +1232,11 @@ class _Run:
             ),
             None,
         )
-        return (price if found is None else found.close), None
+        if found is not None:
+            self._funding_sources[key] = _FUNDING_BAR
+            return found.close, None
+        self._funding_sources[key] = _FUNDING_0920 if when > _at(day, _AT_LOW) else _FUNDING_AT_0920
+        return price, None
 
     def _rotation_mark(self, day: date) -> Any:  # noqa: ANN401 - a callable
         return lambda instrument_id, fallback: self._mark_price(instrument_id, day, fallback)
@@ -2162,15 +2180,23 @@ class _Run:
     def _fund(self, day: date, at: datetime, position_id: uuid.UUID) -> None:
         """An overlap run's setup entry that took more than the free cash: the rotation sells
         for the rest as it fills (`RotationBook.fund`), and the cash it covered is the
-        position's funding (`_funded_open`)."""
+        position's funding, as a share of its entry cost (`_funded_open`). Each sale is counted
+        by its price's source; one at a stale 09:20 price is an estimate the run reports."""
         if self.funder is None or (shortfall := -self._free_cash()) <= 0:
             return
+        sales = len(self.funder.fill_rows)
         raised = self.funder.fund(
             day, shortfall, lambda i: self._funding_quote(i, day, at), self._symbol(day)
         )
+        for fill in self.funder.fill_rows[sales:]:
+            source = self._funding_sources[(fill.instrument_id, day)]
+            self.funding_fills[source] = self.funding_fills.get(source, 0) + 1
+            if source == _FUNDING_0920:
+                self.estimated.add(OVERLAP_FUNDING_ESTIMATED)
         position = self.session.get(HatPosition, position_id)
-        if position is not None and raised > 0:
-            self.funded[position_id] = (min(shortfall, raised), position.qty_open)
+        if position is not None and raised > 0 and position.qty_open > 0:
+            cost = position.qty_open * Decimal(position.avg_entry)
+            self.funded[position_id] = min(Decimal(1), min(shortfall, raised) / cost)
 
     # --- the close, delistings, the period end ------------------------------------------------
 
@@ -2628,6 +2654,11 @@ class _Run:
         if self.books:
             metrics["rotation_fills_0920"] = self.rotation_fills.get(fill_0920.REAL, 0)
             metrics["rotation_fills_estimated"] = self.rotation_fills.get(fill_0920.ESTIMATED, 0)
+        if self.funder is not None:  # an overlap run's funding sales, by their price's source
+            metrics["rotation_funding_fills"] = {
+                k: self.funding_fills.get(k, 0)
+                for k in (_FUNDING_BAR, _FUNDING_CLOSE, _FUNDING_AT_0920, _FUNDING_0920)
+            }
         overlay: dict[str, Any] = {}
         if self.overlay is not None and self.spec.overlay is not None:
             overlay = {

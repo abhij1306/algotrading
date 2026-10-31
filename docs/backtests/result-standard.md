@@ -497,11 +497,15 @@ holding first (unranked on the last rebalance's close, then the lowest rank), th
 that cover it, priced as a rotation sale at the entry's instant (never before 09:20: the close of
 the 5-minute bar ending then, else the 09:20 price, a close entry the daily close). Each such sale
 is a `rebalances.csv` `sell` or `trim` row and a trade leg with the reason `rotation_funding`
-(the exit reason when it closes the trade). The rotation's next rebalance sizes on its weight of
-the equity less the cash its sales still fund (each funded position's, in the share of its shares
-still open), so it does not buy back what the setups hold. The conventions record `overlap`
-(`funding`, `rotation_capital`) only when set, so other runs keep their digests; known gap
-`overlap_funding_not_live`.
+(the exit reason when it closes the trade); metrics `rotation_funding_fills` counts them by price
+source (`bar_5m`, `close`, `at_0920`, `stale_0920`), and a `stale_0920` sale (the 09:20 price for a
+later entry: a `daily` run or a 5-minute coverage gap) adds the known gap
+`overlap_funding_priced_at_0920`. The rotation's next rebalance sizes on its weight of the equity
+less the funded setup positions at their mark (each one's shares open × its last close, times the
+share of its entry cost the sales covered), so it neither buys back what the setups hold nor
+leaves a losing position's funding idle. The conventions record `overlap` (`funding`,
+`rotation_capital`) and the knobs `overlap` only when set, so other runs keep their digests;
+known gap `overlap_funding_not_live`.
 
 ---
 
