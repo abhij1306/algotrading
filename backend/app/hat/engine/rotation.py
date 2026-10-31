@@ -170,13 +170,13 @@ def _single(closes: np.ndarray, rotation: Rotation) -> np.ndarray:
 def riskadj_parts(closes: np.ndarray, rotation: Rotation) -> tuple[np.ndarray, np.ndarray]:
     """(short return / volatility, long return / volatility) per name, NaN where unscored: the
     returns over `short_sessions` and `long_sessions`, ending on the decision close (with
-    `riskadj_skip`, `skip_sessions` before it; the lookbacks still start counted from it), the
+    `score_skip`, `skip_sessions` before it; the lookbacks still start counted from it), the
     volatility the annualised sample deviation of the last `vol_sessions` daily log returns,
     ending on the decision close either way."""
     filled, ok = _prepared(closes, rotation)
     with np.errstate(divide="ignore", invalid="ignore"):
-        # `riskadj_skip`: both returns end `skip_sessions` before the decision close (6-1, 12-1)
-        last = filled[-1 - (rotation.skip_sessions if rotation.riskadj_skip else 0)]
+        # `score_skip`: both returns end `skip_sessions` before the decision close (6-1, 12-1)
+        last = filled[-1 - (rotation.skip_sessions if rotation.score_skip else 0)]
         short = last / filled[-1 - rotation.short_sessions] - 1
         long_ = last / filled[-1 - rotation.long_sessions] - 1
         returns = np.diff(np.log(_tail(filled, rotation.vol_sessions + 1)), axis=0)

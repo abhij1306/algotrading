@@ -592,7 +592,7 @@ class Rotation(Model):
     cap reads, point in time; `unknown_industry` says how a name without one counts under it
     (`free`, the default: never capped; `bucket`: every unknown name one industry);
     `scale_down` (unset: off) is the mid-period scale-down (`ScaleDown`). `liquidity` (unset:
-    off) is the relative liquidity floor (`Liquidity`); `riskadj_skip` ends both of `riskadj`'s
+    off) is the relative liquidity floor (`Liquidity`); `score_skip` ends both of `riskadj`'s
     returns `skip_sessions` before the decision close (its volatility still ends on it);
     `inverse_beta` (unset: equal weights) weights the targets by 1 / beta (`InverseBeta`);
     `tranches` (unset: one book) staggers the rebalance (`Tranches`); `refuse_near_limit` refuses
@@ -618,17 +618,17 @@ class Rotation(Model):
     )
     scale_down: ScaleDown | None = Field(default=None, exclude_if=lambda v: v is None)
     liquidity: Liquidity | None = Field(default=None, exclude_if=lambda v: v is None)
-    riskadj_skip: bool = Field(default=False, exclude_if=lambda v: not v)
+    score_skip: bool = Field(default=False, exclude_if=lambda v: not v)
     inverse_beta: InverseBeta | None = Field(default=None, exclude_if=lambda v: v is None)
     tranches: Tranches | None = Field(default=None, exclude_if=lambda v: v is None)
     refuse_near_limit: bool = Field(default=False, exclude_if=lambda v: not v)
 
     @model_validator(mode="after")
     def _check(self) -> Rotation:
-        if self.riskadj_skip and (
+        if self.score_skip and (
             self.score != "riskadj" or self.skip_sessions >= self.short_sessions
         ):
-            raise ValueError("riskadj_skip_needs_riskadj_and_short_above_skip")
+            raise ValueError("score_skip_needs_riskadj_and_short_above_skip")
         if self.tranches is not None:
             if self.scale_down is not None:
                 raise ValueError("tranches_with_scale_down")
