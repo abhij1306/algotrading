@@ -5,14 +5,17 @@ rebalances), looked up again in the current stores and compared within each item
     python -m app.hat.data.golden check [--file F]
     python -m app.hat.data.golden rebase --reason "<text>" (--item ID [--item ID ...] |
         --items-file IDS | --all-drifted) [--file F]
+    python -m app.hat.data.golden rebase --rekey --reason "<text>" (--item ID ... |
+        --items-file IDS) [--file F]
 
 Golden files live in `HAT_DATA_ROOT/audits/golden/` as `YYYY-MM-DD[.N].json` (data, never
 committed; validated against `docs/backtests/golden-sample.schema.json`); a check reads the newest
 unless `--file` names one there and writes its result under `results/` there. `rebase` writes a new
-golden file with the current store values of drifted items, each with its reason; a golden file
-is never edited. An id may hold a comma (a `bars_daily_cap` item's key), so ids are never split:
-each is its own `--item`, or its own line of the `--items-file`. The data audit runs the same
-check (`audit.check_golden`). Read-only on the database and the stores.
+golden file with the current store values of drifted items, each with its reason; `rebase --rekey`
+moves missing membership items to the span that now covers their old start, keeping the verified
+value; a golden file is never edited. An id may hold a comma (a `bars_daily_cap` item's key), so
+ids are never split: each is its own `--item`, or its own line of the `--items-file`. The data
+audit runs the same check (`audit.check_golden`). Read-only on the database and the stores.
 """
 
 from __future__ import annotations
@@ -75,6 +78,7 @@ __all__ = [
     "matches",
     "newest",
     "rebase_doc",
+    "rekey_doc",
     "resolve_instrument",
     "result_doc",
     "validate",
@@ -657,6 +661,86 @@ def rebase_doc(
     return new
 
 
+def _rekeyed(item: Mapping[str, Any], stores: Stores) -> dict[str, Any]:
+    """A missing membership item's key moved to the one span that now covers its old
+    `effective_from`: refused unless the key names a span start, exactly one span of the same
+    instrument and index covers that day, and that span still holds the verified value."""
+    key = item["key"]
+    if item["kind"] != "membership" or key.get("effective_from") in (None, ""):
+        raise GoldenError("golden_rekey_not_membership_span")
+    try:
+        day = _need_day(key, "effective_from")
+        instrument = resolve_instrument(key, day, stores)
+    except Unresolved as exc:
+        raise GoldenError("golden_rekey_unresolved") from exc
+    index = str(_first(key, "index", "index_name") or DEFAULT_INDEX)
+    spans = [
+        r
+        for r in stores.members
+        if r["index_name"] == index
+        and r["instrument_id"] == instrument
+        and r["effective_from"] <= day
+        and (r["effective_to"] is None or day < r["effective_to"])
+    ]
+    if len(spans) != 1:
+        raise GoldenError("golden_rekey_no_single_span")
+    new = copy.deepcopy(dict(item))
+    new["key"] = dict(key) | {"effective_from": spans[0]["effective_from"].isoformat()}
+    try:
+        value = lookup(new, stores)
+    except Unresolved as exc:
+        raise GoldenError("golden_rekey_no_single_span") from exc
+    if not matches(item["value"], value, item["tolerance"]):
+        raise GoldenError("golden_rekey_value_changed")
+    return new
+
+
+def rekey_doc(
+    doc: Mapping[str, Any],
+    result: Mapping[str, Any],
+    stores: Stores,
+    wanted: Sequence[str],
+    reason: str,
+    today: date,
+    source: tuple[str, str],
+) -> dict[str, Any]:
+    """A new golden document: `doc` with each named missing membership item re-keyed to the span
+    that now covers its old `effective_from` (a span that now starts earlier). The verified value
+    and its source stay; the item records the reason, its previous key and value, the file it
+    came from and the day; `rebased_from` names the old file and its sha256. Refused without a
+    reason, with nothing named, for an item that is not missing, and when the re-keyed item
+    would not pass (`_rekeyed`)."""
+    if not reason.strip():
+        raise GoldenError("golden_rebase_reason_required")
+    missing = {o["id"] for o in result["items"] if o["status"] == MISSING}
+    ids = list(dict.fromkeys(wanted))
+    if not ids:
+        raise GoldenError("golden_rebase_nothing_drifted")
+    if any(i not in missing for i in ids):
+        raise GoldenError("golden_rekey_item_not_missing")
+    name, digest = source
+    new = copy.deepcopy(dict(doc))
+    new |= {
+        "created": today.isoformat(),
+        "created_by": "golden rebase --rekey",
+        "rebased_from": {"file": name, "digest": digest},
+    }
+    for n, item in enumerate(new["items"]):
+        if item["id"] in ids:
+            new["items"][n] = _rekeyed(item, stores) | {
+                "rebase": {
+                    "reason": reason.strip(),
+                    "previous_value": item["value"],
+                    "previous_key": item["key"],
+                    "from_file": name,
+                    "on": today.isoformat(),
+                }
+            }
+    if validate(new):
+        raise GoldenError("golden_rebase_invalid")
+    return new
+
+
 # --- reading the stores --------------------------------------------------------------------
 
 _ADJUSTED_SQL = """
@@ -810,12 +894,24 @@ def run_check(
     chain: Mapping[str, str],
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """The golden document at `path` and its result against the current stores."""
+    golden, _, result = check_file(path, store, session, con, chain)
+    return golden, result
+
+
+def check_file(
+    path: Path,
+    store: DataStore,
+    session: Session,
+    con: duckdb.DuckDBPyConnection,
+    chain: Mapping[str, str],
+) -> tuple[dict[str, Any], Stores, dict[str, Any]]:
+    """The golden document at `path`, the store rows its items read and its result."""
     golden = read_golden(path)
     stores = load_stores(
         [*golden["items"], *golden.get("mismatches", ())], session, store, con, chain
     )
     body = check(golden, stores)
-    return golden, result_doc(path, file_digest(path), golden, body, datetime.now(UTC))
+    return golden, stores, result_doc(path, file_digest(path), golden, body, datetime.now(UTC))
 
 
 def write_result(root: Path, result: Mapping[str, Any]) -> Path:
@@ -851,7 +947,11 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     named.add_argument("--item", action="append", dest="items")  # an id may hold a comma
     named.add_argument("--items-file", type=argparse.FileType("r", encoding="utf-8"))
     named.add_argument("--all-drifted", action="store_true")
+    rebasing.add_argument("--rekey", action="store_true")  # missing membership items only
     args = parser.parse_args(argv)
+    if args.command == "rebase" and args.rekey and args.all_drifted:
+        sys.stderr.write("golden rebase refused: golden_rekey_needs_items\n")
+        return 2
     if args.command == "rebase" and args.items_file is not None:
         with args.items_file as file:
             args.items = item_ids(file.read())
@@ -876,7 +976,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
             )
             adjustment = stored_adjustment(session)
             with store.connect(adjustment) as con:
-                golden, result = run_check(path, store, session, con, adjustment.lineage)
+                golden, stores, result = check_file(path, store, session, con, adjustment.lineage)
     except GoldenError as exc:
         sys.stderr.write(f"golden {args.command} refused: {exc.code}\n")
         return 2
@@ -886,8 +986,12 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
         return 2 if failed(result) else 0
     wanted = ALL_DRIFTED if args.all_drifted else args.items
     today = datetime.now(UTC).astimezone(IST).date()
+    source = (path.name, file_digest(path))
     try:
-        new = rebase_doc(golden, result, wanted, args.reason, today, (path.name, file_digest(path)))
+        if args.rekey:
+            new = rekey_doc(golden, result, stores, args.items, args.reason, today, source)
+        else:
+            new = rebase_doc(golden, result, wanted, args.reason, today, source)
     except GoldenError as exc:
         sys.stderr.write(f"golden rebase refused: {exc.code}\n")
         return 2
