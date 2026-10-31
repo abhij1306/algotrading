@@ -17,7 +17,7 @@ runs/<run_id>/
   ep_candidates.csv  # pre-open playbook runs only: each gap-scan candidate-day
   overlay.csv     # ETF overlay runs only: one row per session of the sleeve
   rebalances.csv  # rotation runs only: each rebalance's orders and holds
-  skips.csv       # triggers that never became a signal (only when there is one)
+  skips.csv       # skipped watchlist rows, with the reason (only when there is one)
 ```
 
 Why four files: headline metrics say *whether* a variant is better. Trades, equity and refusals say *why*, and that is what tweak suggestions are built from.
@@ -542,8 +542,8 @@ no other fill (`impact_fills_widened` in that check's summary).
 **metrics.entry_fills_0920_estimated**: the setup entries priced at the daily open moved to
 09:20 (a gap over the level, or a next-session entry, on the daily estimate); the rotation's
 09:20 counts stay in `metrics.rotation`, which adds `wide_rebalances` under `wide_book`.
-**skips.csv** (only when there is one): each trigger of a watchlist row that never became a
-signal (`date`, `strategy`, `playbook`, `instrument_id`, `symbol`, `reason`), so a lost entry
+**skips.csv** (only when there is one): each skip of a watchlist row, at its trigger or before it
+(`date`, `strategy`, `playbook`, `instrument_id`, `symbol`, `reason`), so a lost entry
 (`limit_not_reached` and the rest) shows in a run comparison; `skips` still counts every skip.
 **data.universe_rule**: a rule universe's rule (`TOP_TRADED_<N>`, `decisions.md`).
 **identity.engine_commit** is the checkout's HEAD only when the code runs from that checkout's

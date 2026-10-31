@@ -1484,10 +1484,11 @@ class _Run:
         ).all()
         return sorted(rows, key=lambda r: (-r.score, r.playbook, str(r.instrument_id)))
 
-    def _skip(self, reason: str, row: _Row | None = None) -> None:
+    def _skip(self, reason: str, row: _Row | None = None, *, seen: _Row | None = None) -> None:
         """Count a skip; with the `row` whose level broke, a skip that ends its setup's window
         (`consumes`) is kept for the next nights' scans (`ScanInputs.triggered`), as live's
-        signal of the skipped trigger closes it."""
+        signal of the skipped trigger closes it. `seen` is a candidate skipped without closing
+        its window: it goes to skips.csv only."""
         key = (
             None
             if row is None
@@ -1496,9 +1497,10 @@ class _Run:
         if key is not None and consumes(reason):
             self.leg.consumed.add(key)
         self.skips[reason] = self.skips.get(reason, 0) + 1
-        if row is not None:  # skips.csv: a lost entry shows in a run comparison
+        lost = row or seen
+        if lost is not None:  # skips.csv: a lost entry shows in a run comparison
             self.skip_rows.append(
-                skip_row(self.config.bot, row, reason, partial(symbol_on, self.data))
+                skip_row(self.config.bot, lost, reason, partial(symbol_on, self.data))
             )
         if self.today is not None:
             self.decisions.append((self.today, "skip", reason))
@@ -1694,10 +1696,10 @@ class _Run:
         its demerger exit session (Q5) and with a session that day."""
         instrument_id = str(row.instrument_id)
         if instrument_id in self.view.pending_on(day):
-            self._skip(SKIP_FACTOR_PENDING)
+            self._skip(SKIP_FACTOR_PENDING, seen=row)
             return False
         if (instrument_id, day) in self.data.demerger_exits:
-            self._skip(SKIP_DEMERGER_PENDING)  # sold at this close (Q5)
+            self._skip(SKIP_DEMERGER_PENDING, seen=row)  # sold at this close (Q5)
             return False
         return self.view.bar(instrument_id, day) is not None
 
@@ -1714,7 +1716,7 @@ class _Run:
             return None  # no session today: the level cannot break
         level = self._level(row)
         if level is None:
-            self._skip(SKIP_NO_LEVEL)
+            self._skip(SKIP_NO_LEVEL, seen=row)
             return None
         playbook = self.config.playbook(row.playbook)
         if at_close:
@@ -1906,7 +1908,7 @@ class _Run:
                     self.config.playbook(row.playbook), candidate.symbol, day
                 )
             ):
-                self._skip(paced)
+                self._skip(paced, seen=row)
                 continue
             preopen = candidate.playbook.preopen
             if not preopen:
@@ -2099,14 +2101,14 @@ class _Run:
         daily = self._daily(playbook, instrument_id, day, prev)
         record = self._ep_of(row)
         if bar is None or daily.tick is None or daily.prev_close is None:
-            self._skip(SKIP_BAD_INPUT)
+            self._skip(SKIP_BAD_INPUT, seen=row)
             if record is not None:
                 record.failed(SKIP_BAD_INPUT)
             return None
         if not self._ep_fires(playbook, row, bar, daily, day, prev):
             return None
         if trigger.volume_pace_multiple(playbook) is not None:
-            self._skip(SKIP_PACE_NO_INTRADAY)  # no volume known at the trigger (L1)
+            self._skip(SKIP_PACE_NO_INTRADAY, seen=row)  # no volume known at the trigger (L1)
             if record is not None:
                 record.failed(SKIP_PACE_NO_INTRADAY, trigger.VOLUME_PACE)
             return None
@@ -2119,7 +2121,7 @@ class _Run:
         before = EP_ESTIMATE.low_before(bar.open, bar.low)
         planned = trigger.entry_stop(playbook, daily, price, (before,), None)
         if planned.stop is None:
-            self._skip(planned.skip or SKIP_BAD_INPUT)
+            self._skip(planned.skip or SKIP_BAD_INPUT, seen=row)
             self._ep_fired(row, planned.skip, False)
             return None
         at = _at(day, _AT_ENTRY)
@@ -2382,7 +2384,7 @@ class _Run:
                 raise
             # Scanned on the night's members, the stock left the universe by its entry day:
             # no entry (HAT-PORT-023) and, as live, no signal, so the setup's window stays open.
-            self._skip(entries.NOT_IN_UNIVERSE)
+            self._skip(entries.NOT_IN_UNIVERSE, seen=row)
             if record is not None:
                 record.failed(entries.NOT_IN_UNIVERSE, ep_log.FILLED)
             return

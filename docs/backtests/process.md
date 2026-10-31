@@ -137,8 +137,8 @@ whose audit warns or fails):
   bars and on the daily estimate, regime, exit, industry, liquidity, playbook with its signals
   and refusals), `refusals` (what the risk gates blocked).
 - `trades.csv`, `equity.csv`, `refusals.csv` (with forward R of each blocked entry),
-  `signals.csv`, `stocks.csv`, `skips.csv` (each trigger that never became a signal, e.g.
-  `limit_not_reached`): why.
+  `signals.csv`, `stocks.csv`, `skips.csv` (each skip of a watchlist row, e.g. `limit_not_reached`
+  or a pending corporate action): why.
 - `config.json`: everything the run used, enough to rerun it.
 - A `book_vcp` run's detector audit: `python scripts/research/s1_book_audit.py --run-id <id>
   [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
