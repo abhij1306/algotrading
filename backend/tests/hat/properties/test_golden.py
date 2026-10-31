@@ -267,6 +267,39 @@ def test_rekey_refuses_other_kinds() -> None:
         golden.rekey_doc(doc, result, STORES, ["b"], "why", D3, ("f.json", "d"))
 
 
+def test_rekey_refuses_a_symbol_that_names_another_instrument() -> None:
+    # SYM is B's symbol until 2015-06-01, then A's: re-keyed to A's 2011 span start, the symbol
+    # would name B, whose span starts and ends on the same days.
+    a_, b_, start, old, end = "i-a", "i-b", date(2011, 6, 22), date(2016, 1, 1), date(2023, 7, 13)
+    stores = Stores(
+        instruments=[(a_, "INEA", "SYM"), (b_, "INEB", "OLDSYM")],
+        history=[
+            (b_, "SYM", date(2000, 1, 1), date(2015, 6, 1)),
+            (a_, "SYM", date(2015, 6, 1), None),
+        ],
+        members=[
+            {
+                "index_name": "NIFTY 500",
+                "instrument_id": i,
+                "effective_from": start,
+                "effective_to": end,
+            }
+            for i in (a_, b_)
+        ],
+    )
+    key = {"symbol": "SYM", "effective_from": old.isoformat(), "field": "effective_to"}
+    doc = _doc([_item("membership", key, end.isoformat(), id="m")])
+    result = golden.check(doc, stores)
+    assert result["items"][0]["status"] == golden.MISSING
+    with pytest.raises(golden.GoldenError, match="instrument_changed"):
+        golden.rekey_doc(doc, result, stores, ["m"], "why", D3, ("f.json", "d"))
+    by_isin = _doc([_item("membership", key | {"isin": "INEA"}, end.isoformat(), id="m")])
+    new = golden.rekey_doc(
+        by_isin, golden.check(by_isin, stores), stores, ["m"], "why", D3, ("f", "d")
+    )
+    assert new["items"][0]["key"]["effective_from"] == start.isoformat()
+
+
 def test_validate() -> None:
     good = _doc([_item("bar_raw", {"isin": "X"}, 1.0, tolerance={"abs": 0.01})])
     assert golden.validate(good) == []

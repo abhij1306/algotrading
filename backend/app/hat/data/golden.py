@@ -664,7 +664,8 @@ def rebase_doc(
 def _rekeyed(item: Mapping[str, Any], stores: Stores) -> dict[str, Any]:
     """A missing membership item's key moved to the one span that now covers its old
     `effective_from`: refused unless the key names a span start, exactly one span of the same
-    instrument and index covers that day, and that span still holds the verified value."""
+    instrument and index covers that day, the new key names the same instrument (a symbol is read
+    as of the new start) and that span still holds the verified value."""
     key = item["key"]
     if item["kind"] != "membership" or key.get("effective_from") in (None, ""):
         raise GoldenError("golden_rekey_not_membership_span")
@@ -685,7 +686,14 @@ def _rekeyed(item: Mapping[str, Any], stores: Stores) -> dict[str, Any]:
     if len(spans) != 1:
         raise GoldenError("golden_rekey_no_single_span")
     new = copy.deepcopy(dict(item))
-    new["key"] = dict(key) | {"effective_from": spans[0]["effective_from"].isoformat()}
+    starts = spans[0]["effective_from"]
+    new["key"] = dict(key) | {"effective_from": starts.isoformat()}
+    try:  # a symbol is read as of the new start: it must still name the same instrument
+        moved = resolve_instrument(new["key"], starts, stores)
+    except Unresolved as exc:
+        raise GoldenError("golden_rekey_instrument_changed") from exc
+    if moved != instrument:
+        raise GoldenError("golden_rekey_instrument_changed")
     try:
         value = lookup(new, stores)
     except Unresolved as exc:
