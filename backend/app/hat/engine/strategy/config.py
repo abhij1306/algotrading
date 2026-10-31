@@ -579,7 +579,8 @@ class WideBook(Model):
     holds `top_n` names, more than the rules' own, its `buffer_rank` raised in proportion
     (rounded up), each an equal share of the same capital: more, smaller positions, never cash.
     Decided on the rebalance close only; the next rebalance whose close does not fire returns
-    to the rules' `top_n`. Backtest only: live refuses such a config
+    to the rules' `top_n`. Needs the rules' `reweight` (a held name keeping its old weight would
+    leave cash idle). Backtest only: live refuses such a config
     (`rotation_live.WIDE_BOOK_NOT_LIVE`)."""
 
     top_n: int = Field(ge=2, le=200)
@@ -657,6 +658,9 @@ class Rotation(Model):
         if self.wide_book is not None:
             if self.wide_book.top_n <= self.top_n:
                 raise ValueError("wide_book_not_wider")
+            if not self.reweight:
+                # a held name would keep its old weight as the book widens or narrows: cash idle
+                raise ValueError("wide_book_needs_reweight")
             if wide_buffer_rank(self.buffer_rank, self.top_n, self.wide_book.top_n) > MAX_BUFFER:
                 raise ValueError("wide_book_buffer_too_deep")
         if self.score_skip and (

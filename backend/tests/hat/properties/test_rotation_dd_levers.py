@@ -51,22 +51,29 @@ def test_each_new_key_is_set_through_a_run_override(text: str) -> None:
     assert parse_config(base.to_json()).hash() == base.hash()
 
 
+WIDE_RULE = {"checks": [{"rule": "breadth_above"}]}
+
+
 @pytest.mark.parametrize(
-    ("wide", "code"),
+    ("extra", "code"),
     [
-        ({"top_n": 20, "checks": [{"rule": "breadth_above"}]}, "wide_book_not_wider"),
-        ({"top_n": 200, "checks": [{"rule": "breadth_above"}]}, "wide_book_buffer_too_deep"),
+        ({"wide_book": {"top_n": 20, **WIDE_RULE}}, "wide_book_not_wider"),
+        ({"wide_book": {"top_n": 200, **WIDE_RULE}}, "wide_book_buffer_too_deep"),
+        # held names would keep their old weights as the book widens: cash left idle
+        ({"wide_book": {"top_n": 30, **WIDE_RULE}, "reweight": False}, "wide_book_needs_reweight"),
     ],
 )
-def test_a_wide_book_that_is_not_wider_or_too_deep_is_refused(
-    wide: dict[str, object], code: str
+def test_a_wide_book_that_cannot_stay_fully_invested_is_refused(
+    extra: dict[str, object], code: str
 ) -> None:
+    fields = {"top_n": 20, "buffer_rank": 120, **extra}
     with pytest.raises(ValueError, match=code):
-        Rotation.model_validate({"top_n": 20, "buffer_rank": 120, "wide_book": wide})
+        Rotation.model_validate(fields)
     raw = seed_config("momentum-rotation").to_json()
-    raw["rotation"] = {**raw["rotation"], "top_n": 20, "buffer_rank": 120, "wide_book": wide}
-    with pytest.raises(ConfigError):
+    raw["rotation"] = {**raw["rotation"], **fields}
+    with pytest.raises(ConfigError) as refused:
         parse_config(raw)
+    assert any(code in problem for _, problem in refused.value.problems)
 
 
 def test_industry_relative_subtracts_each_industrys_median_and_keeps_unknown_raw() -> None:
