@@ -148,6 +148,12 @@ Percentage metrics are of the whole account, of which the sleeve is `sleeve_weig
 the weight and the rule beside them (`pct_basis`), and the mean share of the account held in
 positions (`invested_share`). R statistics do not depend on either.
 
+An overlap run (`RunConventions.overlap`, backtest only) allocates with the rotation leg left out
+of the whole-book cap, so it keeps its weight beside the setup sleeves'. A setup entry sizes on
+the free cash plus what selling the rotation's holdings would net at its instant (`_funding_quote`)
+and, when it takes more than the free cash, the rotation sells for the rest as it fills
+(`RotationBook.fund`); the rotation's next rebalance sizes on `rotation.overlap_capital`.
+
 The command line runs a sleeve's strategy version over the Parquet store and records the run
 (`app.hat.backtest.runs`): `python -m app.hat.backtest --bot <id> --from YYYY-MM-DD --to
 YYYY-MM-DD`.
@@ -277,7 +283,7 @@ from .report import (
     compute_metrics,
     flag_auction_risk,
 )
-from .rotation import Market, Plan, Quote, RotationBook, TrCloses
+from .rotation import Market, Plan, Quote, RotationBook, TrCloses, overlap_capital
 from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
 from .spec import (
@@ -512,6 +518,15 @@ class _Sleeve:
         self.breadth = data.breadth
         self.legs = legs
         self.keys = [sleeve_key(leg.config.bot) for leg in legs]
+        # an overlap run's rotation sleeve, which the whole-book cap leaves out
+        self.overlap = next(
+            (
+                key
+                for key, leg in zip(self.keys, legs, strict=True)
+                if spec.conventions.overlap and leg.config.rotation is not None
+            ),
+            None,
+        )
         self.policy = replace(
             spec.policy.policy,
             base_weight={k: leg.weight for k, leg in zip(self.keys, legs, strict=True)},
@@ -575,6 +590,7 @@ class _Sleeve:
             ],
             self.policy,
             equity,
+            overlap=self.overlap,
         )
         self.regime_mult = [a.regime_mult for a in found]  # one per sleeve, in their order
         return found
@@ -640,6 +656,11 @@ class _Run:
             if leg.config.rotation is not None
         }
         self.tr_closes = TrCloses(data.bars, self.days) if self.books else None
+        # an overlap run's rotation book, which funds the setup entries, and per setup position
+        # it funded (the cash its sales covered, the shares the position bought)
+        self.funder = next(iter(self.books.values()), None) if spec.conventions.overlap else None
+        self.funded: dict[uuid.UUID, tuple[Decimal, int]] = {}
+        self._funding_bars: tuple[date | None, dict[str, tuple[DataBar, ...]]] = (None, {})
         self.rotation_dividends = _ZERO
         # each rotation fill by what its 09:20 price was read from (`fill_0920.REAL`, `ESTIMATED`)
         self.rotation_fills: dict[str, int] = {}
@@ -993,7 +1014,10 @@ class _Run:
         )
         # the allocator's weight over the equity it allocated (`allocation.capital` unrounded)
         equity = self.account_equity[day]
-        book.rebalance(day, plan, equity * allocation.final_weight, market)
+        capital = equity * allocation.final_weight
+        if book is self.funder:  # less what its sales still fund (`overlap_capital`)
+            capital = overlap_capital(allocation.final_weight, equity, self._funded_open())
+        book.rebalance(day, plan, capital, market)
         self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
@@ -1158,6 +1182,43 @@ class _Run:
                 criteria_results=None,
             ),
         )
+
+    def _funded_open(self) -> list[tuple[Decimal, int, int]]:
+        """Each setup position the rotation funded: (the cash its sales covered, the shares
+        still open, the shares bought); a closed position is dropped."""
+        out: list[tuple[Decimal, int, int]] = []
+        for position_id, (cash, bought) in list(self.funded.items()):
+            position = self.session.get(HatPosition, position_id)
+            if position is None or position.closed_at is not None:
+                del self.funded[position_id]
+                continue
+            out.append((cash, position.qty_open, bought))
+        return out
+
+    def _funding_quote(self, instrument_id: str, day: date, at: datetime) -> Quote:
+        """The price an overlap run's funding sale of a rotation holding fills at for a setup
+        entry at `at`, never before 09:20: blocked as a rotation sale is (`_quote`), else at a
+        close entry the daily close, else the close of the name's 5-minute bar that ended in the
+        five minutes up to then where its session may be read, else the 09:20 price."""
+        price, blocked = self._quote(instrument_id, day, "sell")
+        if price is None:
+            return None, blocked
+        bar = self.view.bar(instrument_id, day)
+        if at.astimezone(IST).time() >= _AT_CLOSE and bar is not None:
+            return bar.close, None
+        when = max(at, _at(day, _AT_LOW))
+        if self._funding_bars[0] != day and self.funder is not None:
+            self._funding_bars = (day, self._session_bars(day, set(self.funder.holdings)))
+        five = timedelta(minutes=5)
+        found = next(
+            (
+                b
+                for b in self._funding_bars[1].get(instrument_id, ())
+                if b.start + five <= when < b.start + 2 * five
+            ),
+            None,
+        )
+        return (price if found is None else found.close), None
 
     def _rotation_mark(self, day: date) -> Any:  # noqa: ANN401 - a callable
         return lambda instrument_id, fallback: self._mark_price(instrument_id, day, fallback)
@@ -1987,6 +2048,10 @@ class _Run:
         open_count, open_risk = self._book()
         # what selling the sleeve would credit now: the free cash an entry may size on
         credit = _ZERO if self.overlay is None else self.overlay.credit_for(row.trade_date, at)
+        if self.funder is not None:  # an overlap run: what selling the rotation would net
+            credit += self.funder.credit(
+                row.trade_date, lambda i: self._funding_quote(i, row.trade_date, at)
+            )
         features = self.signal_features.at(
             instrument_id,
             row.trade_date,
@@ -2034,6 +2099,8 @@ class _Run:
         if signal is None or outcome.duplicate:
             return
         reason = signal.risk_decision.get("reason")
+        if self.funder is not None and outcome.position_id is not None:
+            self._fund(row.trade_date, at, outcome.position_id)
         if self.overlay is not None:
             if outcome.position_id is not None and self._free_cash() < 0:
                 # the entry took more than the cash: the sleeve sells for the rest as it fills
@@ -2091,6 +2158,19 @@ class _Run:
             # From the entry down to the low: a stop it reaches fills at min(entry, stop).
             self._down_leg(position, Bar(price, high, dip, bar.close), at + timedelta(seconds=1))
         self._up_leg(position, price, high, day, at + timedelta(seconds=2))
+
+    def _fund(self, day: date, at: datetime, position_id: uuid.UUID) -> None:
+        """An overlap run's setup entry that took more than the free cash: the rotation sells
+        for the rest as it fills (`RotationBook.fund`), and the cash it covered is the
+        position's funding (`_funded_open`)."""
+        if self.funder is None or (shortfall := -self._free_cash()) <= 0:
+            return
+        raised = self.funder.fund(
+            day, shortfall, lambda i: self._funding_quote(i, day, at), self._symbol(day)
+        )
+        position = self.session.get(HatPosition, position_id)
+        if position is not None and raised > 0:
+            self.funded[position_id] = (min(shortfall, raised), position.qty_open)
 
     # --- the close, delistings, the period end ------------------------------------------------
 

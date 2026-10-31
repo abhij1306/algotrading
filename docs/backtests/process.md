@@ -329,6 +329,7 @@ line flag sets the same for one run or every variant.
 | Start capital | `start_capital: 2500000` | `--start-capital` |
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
 | `volume_pace` on the full day's volume on 5-minute sessions too (the daily estimate always uses it; a look-ahead, known gap `volume_pace_on_full_day_volume`) | `volume_pace: full_day` | `--volume-pace` |
+| A rotation that funds the setup sleeves beside it (rotation weight kept, setup weights summing to at most 1 on top; `result-standard.md` v1.6) | the portfolio file's `conventions: {overlap: true}` only | none |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
 | Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook) | `--universe`, `--from`, `--to` |
 

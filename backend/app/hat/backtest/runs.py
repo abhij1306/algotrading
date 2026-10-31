@@ -649,6 +649,7 @@ def _config_doc(
             "start_capital": str(spec.initial_equity),
             "entry_bars": c.entry_bars,
             "volume_pace": c.volume_pace,
+            **({"overlap": True} if c.overlap else {}),
         },
         "labels": {
             "sweep_id": plan.labels.sweep_id,
@@ -1442,6 +1443,7 @@ def _replayed(
             start_capital=exact(c.get("start_capital", str(INITIAL_EQUITY))),
             entry_bars=c.get("entry_bars", ENTRY_BARS_5M),
             volume_pace=c.get("volume_pace", VOLUME_PACE_LIVE),
+            overlap=c.get("overlap", False),
         )
         universe = config["universe"]
         co = tuple(_replayed_co(item) for item in config.get("co_sleeves", ()))

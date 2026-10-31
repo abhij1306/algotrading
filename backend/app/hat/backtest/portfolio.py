@@ -11,7 +11,7 @@ file a `policy` key names (`read_policy`).
     start_capital: 1000000            # optional, as the CLI's flags: slippage_bps, cost_model,
     slippage_bps: 20                  #   cooldown_sessions, risk_pct, max_positions,
     risk_pct: 0.005                   #   max_per_industry, flat_ladder, policy, policy_set
-    conventions: {entry_bars: bars_5m, regime_mult: "1", slot_order: time}
+    conventions: {entry_bars: bars_5m, regime_mult: "1", slot_order: time}  # overlap: true
     strategies:                       # the first is the run's own; each strategy once
       - version: <strategy version id>
         weight: 0.5                   # of the account; required with more than one strategy
@@ -79,6 +79,7 @@ _CONVENTIONS = {
     "regime_mult": "regime_mult",
     "entry_bars": "entry_bars",
     "volume_pace": "volume_pace",
+    "overlap": "overlap",  # a boolean (`RunConventions.overlap`)
 }
 
 
@@ -183,7 +184,9 @@ def parse_portfolio(
     if not isinstance(given, Mapping) or not set(given) <= set(_CONVENTIONS):
         raise BacktestError(BAD)
     fields: dict[str, Any] = {
-        _CONVENTIONS[k]: (_count(v) if k == "suspension_sessions" else str(v))
+        _CONVENTIONS[k]: (
+            _count(v) if k == "suspension_sessions" else v if k == "overlap" else str(v)
+        )
         for k, v in given.items()
     }
     if "start_capital" in doc:

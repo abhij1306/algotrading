@@ -17,7 +17,7 @@ from __future__ import annotations
 import hashlib
 import json
 import uuid
-from collections.abc import Callable, Collection, Iterable, Mapping
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -66,6 +66,9 @@ __all__ = [
     "KNOWN_GAPS",
     "LEVEL_BREAK_ESTIMATED",
     "LOWER_CIRCUIT_RULE",
+    "OVERLAP_FUNDING",
+    "OVERLAP_GAPS",
+    "OVERLAP_ROTATION_CAPITAL",
     "REGIME_MULT_ONE",
     "REGIME_MULT_POLICY",
     "REGIME_MULT_RULES",
@@ -82,6 +85,7 @@ __all__ = [
     "known_gaps",
     "membership_key",
     "sleeve_weight",
+    "weights_fit",
     "with_cooldown",
 ]
 
@@ -230,6 +234,16 @@ OVERLAY_GAPS = (
     "liquidbees_tr_proxy",
     "etf_costs_on_stock_cost_model",
 )
+# An overlap run (`RunConventions.overlap`, backtest only): one rotation leg keeps its weight and
+# the setup sleeves keep theirs beside it, the sum above 1. A setup entry the free cash cannot pay
+# sells rotation holdings for the shortfall, the weakest first (`OVERLAP_FUNDING`: the lowest
+# rank on the last rebalance's close, an unranked holding before any ranked one), and the
+# rotation's next rebalance sizes on its weight of the equity less what its sales still fund
+# (`OVERLAP_ROTATION_CAPITAL`, `rotation.overlap_capital`). Recorded in the conventions as both
+# rules, and reported as a gap: live has no such funding.
+OVERLAP_FUNDING = "rotation_sells_weakest_rank_first"
+OVERLAP_ROTATION_CAPITAL = "weight_x_equity_less_open_funded"
+OVERLAP_GAPS = ("overlap_funding_not_live",)
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
@@ -258,7 +272,8 @@ class RunConventions:
     rule (HAT-BT-020), the slot order (HAT-BT-026, PR 63), the ambiguous-day rule (HAT-BT-021)
     and the bar-less sessions before the suspension markdown (PR 64), the sleeve weight (None:
     the policy's base weight), the regime rule the entries are sized under (HAT-BT-014, PR 68),
-    the start capital and the config and policy overrides (`overrides`). Refused at construction
+    the start capital, the config and policy overrides (`overrides`) and the overlap of a
+    rotation with setup sleeves (`overlap`, `OVERLAP_FUNDING`). Refused at construction
     (`BacktestError`): an unknown entry fill rule, slot order, ambiguous-day rule or regime rule,
     a bar-less session count that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, a
     sleeve weight that is not a Decimal in (0, 1], and a start capital that is not a positive
@@ -273,6 +288,7 @@ class RunConventions:
     start_capital: Decimal = INITIAL_EQUITY
     entry_bars: str = ENTRY_BARS_5M  # `daily` decides every entry on the daily estimate
     volume_pace: str = VOLUME_PACE_LIVE  # `full_day` reads the day's volume on 5-minute days too
+    overlap: bool = False  # a rotation funds the setup sleeves beside it (`OVERLAP_FUNDING`)
     # the run's config and policy overrides (`overrides`), already applied to its spec
     overrides: Overrides = field(default_factory=Overrides, hash=False)
 
@@ -306,6 +322,8 @@ class RunConventions:
             raise BacktestError("backtest_bad_entry_bars")
         if self.volume_pace not in VOLUME_PACE_RULES:
             raise BacktestError("backtest_bad_volume_pace")
+        if not isinstance(self.overlap, bool):
+            raise BacktestError("backtest_bad_overlap")
 
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
@@ -383,6 +401,16 @@ class RunConventions:
             ),
             **({} if self.overrides.empty else {"overrides": self.overrides.record()}),
             **({} if self.volume_pace == VOLUME_PACE_LIVE else {"volume_pace": self.volume_pace}),
+            **(
+                {
+                    "overlap": {
+                        "funding": OVERLAP_FUNDING,
+                        "rotation_capital": OVERLAP_ROTATION_CAPITAL,
+                    }
+                }
+                if self.overlap
+                else {}
+            ),
         }
 
 
@@ -436,11 +464,21 @@ class RunSpec:
 
     def __post_init__(self) -> None:
         """Refuse a run flagged for promotion under conventions it may not use, a sleeve weight
-        the policy cannot give (`sleeve_weight`) and a regime table without an exact multiplier
-        for every state: a spec that exists is a valid run."""
+        the policy cannot give (`sleeve_weight`), weights that do not fit the account
+        (`weights_fit`), an overlap run without exactly one rotation leg among several or with
+        the overlay, and a regime table without an exact multiplier for every state: a spec
+        that exists is a valid run."""
         if self.for_promotion:
             self.conventions.check_promotion(self.fills.slippage_bps)
         weight = sleeve_weight(self)
+        overlap = self.conventions.overlap
+        rotations = [
+            c.rotation is not None for c in (self.config, *(s.config for s in self.co_sleeves))
+        ]
+        if overlap and (
+            rotations.count(True) != 1 or not self.co_sleeves or self.overlay is not None
+        ):
+            raise BacktestError("backtest_bad_overlap")
         if self.co_sleeves:
             if self.for_promotion:  # evidence is of one sleeve
                 raise BacktestError("backtest_promotion_portfolio")
@@ -451,7 +489,7 @@ class RunSpec:
                 raise BacktestError("backtest_sweep_mixed_index")
             weights = [weight, *(c.weight for c in self.co_sleeves)]
             cap = self.policy.policy.cluster_cap
-            if not all(0 < w <= cap for w in weights) or sum(weights) > 1:
+            if not weights_fit(weights, rotations, cap, overlap=overlap):
                 raise BacktestError("backtest_bad_sleeve_weight")
         if self.overlay is not None and self.for_promotion:
             raise BacktestError("backtest_promotion_portfolio")
@@ -502,6 +540,19 @@ def sleeve_weight(spec: RunSpec) -> Decimal:
     return weight
 
 
+def weights_fit(
+    weights: Sequence[Decimal], rotations: Sequence[bool], cap: Decimal, *, overlap: bool
+) -> bool:
+    """Whether a portfolio run's leg weights fit its account: each in (0, `cap`] and their sum
+    at most 1; under `overlap` the rotation leg's (`rotations`) left out of the sum."""
+    if not all(0 < w <= cap for w in weights):
+        return False
+    counted = [
+        w for w, rotates in zip(weights, rotations, strict=True) if not (overlap and rotates)
+    ]
+    return sum(counted, Decimal(0)) <= 1
+
+
 def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[str]:
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
     of them when not known yet: a run that did not finish may have any), the touch fill
@@ -512,6 +563,7 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(g for g in KNOWN_GAPS if not (spec.co_sleeves and g == "single_sleeve_caps")),
         *(CO_SLEEVE_GAPS if spec.co_sleeves else ()),
         *(OVERLAY_GAPS if spec.overlay is not None else ()),
+        *(OVERLAP_GAPS if spec.conventions.overlap else ()),
         *(ROTATION_GAPS if _rotates(spec) else ()),
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),

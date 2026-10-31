@@ -22,6 +22,10 @@ capped weight, and it does not depend on how many other sleeves are in shadow. A
 capital of 0 (a base weight or equity of 0) has a `virtual_risk_pct` of 0, so the risk check
 rejects its entries `no_allocation` whatever paper P&L the sleeve has realised. It never
 changes a real weight and never reaches a real entry; every other sleeve has none.
+
+A backtest's overlap run (`backtest.spec.RunConventions.overlap`) names one sleeve, its rotation,
+that the whole-book cap leaves out (`overlap`), so the other sleeves keep their weight beside it
+and the weights may sum above 1. Live never passes it.
 """
 
 from __future__ import annotations
@@ -112,21 +116,27 @@ def _capped(
     rows: Sequence[tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]],
     products: list[Decimal],
     cluster_cap: Decimal,
+    overlap: str | None = None,
 ) -> list[Decimal]:
-    """`products` held to the risk cluster cap per cluster, then to the whole book (1)."""
+    """`products` held to the risk cluster cap per cluster, then to the whole book (1), the
+    `overlap` sleeve, when one is named, left out of the whole book."""
     weights = list(products)
     for cluster in {r[0].cluster for r in rows}:
         members = [i for i, r in enumerate(rows) if r[0].cluster == cluster]
         scaled = _scale_down([weights[i] for i in members], cluster_cap)
         for i, w in zip(members, scaled, strict=True):
             weights[i] = w
-    return _scale_down(weights, Decimal(1))
+    book = [i for i, r in enumerate(rows) if r[0].sleeve != overlap]
+    for i, w in zip(book, _scale_down([weights[i] for i in book], Decimal(1)), strict=True):
+        weights[i] = w
+    return weights
 
 
 def _nominal(
     rows: Sequence[tuple[SleeveInput, Decimal, Decimal, Decimal, Decimal]],
     index: int,
     cluster_cap: Decimal,
+    overlap: str | None = None,
 ) -> Decimal:
     """The weight the virtual sleeve at `index` would hold were it Live with health 1 in place of
     its strategy's other sleeves, beside the other strategies' Live weights: the other Shadow
@@ -138,7 +148,7 @@ def _nominal(
         r[1] * r[2] if i == index else Decimal(0) if r[0].sleeve == me.sleeve else r[4]
         for i, r in enumerate(rows)
     ]
-    return _capped(rows, products, cluster_cap)[index]
+    return _capped(rows, products, cluster_cap, overlap)[index]
 
 
 def _sleeve_row(
@@ -187,11 +197,16 @@ def _allocation(
 
 
 def allocate(
-    sleeves: Sequence[SleeveInput], policy: RiskPolicy, total_equity: Decimal
+    sleeves: Sequence[SleeveInput],
+    policy: RiskPolicy,
+    total_equity: Decimal,
+    *,
+    overlap: str | None = None,
 ) -> list[Allocation]:
     """One allocation per sleeve, in the order given.
 
-    Bounds, base weights, the cluster cap and the risk per trade are the policy's. Raises
+    Bounds, base weights, the cluster cap and the risk per trade are the policy's. `overlap`
+    (a backtest's only) names the sleeve the whole-book cap leaves out. Raises
     `AllocationError` for a non-Decimal or negative total equity.
     """
     if not isinstance(total_equity, Decimal) or not total_equity.is_finite() or total_equity < 0:
@@ -200,9 +215,11 @@ def allocate(
     with localcontext() as ctx:
         ctx.prec = _PRECISION
         rows = [_sleeve_row(s, policy, lo, hi) for s in sleeves]
-    weights = _capped(rows, [r[4] for r in rows], policy.cluster_cap)
+    weights = _capped(rows, [r[4] for r in rows], policy.cluster_cap, overlap)
     nominal = [
-        _nominal(rows, i, policy.cluster_cap) if r[0].lifecycle_state in VIRTUAL_STATES else None
+        _nominal(rows, i, policy.cluster_cap, overlap)
+        if r[0].lifecycle_state in VIRTUAL_STATES
+        else None
         for i, r in enumerate(rows)
     ]
     with localcontext() as ctx:

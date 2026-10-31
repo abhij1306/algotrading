@@ -30,15 +30,24 @@ topped up or trimmed), its MFE and MAE its best and worst prices over that entry
 and it carries the rank and score at entry and at exit.
 `rows` is the run's `rebalances.csv`: one row per order planned, traded or not, and one per
 target held unchanged.
+
+In an overlap run (`spec.RunConventions.overlap`) the book also funds the setup sleeves beside
+it: a setup entry may size on what selling every holding would net at its instant (`credit`),
+and when it takes more than the free cash the book sells for the shortfall (`fund`), the weakest
+holding first (`funding_order`: unranked on the last rebalance's close, then the lowest rank),
+the fewest shares that cover it (`shares_to_fund`), each sale a `sell` or `trim` row with the
+reason `rotation_funding` (`FUNDING`), its exit reason too when it closes the trade. The next
+rebalance sizes the book on `overlap_capital`, so it does not buy back what the setups still hold.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import ROUND_FLOOR, Decimal
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -53,16 +62,21 @@ from ..money import dividend_credit, require_exact
 from .report import END_OF_PERIOD, FillRow, LegRow, SignalRow, TradeRow
 
 __all__ = [
+    "FUNDING",
     "PLAYBOOK",
     "Plan",
     "Quote",
     "RotationBook",
     "TrCloses",
+    "funding_order",
+    "overlap_capital",
+    "shares_to_fund",
 ]
 
 PLAYBOOK = rotation.PLAYBOOK  # a rotation trade's playbook in the result files
 HOLD = "hold"
 CASH = "cash"  # a buy the cash cut down or out
+FUNDING = "rotation_funding"  # a sale paying for a setup entry (an overlap run)
 _ZERO = Decimal(0)
 _PRICE = Decimal("0.0001")
 _SCORE = Decimal("0.000001")
@@ -146,6 +160,41 @@ class Market:
     entry: Callable[[str, int, Decimal, int | None, Decimal | None], SignalRow]
 
 
+def funding_order(held: Iterable[str], ranks: Mapping[str, int]) -> list[str]:
+    """The order an overlap run sells `held` names in to fund a setup entry, the weakest first:
+    those without a rank on the last rebalance's close (`ranks`), then the lowest rank (the
+    largest number) first; ties by name."""
+    return sorted(held, key=lambda name: (name in ranks, -ranks.get(name, 0), name))
+
+
+def shares_to_fund(need: Decimal, held: int, proceeds: Callable[[int], Decimal]) -> int:
+    """The fewest of `held` shares whose net `proceeds` (shares -> cash after charges, rising
+    with the shares) cover `need`; all of them when even those do not, 0 for no need."""
+    if need <= 0 or held <= 0:
+        return 0
+    if proceeds(held) < need:
+        return held
+    lo, hi = 1, held
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if proceeds(mid) >= need:
+            hi = mid
+        else:
+            lo = mid + 1
+    return lo
+
+
+def overlap_capital(
+    weight: Decimal, equity: Decimal, funded: Iterable[tuple[Decimal, int, int]]
+) -> Decimal:
+    """A rotation's capital at an overlap run's rebalance: `weight` of `equity` less what its
+    funding sales still pay for, each funded setup position's (cash its sales covered, shares
+    still open, shares bought) counting the cash in the share of its shares still open; never
+    below 0."""
+    held = sum((cash * left / bought for cash, left, bought in funded if bought > 0), _ZERO)
+    return max(_ZERO, weight * equity - held)
+
+
 class RotationBook:
     """One rotation leg's holdings, cash flow, fills, trades and rebalance rows (module
     docstring)."""
@@ -173,6 +222,7 @@ class RotationBook:
         self.trades: list[TradeRow] = []
         self.signals: list[SignalRow] = []
         self.rows: list[dict[str, Any]] = []
+        self.ranks: dict[str, int] = {}  # the last rebalance's ranking, which `fund` reads
         # one DP charge per name per sell day: the account's set, shared with its other books
         self._sold: set[tuple[date, str]] = set() if sold is None else sold
 
@@ -247,6 +297,7 @@ class RotationBook:
     def rebalance(self, day: date, plan: Plan, capital: Decimal, market: Market) -> None:
         """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring)."""
         rank = {name: n for n, (name, _) in enumerate(plan.ranking, start=1)}
+        self.ranks = rank
         score = {
             name: require_exact(value, "score", floats=True).quantize(_SCORE)
             for name, value in plan.ranking
@@ -330,6 +381,47 @@ class RotationBook:
             self._buy(holding, qty, price, day)
             row(name, order.action, None if qty == order.qty else CASH, qty, price)
 
+    def credit(self, day: date, quote: Callable[[str], Quote]) -> Decimal:
+        """What selling every holding at `quote` would net now (an overlap run's setup entry
+        sizes on it); a name `quote` blocks counts nothing."""
+        total = _ZERO
+        for name, holding in self.holdings.items():
+            price, _ = quote(name)
+            if price is not None:
+                total += self._proceeds(name, holding.qty, price=price, day=day)
+        return total
+
+    def fund(
+        self,
+        day: date,
+        shortfall: Decimal,
+        quote: Callable[[str], Quote],
+        symbol: Callable[[str], str],
+    ) -> Decimal:
+        """Sell holdings at `quote` until their net proceeds cover `shortfall`, a setup entry's
+        in an overlap run (module docstring); what they netted."""
+        raised = _ZERO
+        for name in funding_order(self.holdings, self.ranks):
+            if raised >= shortfall:
+                break
+            price, _ = quote(name)
+            if price is None:
+                continue
+            holding = self.holdings[name]
+            held = holding.qty
+            qty = shares_to_fund(
+                shortfall - raised, held, partial(self._proceeds, name, price=price, day=day)
+            )
+            before = self.flow
+            self._sell(holding, qty, price, day, FUNDING, None, None)
+            raised += self.flow - before
+            action = "sell" if qty == held else "trim"
+            self._row(
+                day, None, name, symbol(name), action, FUNDING, self.ranks.get(name), None, qty,
+                price,
+            )  # fmt: skip
+        return raised
+
     def close_out(
         self, name: str, day: date, price: Decimal, reason: str, symbol: Callable[[str], str]
     ) -> None:
@@ -350,6 +442,12 @@ class RotationBook:
             self._sell(holding, holding.qty, price, day, END_OF_PERIOD, None, None)
 
     # --- fills and trades ------------------------------------------------------------------
+
+    def _proceeds(self, name: str, qty: int, *, price: Decimal, day: date) -> Decimal:
+        """What selling `qty` of `name` at `price` would net, as `_sell` fills it."""
+        sold_today = (day, name) in self._sold
+        filled, fees = self.fills.fill("sell", qty, price, day, sold_today=sold_today)
+        return filled * qty - fees
 
     def _buy(self, holding: _Holding, qty: int, price: Decimal, day: date) -> None:
         filled, fees = self.fills.fill("buy", qty, price, day)
