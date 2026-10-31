@@ -12,14 +12,20 @@ figure, and each is flagged `screener`. For years ending before FY2020 the cash 
 detailed balance sheet were published only in the annual report, so those figures count from the
 year end + `ANNUAL_REPORT_DAYS`; the abridged balance sheet (`ABRIDGED`) came with the results.
 
-Per month end, one basis (`research_basis`): the book's (`book.choose_basis`) when it has quarters,
-else the basis of the latest year. The fiscal-year figures are the latest year's; the TTM ones
-the latest four quarters (`book.Book.ttm`). Book value is the first-published year end's when it
-agrees with the secondary source's for that year within `BOOK_TOLERANCE` (or the secondary source
-has none), else the secondary source's: some filers typed crores into the lakh column of the HTML
-pages' reserves line. Shares: the latest first-published paid-up capital / face value, carried to
-the month end through the splits and bonuses since; else the secondary source's share capital /
-today's face value with each split after that year undone (never EPS).
+Per month end, each group of figures (the fiscal year, the TTM, the balance sheet) reads the basis
+with its latest figure (`freshest`; consolidated on a tie), named in the row: consolidated
+quarterly results were optional until FY2020, so a company's bases change over the years. The
+fiscal-year figures are the latest year's; the TTM ones the latest four quarters (`Book.ttm`).
+Book value is the first-published year end's when it agrees within `BOOK_TOLERANCE` with the
+secondary source's for that year (same basis, else the other), or where that has none with the
+year before's plus the year's profit; else the secondary source's, else none: some filers typed
+crores into the lakh column of the HTML pages' reserves line.
+
+Shares: first-published paid-up capital / face value, carried to the month end through the
+splits and bonuses since (the median of the latest three quarters: a page sometimes has the
+capital in the wrong unit); else the secondary source's share capital / today's face value with
+each split after that year undone (never EPS). Prices and corporate actions are the
+company's across its ISIN changes (`results.universe.successors`).
 """
 
 from __future__ import annotations
@@ -27,7 +33,7 @@ from __future__ import annotations
 import logging
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -43,10 +49,10 @@ from .book import (
     Book,
     KnownFact,
     Reader,
-    choose_basis,
     month_end,
+    months_before,
 )
-from .items import ANNUAL, INSTANT, QUARTER
+from .items import ANNUAL, INSTANT, QUARTER, YTD
 
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
@@ -75,7 +81,6 @@ BOOK_TOLERANCE = Decimal("1.5")  # first-published / secondary book value within
 STATEMENTS = frozenset({"pl", "bs", "cf", "other"})
 END_OF_DAY = time(23, 59)
 PANEL = "research-panel.parquet"
-FLOW_ITEMS = ("revenue", "net_profit")
 BALANCES = ("share_capital", "reserves", "equity", "equity_owners", "borrowings", "total_assets")
 
 
@@ -188,18 +193,6 @@ def base(source: str | None) -> str:
     return (source or "").removesuffix("_late")
 
 
-def research_basis(book: Book, day: date) -> str:
-    """The book's basis when it has quarters, else the basis of its latest year."""
-    both = (CONSOLIDATED, STANDALONE)
-    if any(book.latest_end(b, QUARTER, FLOW_ITEMS, day) for b in both):
-        return choose_basis(book, day)
-    years = {b: book.latest_end(b, ANNUAL, FLOW_ITEMS, day) for b in both}
-    consolidated, standalone = years[CONSOLIDATED], years[STANDALONE]
-    if consolidated is not None and (standalone is None or consolidated >= standalone):
-        return CONSOLIDATED
-    return STANDALONE
-
-
 def _source_cells(book: Book, basis: str, kind: str, end: date, items: Sequence[str]) -> str | None:
     found = [book.source(basis, kind, end, i) for i in items]
     return worst([s for s in found if s is not None]) if any(found) else None
@@ -210,33 +203,72 @@ def _only(book: Book, basis: str, end: date, item: str, sources: Sequence[str]) 
     return next((values[s] for s in sources if s in values), None)
 
 
+def freshest(book: Book, kind: str, items: Sequence[str], day: date) -> tuple[str, date] | None:
+    """The basis whose latest `kind` figure of `items` is the latest (consolidated on a tie),
+    and that period end; None when neither has one."""
+    found = [
+        (end, b == CONSOLIDATED, b)
+        for b in (CONSOLIDATED, STANDALONE)
+        if (end := book.latest_end(b, kind, items, day)) is not None
+    ]
+    if not found:
+        return None
+    end, _first, basis = max(found)
+    return basis, end
+
+
+def _other(basis: str) -> str:
+    return STANDALONE if basis == CONSOLIDATED else CONSOLIDATED
+
+
+def _screener_value(book: Book, basis: str, end: date) -> Decimal | None:
+    """The secondary source's owners' equity at `end`, in `basis` else the other one."""
+    for b in (basis, _other(basis)):
+        value = _equity_of(book, b, end, (SCREENER, f"{SCREENER}_late"))
+        if value is not None:
+            return value
+    return None
+
+
+def _equity_of(book: Book, basis: str, end: date, sources: Sequence[str]) -> Decimal | None:
+    def at(item: str) -> Decimal | None:
+        return _only(book, basis, end, item, sources)
+
+    return f.equity(
+        at("equity_owners"),
+        at("equity"),
+        at("minority_interest"),
+        at("share_capital"),
+        at("reserves"),
+    )
+
+
 def book_value(book: Book, basis: str, end: date) -> tuple[Decimal | None, str | None]:
-    """The year end's owners' equity and its source (module doc: checked against the secondary
-    source's when first-published)."""
-
-    def value(sources: Sequence[str]) -> Decimal | None:
-        def at(item: str) -> Decimal | None:
-            return _only(book, basis, end, item, sources)
-
-        return f.equity(
-            at("equity_owners"),
-            at("equity"),
-            at("minority_interest"),
-            at("share_capital"),
-            at("reserves"),
-        )
-
+    """The year end's owners' equity and its source (module doc): a first-published one checked
+    against the secondary source's (same basis, else the other), else, when that has none,
+    against the year before's first-published equity plus the year's profit; one failing the
+    check gives way to the secondary source's, else to nothing."""
     first = [s for s in SOURCES if base(s) != SCREENER]
-    secondary = [SCREENER, f"{SCREENER}_late"]
-    published, restated = value(first), value(secondary)
+    published = _equity_of(book, basis, end, first)
+    restated = _screener_value(book, basis, end)
+    flag = _source_cells(book, basis, INSTANT, end, ("reserves", "equity", "equity_owners"))
     if published is not None and published > 0:
-        if restated is None or restated <= 0:
-            return published, _source_cells(book, basis, INSTANT, end, ("reserves", "equity"))
-        if 1 / BOOK_TOLERANCE <= published / restated <= BOOK_TOLERANCE:
-            return published, _source_cells(book, basis, INSTANT, end, ("reserves", "equity"))
-    if restated is not None:
-        return restated, SCREENER
-    return published, _source_cells(book, basis, INSTANT, end, ("reserves", "equity"))
+        check = restated
+        if check is None or check <= 0:
+            prior = _equity_of(book, basis, months_before(end, 12), first)
+            profit = Reader(book, basis).profit_annual(end)
+            check = prior + profit if prior is not None and profit is not None else None
+        if check is None or check <= 0:
+            return published, flag
+        if 1 / BOOK_TOLERANCE <= published / check <= BOOK_TOLERANCE:
+            return published, flag
+    same = _equity_of(book, basis, end, (SCREENER, f"{SCREENER}_late"))
+    if same is not None:
+        return same, SCREENER
+    return (published, flag) if published is not None and published <= 0 else (None, None)
+
+
+FLOW_ITEMS = ("revenue", "net_profit")
 
 
 def panel_row(
@@ -247,23 +279,25 @@ def panel_row(
     face_value_now: tuple[date, Decimal] | None,
 ) -> dict[str, Any] | None:
     """The panel's figures for one instrument at the end of `day` (module doc); None when the
-    book has no year and no quarter yet."""
-    basis = research_basis(book, day)
-    r = Reader(book, basis)
-    ye = book.latest_end(basis, ANNUAL, FLOW_ITEMS, day)
-    qe = book.latest_end(basis, QUARTER, FLOW_ITEMS, day)
-    if ye is None and qe is None:
+    book has no year and no quarter yet. Each group (the year, the TTM, the balance sheet) reads
+    the basis with its latest figure (`freshest`), named in `<group>_basis`."""
+    year = freshest(book, ANNUAL, FLOW_ITEMS, day)
+    quarter = freshest(book, QUARTER, FLOW_ITEMS, day)
+    if year is None and quarter is None:
         return None
-    out: dict[str, Any] = {"basis": basis, "fy_end": ye, "ttm_end": qe}
+    out: dict[str, Any] = {}
 
     def put(name: str, value: Decimal | None, source: str | None) -> None:
         out[name] = value
-        out[f"{name}_src"] = base(source) if value is not None else None
+        out[f"{name}_src"] = base(source) if value is not None and source else None
 
-    if ye is not None:
+    out["fy_basis"], out["fy_end"] = year or (None, None)
+    if year is not None:
+        basis, ye = year
+        r = Reader(book, basis)
         put("revenue", r.at(ANNUAL, ye, "revenue"), book.source(basis, ANNUAL, ye, "revenue"))
-        owners = r.at(ANNUAL, ye, "net_profit_owners")
-        item = "net_profit_owners" if owners is not None else "net_profit"
+        owners = r.at(ANNUAL, ye, "net_profit_owners") is not None
+        item = "net_profit_owners" if owners else "net_profit"
         put("net_profit", r.profit_annual(ye), book.source(basis, ANNUAL, ye, item))
         pbt, fin = r.at(ANNUAL, ye, "pbt"), r.at(ANNUAL, ye, "finance_cost")
         put(
@@ -271,35 +305,26 @@ def panel_row(
             f.ebit(pbt, fin),
             _source_cells(book, basis, ANNUAL, ye, ("pbt", "finance_cost")),
         )
-        put(
-            "depreciation",
-            r.at(ANNUAL, ye, "depreciation"),
-            book.source(basis, ANNUAL, ye, "depreciation"),
-        )
-    ce = book.latest_end(basis, ANNUAL, ("cfo",), day)
-    out["cfo_end"] = ce
-    put("cfo", r.at(ANNUAL, ce, "cfo"), book.source(basis, ANNUAL, ce, "cfo") if ce else None)
-    if qe is not None:
-        owners = r.q(qe, "net_profit_owners") is not None
-        profit = "net_profit_owners" if owners else "net_profit"
-        put("ttm_revenue", r.ttm(qe, "revenue"), ttm_source(book, basis, qe, "revenue"))
-        put("ttm_net_profit", r.profit_ttm(qe), ttm_source(book, basis, qe, profit))
-    be = book.latest_end(basis, INSTANT, BALANCES, day)
-    out["bs_end"] = be
-    if be is not None:
+        dep = r.at(ANNUAL, ye, "depreciation")
+        put("depreciation", dep, book.source(basis, ANNUAL, ye, "depreciation"))
+        ce = book.latest_end(basis, ANNUAL, ("cfo",), day)
+        out["cfo_end"] = ce
+        if ce is not None:
+            put("cfo", r.at(ANNUAL, ce, "cfo"), book.source(basis, ANNUAL, ce, "cfo"))
+    _ttm(book, quarter, out, put)
+    balance = freshest(book, INSTANT, BALANCES, day)
+    out["bs_basis"], out["bs_end"] = balance or (None, None)
+    if balance is not None:
+        basis, be = balance
+        r = Reader(book, basis)
         equity, source = book_value(book, basis, be)
         put("equity", equity, source)
-        put(
-            "borrowings",
-            r.borrowings(be),
-            _source_cells(book, basis, INSTANT, be, ("borrowings", "borrowings_current")),
-        )
-        put(
-            "total_assets",
-            r.at(INSTANT, be, "total_assets"),
-            book.source(basis, INSTANT, be, "total_assets"),
-        )
-    count, count_src, count_end = shares_at(book, basis, day, actions, face_value_now)
+        debt = ("borrowings", "borrowings_current", "borrowings_noncurrent")
+        put("borrowings", r.borrowings(be), _source_cells(book, basis, INSTANT, be, debt))
+        assets = r.at(INSTANT, be, "total_assets")
+        put("total_assets", assets, book.source(basis, INSTANT, be, "total_assets"))
+    preferred = (quarter or year or (CONSOLIDATED, day))[0]
+    count, count_src, count_end = shares_at(book, preferred, day, actions, face_value_now)
     put("shares", count, count_src)
     out["shares_end"] = count_end
     if close is not None:
@@ -308,15 +333,41 @@ def panel_row(
     return out
 
 
+Put = Callable[[str, Decimal | None, str | None], None]
+
+
+def _ttm(book: Book, quarter: tuple[str, date] | None, out: dict[str, Any], put: Put) -> None:
+    """The TTM figures: in the latest quarter's basis, else (quarters missing there) the other."""
+    out["ttm_basis"] = out["ttm_end"] = None
+    if quarter is None:
+        return
+    first, qe = quarter
+    for basis in (first, _other(first)):
+        r = Reader(book, basis)
+        revenue, profit = r.ttm(qe, "revenue"), r.profit_ttm(qe)
+        if revenue is None and profit is None:
+            continue
+        owners = r.ttm(qe, "net_profit_owners") is not None
+        item = "net_profit_owners" if owners else "net_profit"
+        out["ttm_basis"], out["ttm_end"] = basis, qe
+        put("ttm_revenue", revenue, ttm_source(book, basis, qe, "revenue"))
+        put("ttm_net_profit", profit, ttm_source(book, basis, qe, item))
+        return
+
+
 def ttm_source(book: Book, basis: str, qe: date, item: str) -> str | None:
-    """The flag of a TTM figure (`Book.ttm`): the worst source of its four quarters (a year end
-    quarter may come from the year), else the year's when the TTM is the year."""
+    """The flag of a TTM figure (`Book.ttm`): the worst source of its four quarters (a year-end
+    quarter may be the year less the nine months), else the year's when the TTM is the year."""
     found = []
     for n in range(4):
         end = _back(qe, n)
         source = book.source(basis, QUARTER, end, item)
         if source is None:
-            source = worst([book.source(basis, ANNUAL, end, item)])
+            parts = [
+                book.source(basis, ANNUAL, end, item),
+                book.source(basis, YTD, _back(end, 1), item),
+            ]
+            source = worst(parts)
         found.append(source)
     flag = worst(found)
     return flag if flag is not None else book.source(basis, ANNUAL, qe, item)
@@ -327,6 +378,9 @@ def _back(end: date, quarters: int) -> date:
     return month_end(date(index // 12, index % 12 + 1, 1))
 
 
+SHARE_QUARTERS = 3  # the median of the latest quarters' counts (one typed in the wrong unit)
+
+
 def shares_at(
     book: Book,
     basis: str,
@@ -334,25 +388,32 @@ def shares_at(
     actions: Sequence[Action],
     face_value_now: tuple[date, Decimal] | None,
 ) -> tuple[Decimal | None, str | None, date | None]:
-    """Shares outstanding at the end of `day`, its source and the period end it comes from."""
-    for b in (basis, CONSOLIDATED if basis == STANDALONE else STANDALONE):
-        se = book.latest_end(b, QUARTER, ("paid_up_capital",), day)
-        if se is not None:
-            count = f.shares(book.get(b, QUARTER, se, "paid_up_capital"), _face(book, b, se))
+    """Shares outstanding at the end of `day`, its source and the period end it comes from:
+    first-published (module doc), the median of the latest `SHARE_QUARTERS` quarters' counts
+    each carried to `day`, in `basis` else the other; else the secondary source's."""
+    for b in (basis, _other(basis)):
+        ends = sorted(book.ends.get((b, QUARTER, "paid_up_capital"), ()), reverse=True)
+        counts = []
+        for end in [e for e in ends if e <= day][:SHARE_QUARTERS]:
+            count = f.shares(book.get(b, QUARTER, end, "paid_up_capital"), _face(book, b, end))
             if count is not None:
-                source = book.source(b, QUARTER, se, "paid_up_capital")
-                return carried(count, se, day, actions), source, se
+                counts.append((carried(count, end, day, actions), end))
+        if counts:
+            latest = counts[0][1]
+            value = sorted(c for c, _e in counts)[(len(counts) - 1) // 2]
+            return value, book.source(b, QUARTER, latest, "paid_up_capital"), latest
     if face_value_now is None:
         return None, None, None
-    ce = book.latest_end(basis, INSTANT, ("share_capital",), day)
-    if ce is None:
-        return None, None, None
-    capital = _only(book, basis, ce, "share_capital", [SCREENER, f"{SCREENER}_late"])
-    fetched, value = face_value_now
-    count = screener_shares(capital, value, ce, fetched, actions)
-    if count is None:
-        return None, None, None
-    return carried(count, ce, day, actions), SCREENER, ce
+    for b in (basis, _other(basis)):
+        ce = book.latest_end(b, INSTANT, ("share_capital",), day)
+        if ce is None:
+            continue
+        capital = _only(book, b, ce, "share_capital", [SCREENER, f"{SCREENER}_late"])
+        fetched, value = face_value_now
+        count = screener_shares(capital, value, ce, fetched, actions)
+        if count is not None:
+            return carried(count, ce, day, actions), SCREENER, ce
+    return None, None, None
 
 
 def _face(book: Book, basis: str, end: date) -> Decimal | None:
@@ -475,6 +536,69 @@ RESTATEMENT_YEARS = (2016, 2017)
 RESTATEMENT_ITEMS = ("revenue", "net_profit", "share_capital", "reserves")
 
 
+COLUMNS = (
+    "fy_basis",
+    "fy_end",
+    "revenue",
+    "net_profit",
+    "ebit",
+    "depreciation",
+    "cfo_end",
+    "cfo",
+    "ttm_basis",
+    "ttm_end",
+    "ttm_revenue",
+    "ttm_net_profit",
+    "bs_basis",
+    "bs_end",
+    "equity",
+    "borrowings",
+    "total_assets",
+    "shares_end",
+    "shares",
+    "close_day",
+    "close",
+    "market_cap",
+)
+FLAGGED = (
+    "revenue",
+    "net_profit",
+    "ebit",
+    "depreciation",
+    "cfo",
+    "ttm_revenue",
+    "ttm_net_profit",
+    "equity",
+    "borrowings",
+    "total_assets",
+    "shares",
+)
+
+
+def record(instrument: str, symbol: str, day: date, row: dict[str, Any]) -> dict[str, Any]:
+    """One panel row as stored: amounts as floats, every column present, a flag beside each
+    flagged figure."""
+    out: dict[str, Any] = {"instrument_id": instrument, "symbol": symbol, "as_of": day}
+    for name in COLUMNS:
+        value = row.get(name)
+        out[name] = float(value) if isinstance(value, Decimal) else value
+        if name in FLAGGED:
+            out[f"{name}_src"] = row.get(f"{name}_src")
+    return out
+
+
+def chain_closes(prices: dict[str, Any], ids: Sequence[str]) -> tuple[list[date], list[Decimal]]:
+    """One company's closes across its instruments (`ids`, the latest first): on a day two give,
+    the latest instrument's."""
+    by_day: dict[date, Decimal] = {}
+    for instrument in reversed(ids):
+        p = prices.get(instrument)
+        if p is not None:
+            by_day.update(zip(p.days, p.closes, strict=True))
+    days = sorted(by_day)
+    return days, [by_day[d] for d in days]
+
+
 def run(
     store: DataStore, out_dir: Path, since: date, until: date
 ) -> str:  # pragma: no cover - the database and the stores
@@ -483,41 +607,47 @@ def run(
 
     from app.database import db_session_scope
 
+    from ..results.universe import successors
     from .derive import load_prices
 
     days = month_ends(since, until)
+    covered_days = [d for d in days if fiscal_year(d) in COVERAGE_YEARS]
+    records: list[dict[str, Any]] = []
+    present: dict[tuple[str, date], dict[str, Any]] = {}
     with db_session_scope() as session:
-        filings, facts, symbols = _stored(session)
+        filings, symbols = _stored(session)
         actions = _actions(session)
         members = _memberships(session)
-    prices = load_prices(store, set(filings), since - timedelta(days=40))
-    records: list[dict[str, Any]] = []
-    rows: dict[tuple[str, date], dict[str, Any]] = {}
-    for n, (instrument, stored) in enumerate(filings.items(), 1):
-        known = [k for s in stored for k in known_filings(*s[1:], facts.get(s[0], []))]
-        face = _face_now(stored, facts)
-        p = prices.get(instrument)
-        closes = (p.days, p.closes) if p else ([], [])
-        for day, row in instrument_panel(known, days, closes, actions.get(instrument, []), face):
-            rows[(instrument, day)] = row
-            records.append(
-                {"instrument_id": instrument, "symbol": symbols[instrument], "as_of": day} | row
+        head = successors(session)
+        chains: dict[str, list[str]] = {i: [i] for i in filings}
+        for old, latest in head.items():
+            if latest in chains:
+                chains[latest].append(old)
+        wanted = {i for ids in chains.values() for i in ids}
+        prices = load_prices(store, wanted, since - timedelta(days=40))
+        for n, (instrument, stored) in enumerate(filings.items(), 1):
+            facts = _facts(session, [s[0] for s in stored])
+            known = [k for s in stored for k in known_filings(*s[1:], facts.get(s[0], []))]
+            ids = chains[instrument]
+            company_actions = sorted(
+                {a for i in ids for a in actions.get(i, [])}, key=lambda a: a.ex_date
             )
-        if n % 200 == 0:
-            logger.info("panel %d/%d instruments", n, len(filings))
-    frame = pl.DataFrame(
-        [{k: float(v) if isinstance(v, Decimal) else v for k, v in r.items()} for r in records],
-        infer_schema_length=None,
-    )
+            closes = chain_closes(prices, ids)
+            face = _face_now(stored, facts)
+            for day, row in instrument_panel(known, days, closes, company_actions, face):
+                records.append(record(instrument, symbols[instrument], day, row))
+                if fiscal_year(day) in COVERAGE_YEARS:
+                    present[(instrument, day)] = {
+                        k: 1 for k in PANEL_ITEMS if row.get(k) is not None
+                    }
+            if n % 100 == 0:
+                logger.info("panel %d/%d instruments, %d rows", n, len(filings), len(records))
+        pairs = _pairs(session)
+    frame = pl.DataFrame(records, infer_schema_length=None)
     out_dir.mkdir(parents=True, exist_ok=True)
     frame.write_parquet(out_dir / PANEL)
-    cov = coverage(
-        members, rows, [d for d in days if fiscal_year(d) in COVERAGE_YEARS], PANEL_ITEMS
-    )
-    sources = _source_mix(records)
-    with db_session_scope() as session:
-        pairs = _pairs(session)
-    text = report(cov, sources, restatement(pairs), len(members), until)
+    cov = coverage(members, present, covered_days, PANEL_ITEMS)
+    text = report(cov, _source_mix(records), restatement(pairs), len(members), until)
     path = out_dir / f"research-{until}.md"
     path.write_text(text, encoding="utf-8")
     return str(path)
@@ -525,12 +655,11 @@ def run(
 
 def _stored(
     session: Session,
-) -> tuple[
-    dict[str, list[tuple[Any, ...]]], dict[str, list[StoredFact]], dict[str, str]
-]:  # pragma: no cover
+) -> tuple[dict[str, list[tuple[Any, ...]]], dict[str, str]]:  # pragma: no cover
+    """Every stored filing's keys, by instrument, and each instrument's symbol."""
     from sqlalchemy import select
 
-    from ...models import HatFundamentalFact, HatFundamentalFiling
+    from ...models import HatFundamentalFiling
 
     filing = HatFundamentalFiling
     by: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
@@ -561,15 +690,28 @@ def _stored(
                 row.version,
             )
         )
-    facts: dict[str, list[StoredFact]] = defaultdict(list)
+    return by, symbols
+
+
+def _facts(
+    session: Session, filing_ids: Sequence[str]
+) -> dict[str, list[StoredFact]]:  # pragma: no cover
+    """The canonical facts of these filings, by filing."""
+    import uuid
+
+    from sqlalchemy import select
+
+    from ...models import HatFundamentalFact
+
     x = HatFundamentalFact
+    facts: dict[str, list[StoredFact]] = defaultdict(list)
     for filing_id, statement, kind, end, item, value in session.execute(
         select(x.filing_id, x.statement, x.period_kind, x.period_end, x.item, x.value).where(
-            x.item.is_not(None)
+            x.filing_id.in_([uuid.UUID(i) for i in filing_ids]), x.item.is_not(None)
         )
-    ).yield_per(200_000):
+    ):
         facts[str(filing_id)].append(StoredFact(statement, kind, end, item, value))
-    return by, facts, symbols
+    return facts
 
 
 def _face_now(
