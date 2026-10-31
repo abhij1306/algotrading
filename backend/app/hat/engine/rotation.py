@@ -16,6 +16,13 @@ ranks on that close and selects at the next open, where it knows what it can buy
 `sale_reason` and `buy_share` are the rebalance's own rules, shared the same way, and
 `lot_sales` splits a sale over a live holding's lots (a top-up is a lot of its own).
 
+Two optional rules, off unless the config sets them: `max_per_industry` caps the targets per
+industry in `select` (an unknown industry is not capped by default, `unknown_industry: free`: in
+the point-in-time store it marks mostly names that later left the index, so one capped bucket,
+`bucket`, tilts the selection towards the survivors; either choice is a bias, `decisions.md`),
+and `scale_down` (`scale_down_fires`) trims the book to a fraction mid-period
+(`scale_down_trims`) or sizes a rebalance on that fraction of the capital (`capital_share`).
+
 Every rotation order trades at 09:20, never at the open: its price is `engine/fill_0920.py`'s.
 """
 
@@ -32,7 +39,8 @@ import numpy as np
 
 from ..money import require_exact
 from ..risk.decision import ROTATION_PLAYBOOK
-from .strategy.config import Rotation
+from .regime_gate import RULES
+from .strategy.config import Rotation, ScaleDown
 
 __all__ = [
     "BUY",
@@ -40,14 +48,17 @@ __all__ = [
     "NOT_ELIGIBLE",
     "OUT_OF_BUFFER",
     "PLAYBOOK",
+    "SCALED_DOWN",
     "SELL",
     "TOP_UP",
     "TRIM",
     "TRIMMED",
+    "UNKNOWN_INDUSTRY",
     "Order",
     "Plan",
     "book_equity",
     "buy_share",
+    "capital_share",
     "is_rebalance",
     "lot_sales",
     "order_diff",
@@ -57,8 +68,11 @@ __all__ = [
     "ranking",
     "riskadj_parts",
     "sale_reason",
+    "scale_down_fires",
+    "scale_down_trims",
     "scores",
     "select",
+    "selection_depth",
     "targets",
     "window_rows",
     "zscores",
@@ -72,6 +86,8 @@ OUT_OF_BUFFER = "rotation_out"  # a sale: ranked below the buffer
 NOT_ELIGIBLE = "rotation_not_eligible"  # a sale: failed the universe stage, or not scored
 MARKET_FILTER = "rotation_market_filter"  # a sale: the regime gate off on the rebalance close
 TRIMMED = "rotation_trim"
+SCALED_DOWN = "rotation_scale_down"  # a trim: the scale-down fired on the close before
+UNKNOWN_INDUSTRY = "unknown"  # a name without a classification in force (never capped)
 _HUNDRED = Decimal(100)
 K = TypeVar("K")  # a lot's key
 
@@ -200,25 +216,83 @@ def select(
     buffer_rank: int,
     can_buy: Callable[[str], bool],
     kept: Sequence[str] = (),
+    *,
+    max_per_industry: int | None = None,
+    industry: Callable[[str], str] | None = None,
+    bucket_unknown: bool = False,
 ) -> list[str]:
     """The target names: `kept` first (held names kept without a rank), then each holding
     ranked within `buffer_rank` (1 the best of `ranking`), best first, then the best names
     `ranking` holds that are not targets yet and `can_buy`, up to `top_n` in all. A holding
-    outside the buffer, or not ranked, is not a target."""
-    target = list(kept)[:top_n]
+    outside the buffer, or not ranked, is not a target. With `max_per_industry` a holding or a
+    new name whose `industry` already has that many targets is passed over for the next one (a
+    held name passed over is sold); a kept name always stays and counts, and an unknown industry
+    (`UNKNOWN_INDUSTRY`) is never capped unless `bucket_unknown` counts every unknown name as one
+    industry."""
+    target: list[str] = []
+    counts: dict[str, int] = {}
+
+    def room(name: str) -> bool:
+        if max_per_industry is None or industry is None:
+            return True
+        key = _industry_key(industry(name), bucket_unknown)
+        return key is None or counts.get(key, 0) < max_per_industry
+
+    def take(name: str) -> None:
+        target.append(name)
+        if max_per_industry is not None and industry is not None:
+            key = _industry_key(industry(name), bucket_unknown)
+            if key is not None:
+                counts[key] = counts.get(key, 0) + 1
+
+    for name in list(kept)[:top_n]:
+        take(name)
     rank = {name: n for n, name in enumerate(ranking, start=1)}
     stay = sorted((h for h in held if rank.get(h, buffer_rank + 1) <= buffer_rank), key=rank.get)
     for name in stay:
         if len(target) >= top_n:
             break
-        if name not in target:
-            target.append(name)
+        if name not in target and room(name):
+            take(name)
     for name in ranking:
         if len(target) >= top_n:
             break
-        if name not in target and name not in held and can_buy(name):
-            target.append(name)
+        if name not in target and name not in held and room(name) and can_buy(name):
+            take(name)
     return target
+
+
+def _industry_key(found: str, bucket_unknown: bool) -> str | None:
+    """The industry a name counts under the cap as, None when it is never capped (an unknown
+    industry without `bucket_unknown`)."""
+    return None if found == UNKNOWN_INDUSTRY and not bucket_unknown else found
+
+
+def selection_depth(
+    ranking: Sequence[str], rules: Rotation, industry: Callable[[str], str] | None = None
+) -> int:
+    """How deep into `ranking` (best first) a rebalance's selection may reach, the names live
+    subscribes and prices for the open: `top_n + buffer_rank` without an industry cap. With one,
+    the rank by which `top_n + buffer_rank` names the cap could admit have been seen (a name
+    beyond the cap's count in its industry is never selected, so it does not count; an unknown
+    industry counts unless bucketed), or the whole ranking: the uncapped rule's slack measured in
+    names the cap leaves selectable."""
+    reach = rules.top_n + rules.buffer_rank
+    cap = rules.max_per_industry
+    if cap is None or industry is None:
+        return reach
+    bucket = rules.unknown_industry == "bucket"
+    counts: dict[str, int] = {}
+    admitted = 0
+    for n, name in enumerate(ranking, start=1):
+        key = _industry_key(industry(name), bucket)
+        if key is None or counts.get(key, 0) < cap:
+            admitted += 1
+            if key is not None:
+                counts[key] = counts.get(key, 0) + 1
+        if admitted >= reach:
+            return n
+    return len(ranking)
 
 
 @dataclass(frozen=True)
@@ -298,12 +372,15 @@ def targets(
     pending: Collection[str] = (),
     gate_on: bool,
     can_buy: Callable[[str], bool],
+    industry: Callable[[str], str] | None = None,
 ) -> tuple[tuple[str, ...], bool]:
     """(the target list, whether the market filter emptied it): empty under the market filter
-    with the gate off, else `select` with the hold buffer, a held factor-pending name kept
-    without a rank."""
+    with the gate off, else `select` with the hold buffer and the rules' industry cap (a name's
+    `industry` on the trade date), a held factor-pending name kept without a rank."""
     if rules.market_filter and not gate_on:
         return (), True
+    if rules.max_per_industry is not None and industry is None:
+        raise ValueError("rotation_industry_unknown")  # a capped rule needs the classification
     found = select(
         [name for name, _ in ranked_names],
         held,
@@ -311,6 +388,9 @@ def targets(
         rules.buffer_rank,
         can_buy,
         kept=[h for h in held if h in pending],
+        max_per_industry=rules.max_per_industry,
+        industry=industry,
+        bucket_unknown=rules.unknown_industry == "bucket",
     )
     return tuple(found), False
 
@@ -325,11 +405,12 @@ def plan(
     pending: Collection[str] = (),
     gate_on: bool,
     can_buy: Callable[[str], bool],
+    industry: Callable[[str], str] | None = None,
 ) -> Plan:
     """The rebalance decided on `night`'s close (`ranking`, then `targets`)."""
     ranks = ranking(passers, closes, rules, pending)
     target, filtered = targets(
-        ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy
+        ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry
     )
     return Plan(night, ranks, target, filtered=filtered)
 
@@ -351,6 +432,37 @@ def orders(
         require_exact(rules.min_change_pct, "min_change_pct", floats=True),
         reweight=rules.reweight,
     )
+
+
+def scale_down_fires(
+    rule: ScaleDown, closes: Sequence[Decimal], breadth: Sequence[Decimal | None]
+) -> bool:
+    """Whether the scale-down fires on the last session of the series (`closes` of the
+    strategy's regime index, `breadth`, both oldest first, as the regime gate reads them): one
+    of its checks off (`any_off`), or every one (`all_off`)."""
+    on = [RULES[type(check)](closes, breadth, check) for check in rule.checks]
+    return not all(on) if rule.when == "any_off" else not any(on)
+
+
+def capital_share(rules: Rotation, fires: bool) -> Decimal:
+    """The share of the sleeve's capital a rebalance sizes on: the scale-down's `keep_fraction`
+    when it is set and fires on the rebalance close, else 1."""
+    if rules.scale_down is None or not fires:
+        return Decimal(1)
+    return require_exact(rules.scale_down.keep_fraction, "keep_fraction", floats=True)
+
+
+def scale_down_trims(held: Mapping[str, int], keep_fraction: Decimal) -> list[Order]:
+    """The trims that take each holding (shares by name) to `keep_fraction` of its shares,
+    rounded up (the shares sold rounded down), by name; a holding that would sell none has no
+    order."""
+    out: list[Order] = []
+    for name in sorted(held):
+        qty = held[name]
+        sell = int((qty * (1 - keep_fraction)).to_integral_value(ROUND_FLOOR))
+        if qty > 0 and sell > 0:
+            out.append(Order(name, TRIM, min(sell, qty)))
+    return out
 
 
 def sale_reason(chosen: Plan, name: str) -> str:

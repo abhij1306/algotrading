@@ -12,7 +12,7 @@ unfilled remainder too, since it may still fill. Nothing here writes.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Callable, Iterable, Sequence
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from ..configs.records import Bot
 from ..configs.unit import configs_of
+from ..data.chains import stored_links
 from ..governance import Mode
 from ..models import (
     HatEvent,
@@ -39,8 +40,11 @@ from .rotation import PLAYBOOK as ROTATION_PLAYBOOK
 
 __all__ = [
     "HARD_STOP",
+    "chain_members",
     "day_counts",
     "entry_price_of",
+    "industry_lookup",
+    "industry_of",
     "last_hard_stop",
     "owner_slots",
 ]
@@ -62,14 +66,55 @@ _ENTERED_STATES = (
 )
 
 
-def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
+def chain_members(links: Iterable[tuple[str, str]], instrument_id: str) -> set[str]:
+    """`instrument_id` and every instrument the (old, new) linked ISIN `links` join it to, older
+    or newer: its chain (`data.chains`)."""
+    neighbours: dict[str, set[str]] = {}
+    for old, new in links:
+        neighbours.setdefault(old, set()).add(new)
+        neighbours.setdefault(new, set()).add(old)
+    found, todo = {instrument_id}, [instrument_id]
+    while todo:
+        for other in neighbours.get(todo.pop(), ()):
+            if other not in found:
+                found.add(other)
+                todo.append(other)
+    return found
+
+
+def industry_of(
+    session: Session,
+    instrument_id: uuid.UUID,
+    day: date,
+    links: Sequence[tuple[str, str]] | None = None,
+) -> str:
+    """The instrument's industry in force on `day` (the newest classification effective by
+    then, ties by name, as `backtest.data.industry_on` reads it), `unknown` without one: the
+    risk policy's industry cap and the rotation's read it. A linked ISIN's classification counts
+    for its whole chain (`chain_members` of `data.chains.stored_links`, read now unless given
+    as `links`), as the backtest's."""
+    found = stored_links(session) if links is None else links
+    ids = [uuid.UUID(i) for i in chain_members(found, str(instrument_id))]
     row = session.scalar(
         select(HatIndustry.industry)
-        .where(HatIndustry.instrument_id == instrument_id, HatIndustry.effective_from <= day)
-        .order_by(HatIndustry.effective_from.desc())
+        .where(HatIndustry.instrument_id.in_(ids), HatIndustry.effective_from <= day)
+        .order_by(HatIndustry.effective_from.desc(), HatIndustry.industry.desc())
         .limit(1)
     )
     return row or "unknown"
+
+
+def industry_lookup(session: Session, day: date) -> Callable[[str], str]:
+    """`industry_of` on `day` by instrument id text, the links read once and each name once."""
+    links = stored_links(session)
+    seen: dict[str, str] = {}
+
+    def lookup(name: str) -> str:
+        if name not in seen:
+            seen[name] = industry_of(session, uuid.UUID(name), day, links)
+        return seen[name]
+
+    return lookup
 
 
 # A veto trade is a virtual position of a confirm or auto signal (`positions.is_veto`).
@@ -125,7 +170,7 @@ def _slots(
             OpenPosition(
                 bot_id=position.bot_id,
                 instrument_id=position.instrument_id,
-                industry=_industry_of(session, position.instrument_id, trade_date),
+                industry=industry_of(session, position.instrument_id, trade_date),
                 qty=position.qty_open + remainders.get(position.signal_id, 0),
                 avg_entry=entry,
                 last_price=prices.get(position.instrument_id, entry),
@@ -139,7 +184,7 @@ def _slots(
             OpenPosition(
                 bot_id=signal.bot_id,
                 instrument_id=signal.instrument_id,
-                industry=_industry_of(session, signal.instrument_id, trade_date),
+                industry=industry_of(session, signal.instrument_id, trade_date),
                 qty=signal.qty,
                 avg_entry=entry,
                 last_price=prices.get(signal.instrument_id, entry),

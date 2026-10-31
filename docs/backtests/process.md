@@ -317,6 +317,8 @@ line flag sets the same for one run or every variant.
 | SMA exit grace window (no SMA exit in the first N sessions after the entry session; stops still act; unset = off) | `set: ['exits[close_below_sma].grace_sessions=10']` | `--set` |
 | Regime gate: rule, params, index | `set: ['regime={"index": "NIFTY 500", "rule": "breadth_above", "params": {"min_pct": 55}}']`, `regime.params.sma=100`; rule `always_on` is no gate | `--set` |
 | Regime sizing (1 or the live regime engine) | `regime_mult: policy` | `--regime-mult` |
+| Rotation industry cap (at most N targets per industry, point in time; unset = off) and how an unknown industry counts (`free`, default: never capped; `bucket`: all unknowns one industry; both biased, `decisions.md`) | `set: ['rotation.max_per_industry=4']`, `rotation.unknown_industry=bucket` | `--set` |
+| Rotation scale-down (each close's regime-rule checks; a fire trims the book to `keep_fraction` once a period, a rebalance whose close fires sizes on it; restored at the next rebalance that does not fire; needs `reweight`; unset = off) | `set: ['rotation.scale_down={"checks": [{"rule": "close_above_sma_and_rising", "sma": 20, "rising_days": 0}], "when": "any_off", "keep_fraction": 0.5}']` | `--set` |
 | Risk per trade | `risk_pct: 0.005` | `--risk-pct` |
 | Sleeve weight | `sleeve_weight: 0.5` | `--sleeve-weight` |
 | Max positions (and the ladder's top level) | `max_positions: 10` | `--max-positions` |

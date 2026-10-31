@@ -20,6 +20,16 @@ first.
   with `ROTATION_BUY`: the kills, a pause, the market, feed and quality checks, the free cash)
   in shadow, its virtual position a lot of the holding. A sale with no usable price waits for
   the next session's job (`pending_sales`). The outcome is recorded as `rotation.rebalanced`.
+- **The scale-down** (only with the rules' `scale_down`): on a rebalance night the plan records
+  whether its checks fire on that close (`rotation.scale_down_fires`), and the open sizes on
+  `keep_fraction` of the equity when they do (`rotation.capital_share`). On any other night
+  whose close fires it, unless the book was already scaled down since its last rebalance
+  (`scaled_in_period`), the night records `rotation.scale_down` for the next session, and that
+  session's job trims every holding to `keep_fraction` of its shares (`scale_down`), as the
+  backtest's book does. With the rules' `max_per_industry` the open's selection reads each
+  name's industry on the trade date (`snapshot.industry_of`, the risk policy's, following ISIN
+  lineage as the backtest's does), and the night records a deeper `depth` for the open's
+  subscriptions (`rotation.selection_depth`), so the names the cap skips to are priced too.
 
 Its prices are the live last trade at 09:20 or after, the definition the backtest and the
 replay share (`engine/fill_0920.py`: the last trade before 09:20, the 09:15 bar's close).
@@ -63,17 +73,20 @@ from .positions import TradeError
 from .regime_gate import regime_allows_longs
 from .scan import ScanInputs, universe_passers
 from .shadow import sell_position
+from .snapshot import industry_lookup
 from .strategy.config import Rotation, StrategyConfig, parse_config
 from .watchlist import bot_universe_members
 
 __all__ = [
     "EVENT_PLANNED",
     "EVENT_REBALANCED",
+    "EVENT_SCALE_DOWN",
     "FILLS",
     "Planned",
     "Lot",
     "Rebalanced",
     "RotationUnpricedError",
+    "ScaleDownPlanned",
     "closes_window",
     "plan_night",
     "planned",
@@ -86,6 +99,9 @@ __all__ = [
     "rebalanced_on",
     "record_rebalanced",
     "rotation_config",
+    "scale_down",
+    "scale_down_planned",
+    "scaled_in_period",
     "waits_for_prices",
     "waiting_sales",
 ]
@@ -94,10 +110,12 @@ logger = logging.getLogger(__name__)
 
 EVENT_PLANNED = "rotation.planned"
 EVENT_REBALANCED = "rotation.rebalanced"
+EVENT_SCALE_DOWN = "rotation.scale_down"  # a mid-period trim planned for the next session
 # A rotation signal's confidence: it has no setup score or evidence bucket.
 ROTATION_CONFIDENCE = "rotation_unscored"
 NO_PRICE = "no_price"
 NO_EQUITY = "no_equity"
+ALREADY_RAN = "already_ran"  # the trade date's job already ran: a second worker trims nothing
 VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
@@ -177,34 +195,111 @@ def plan_night(
     rules: Rotation = config.rotation
     night = inputs.as_of
     if not rotation.is_rebalance(night, trade_date, rules.rebalance):
-        return False
+        return _plan_scale_down(session, bot, rules, inputs, trade_date, now)
     if _planned_event(session, bot_id, trade_date) is not None:
         return False
     night_rank = night_ranking(session, bot, config, inputs, trade_date)
     if night_rank is None:
         return False
     passers, ranks, gate_on = night_rank
+    payload: dict[str, Any] = {
+        "trade_date": trade_date.isoformat(),
+        "night": night.isoformat(),
+        "gate_on": gate_on,
+        "strategy_version_id": str(bot.live_version_id),
+        "passers": len(passers),
+        # how deep the open's selection may reach: its subscriptions (`planned_instruments`)
+        "depth": rotation.selection_depth(
+            [name for name, _ in ranks],
+            rules,
+            None if rules.max_per_industry is None else industry_lookup(session, trade_date),
+        ),
+        "ranking": [[name, str(_score(value))] for name, value in ranks],
+    }
+    if rules.scale_down is not None:
+        payload["scale_down"] = rotation.scale_down_fires(
+            rules.scale_down, inputs.regime_closes, inputs.breadth
+        )
     record(
         session,
         aggregate_type="bot",
         aggregate_id=bot_id,
         event_type=EVENT_PLANNED,
         actor="engine",
-        payload={
-            "trade_date": trade_date.isoformat(),
-            "night": night.isoformat(),
-            "gate_on": gate_on,
-            "strategy_version_id": str(bot.live_version_id),
-            "passers": len(passers),
-            # how deep the open's selection may reach: its subscriptions (`planned_instruments`)
-            "depth": rules.top_n + rules.buffer_rank,
-            "ranking": [[name, str(_score(value))] for name, value in ranks],
-        },
+        payload=payload,
         bot_id=bot_id,
         occurred_at=now,
     )
     session.flush()
     return True
+
+
+def _plan_scale_down(
+    session: Session,
+    bot: Bot,
+    rules: Rotation,
+    inputs: ScanInputs,
+    trade_date: date,
+    now: datetime,
+) -> bool:
+    """Record a mid-period scale-down for `trade_date` (`rotation.scale_down`) when the rules
+    have one, the close of `inputs.as_of` fires it, the book was not scaled down since its last
+    rebalance and none is recorded for that date yet."""
+    if rules.scale_down is None or scale_down_planned(session, bot.id, trade_date) is not None:
+        return False
+    if not rotation.scale_down_fires(rules.scale_down, inputs.regime_closes, inputs.breadth):
+        return False
+    if scaled_in_period(*_last_period(session, bot.id)):
+        return False
+    record(
+        session,
+        aggregate_type="bot",
+        aggregate_id=bot.id,
+        event_type=EVENT_SCALE_DOWN,
+        actor="engine",
+        payload={
+            "trade_date": trade_date.isoformat(),
+            "night": inputs.as_of.isoformat(),
+            "strategy_version_id": str(bot.live_version_id),
+            "keep_fraction": str(rotation.capital_share(rules, True)),
+        },
+        bot_id=bot.id,
+        occurred_at=now,
+    )
+    session.flush()
+    return True
+
+
+def scaled_in_period(last_plan: tuple[date, bool] | None, last_scale_down: date | None) -> bool:
+    """Whether the book is scaled down in its current period: its last rebalance plan (its
+    night, whether the scale-down fired on it) sized it down, or a mid-period scale-down was
+    planned on a later night."""
+    if last_plan is not None and last_plan[1]:
+        return True
+    return last_scale_down is not None and (last_plan is None or last_scale_down > last_plan[0])
+
+
+def _last_period(
+    session: Session, bot_id: uuid.UUID
+) -> tuple[tuple[date, bool] | None, date | None]:
+    """(the night of the bot's last rebalance plan and whether it scaled down, the night of its
+    last mid-period scale-down), each None without one."""
+
+    def last(event_type: str) -> dict[str, Any] | None:
+        return session.scalar(
+            select(HatEvent.payload)
+            .where(HatEvent.bot_id == bot_id, HatEvent.event_type == event_type)
+            .order_by(HatEvent.occurred_at.desc(), HatEvent.id.desc())
+            .limit(1)
+        )
+
+    plan, trim = last(EVENT_PLANNED), last(EVENT_SCALE_DOWN)
+    return (
+        None
+        if plan is None
+        else (date.fromisoformat(plan["night"]), bool(plan.get("scale_down", False))),
+        None if trim is None else date.fromisoformat(trim["night"]),
+    )
 
 
 def night_ranking(
@@ -240,6 +335,7 @@ class Planned:
     gate_on: bool
     ranking: tuple[tuple[str, Decimal], ...]
     strategy_version_id: str | None = None
+    scaled: bool = False  # the scale-down fired on the night: the open sizes on its fraction
 
 
 def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | None:
@@ -254,7 +350,43 @@ def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | 
         gate_on=bool(payload["gate_on"]),
         ranking=tuple((str(name), Decimal(score)) for name, score in payload["ranking"]),
         strategy_version_id=payload.get("strategy_version_id"),
+        scaled=bool(payload.get("scale_down", False)),
     )
+
+
+@dataclass(frozen=True)
+class ScaleDownPlanned:
+    """A recorded mid-period scale-down: the night that fired it, its trade date, the share of
+    each holding's shares kept and the version whose rules fired it."""
+
+    night: date
+    trade_date: date
+    keep_fraction: Decimal
+    strategy_version_id: str | None = None
+
+
+def scale_down_planned(
+    session: Session, bot_id: uuid.UUID, trade_date: date
+) -> ScaleDownPlanned | None:
+    """The mid-period scale-down recorded for `trade_date`, if any."""
+    for event in session.scalars(
+        select(HatEvent).where(
+            HatEvent.bot_id == bot_id,
+            HatEvent.event_type == EVENT_SCALE_DOWN,
+            recorded_for(trade_date),
+        )
+    ):
+        payload = event.payload
+        if payload.get("trade_date") == trade_date.isoformat():
+            return ScaleDownPlanned(
+                night=date.fromisoformat(payload["night"]),
+                trade_date=trade_date,
+                keep_fraction=require_exact(
+                    payload["keep_fraction"], "keep_fraction", positive=True
+                ),
+                strategy_version_id=payload.get("strategy_version_id"),
+            )
+    return None
 
 
 def planned_instruments(session: Session, trade_date: date, depth: int) -> set[uuid.UUID]:
@@ -441,7 +573,12 @@ def rebalance(
     held = {name: sum(lot.qty for lot in parts) for name, parts in lots.items()}
     ranking = tuple((name, float(score)) for name, score in night.ranking)
     target, filtered, quote, unpriced = priced_targets(
-        ranking, held, rules, gate_on=night.gate_on, price=price
+        ranking,
+        held,
+        rules,
+        gate_on=night.gate_on,
+        price=price,
+        industry=industry_lookup(session, night.trade_date),
     )
     first = context()
     missing = ["feed", *unpriced] if first.feed_stale is True else list(unpriced)
@@ -456,7 +593,9 @@ def rebalance(
         done.skipped = NO_EQUITY  # no allocation for the night: nothing trades
         return done
     marked = {name: [(lot.qty, lot.entry) for lot in parts] for name, parts in lots.items()}
-    _, orders = rebalance_orders(chosen, marked, prices, at_cost, rules)
+    _, orders = rebalance_orders(
+        chosen, marked, prices, at_cost, rules, share=rotation.capital_share(rules, night.scaled)
+    )
     buys: list[rotation.Order] = []
     for order in orders:
         name = order.instrument_id
@@ -484,6 +623,52 @@ def rebalance(
     return done
 
 
+def scale_down(
+    session: Session,
+    bot_id: uuid.UUID,
+    trim: ScaleDownPlanned,
+    *,
+    price: Price,
+    waiting: Mapping[str, str],
+    now: datetime,
+    wait_until: datetime,
+    done: Rebalanced,
+) -> None:
+    """Trim every holding to the scale-down's `keep_fraction` of its shares at the open of its
+    trade date (`rotation.scale_down_trims`), the backtest's `RotationBook.scale_down`; a
+    holding whose sale is `waiting` is left to it. Until `wait_until` a holding with no tick or
+    a stale one raises `RotationUnpricedError` before anything is written; after it, and for a
+    name outside the day's band, the trim is not made and not carried over. Idempotent: under
+    the bot's lock, a trade date whose job already ran (`rebalanced_on`) trims nothing again."""
+    lock_bot(session, bot_id)
+    if rebalanced_on(session, bot_id, trim.trade_date):
+        done.skipped = ALREADY_RAN
+        return
+    bot = configs_of(session).get(Bot, bot_id)
+    config = None if bot is None else rotation_config(session, bot)
+    if bot is None or config is None or config.rotation is None:
+        done.skipped = "not_a_rotation"
+        return
+    if config.rotation.scale_down is None or trim.strategy_version_id != str(bot.live_version_id):
+        done.skipped = VERSION_CHANGED  # fired under another version's rules
+        return
+    lots = _lots(session, bot_id)
+    held = {n: sum(lot.qty for lot in parts) for n, parts in lots.items() if n not in waiting}
+    orders = rotation.scale_down_trims(held, trim.keep_fraction)
+    quotes = {o.instrument_id: price(o.instrument_id) for o in orders}
+    unpriced = [n for n, (found, why) in quotes.items() if found is None and why in WAIT_FOR_PRICE]
+    if waits_for_prices(unpriced, now, wait_until):
+        raise RotationUnpricedError(unpriced)
+    for order in orders:
+        name = order.instrument_id
+        found, _ = quotes[name]
+        if found is None:
+            done.row(name, rotation.TRIM, NO_PRICE, 0, None)
+            continue
+        sold = _sell(session, lots[name], order.qty, found, rotation.SCALED_DOWN, now)
+        done.row(name, rotation.TRIM, rotation.SCALED_DOWN, sold, found)
+
+
 def waits_for_prices(unpriced: Sequence[str], now: datetime, wait_until: datetime) -> bool:
     """Whether a rebalance holds back for `unpriced` (the names its selection reached with no
     tick or a stale one): only before `wait_until`, the cutoff a tick of a trading name comes
@@ -499,11 +684,13 @@ def priced_targets(
     *,
     gate_on: bool,
     price: Price,
+    industry: Callable[[str], str] | None = None,
 ) -> tuple[tuple[str, ...], bool, Callable[[str], Decimal | None], list[str]]:
     """(the target list, whether the market filter emptied it, the price of a name, the names
     the selection reached that have no tick yet or a stale one): `rotation.targets` with a
     name buyable when its live price is usable, each price read once. A name outside the day's
-    band is passed over; one in `unpriced` was too, and the caller must not trade on the list."""
+    band is passed over; one in `unpriced` was too, and the caller must not trade on the list.
+    `industry` is a name's industry on the trade date (the rules' industry cap reads it)."""
     quotes: dict[str, tuple[Decimal | None, str | None]] = {}
     unpriced: list[str] = []
 
@@ -518,7 +705,9 @@ def priced_targets(
             unpriced.append(name)
         return found is not None
 
-    target, filtered = rotation.targets(ranking, held, rules, gate_on=gate_on, can_buy=can_buy)
+    target, filtered = rotation.targets(
+        ranking, held, rules, gate_on=gate_on, can_buy=can_buy, industry=industry
+    )
     return target, filtered, quote, unpriced
 
 
@@ -528,13 +717,16 @@ def rebalance_orders(
     prices: Mapping[str, Decimal],
     at_cost: Decimal,
     rules: Rotation,
+    *,
+    share: Decimal = Decimal(1),
 ) -> tuple[Decimal, list[rotation.Order]]:
-    """(the capital, the orders) of a live rebalance: the book's equity on `prices`
-    (`rotation.book_equity` of `at_cost`, the equity with the holdings at cost, and the
-    holdings' `lots` of (shares, entry price)), and the order diff to `chosen`'s target on it.
-    The shadow-day replay sizes live's side with it."""
+    """(the capital, the orders) of a live rebalance: `share` (the scale-down's,
+    `rotation.capital_share`) of the book's equity on `prices` (`rotation.book_equity` of
+    `at_cost`, the equity with the holdings at cost, and the holdings' `lots` of (shares, entry
+    price)), and the order diff to `chosen`'s target on it. The shadow-day replay sizes live's
+    side with it."""
     held = {name: sum(qty for qty, _ in parts) for name, parts in lots.items()}
-    equity = rotation.book_equity(at_cost, lots, prices)
+    equity = rotation.book_equity(at_cost, lots, prices) * share
     return equity, rotation.orders(chosen, held, prices, equity, rules)
 
 

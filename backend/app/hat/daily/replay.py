@@ -48,13 +48,19 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import Decimal
-from typing import Any
+from typing import Any, Protocol
 
 import polars as pl
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from ..backtest.data import MarketView, load_market, looks_ahead, scan_night_members
+from ..backtest.data import (
+    MarketView,
+    industry_on,
+    load_market,
+    looks_ahead,
+    scan_night_members,
+)
 from ..backtest.intraday import Admission, session_bars
 from ..backtest.rotation import TrCloses
 from ..configs.records import Bot, StrategyVersion
@@ -73,6 +79,7 @@ from ..engine.positions import position_state
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.rotation_live import night_ranking, rebalance_orders
 from ..engine.scan import ScanInputs, scan_bot, universe_passers
+from ..engine.snapshot import industry_lookup
 from ..engine.strategy.config import ExitRule, Rotation, StrategyConfig, parse_config
 from ..engine.watchlist import bot_universe_members
 from ..errors import HatError
@@ -169,17 +176,20 @@ class Book:
     lots: Mapping[str, Sequence[tuple[int, Decimal]]] = field(default_factory=dict)
 
 
-# (chosen plan, lots, prices, equity at cost, rules) -> (capital, orders): each side's sizing
-Sizing = Callable[
-    [
-        rotation.Plan,
-        Mapping[str, Sequence[tuple[int, Decimal]]],
-        Mapping[str, Decimal],
-        Decimal,
-        Rotation,
-    ],
-    tuple[Decimal, list[rotation.Order]],
-]
+class Sizing(Protocol):
+    """Each side's sizing: (chosen plan, lots, prices, equity at cost, rules, the scale-down's
+    capital share) -> (capital, orders)."""
+
+    def __call__(
+        self,
+        chosen: rotation.Plan,
+        lots: Mapping[str, Sequence[tuple[int, Decimal]]],
+        prices: Mapping[str, Decimal],
+        at_cost: Decimal,
+        rules: Rotation,
+        *,
+        share: Decimal,
+    ) -> tuple[Decimal, list[rotation.Order]]: ...
 
 
 @dataclass(frozen=True)
@@ -463,15 +473,20 @@ def rotation_night(
     book: Book,
     prices: Mapping[str, Decimal],
     sizing: Sizing,
+    *,
+    industry: Callable[[str], str] | None = None,
+    scaled: bool = False,
 ) -> RotationNight:
     """A ranking's night: its scores to `SCORE`, the targets from `book` with every name
-    buyable, and the rebalance `sizing` makes of them on `prices` (none without an allocation)."""
+    buyable (each name's `industry` on the trade date, for the rules' industry cap), and the
+    rebalance `sizing` makes of them on `prices` (none without an allocation), on the
+    scale-down's share of the capital when it fired on the night (`scaled`)."""
     rules = config.rotation
     if rules is None:
         raise ReplayError("replay_not_a_rotation")
     held = {name: sum(q for q, _ in lots) for name, lots in book.lots.items()}
     target, filtered = rotation.targets(
-        ranks, held, rules, gate_on=gate_on, can_buy=lambda _n: True
+        ranks, held, rules, gate_on=gate_on, can_buy=lambda _n: True, industry=industry
     )
     ranking = tuple(
         (name, require_exact(score, "score", floats=True).quantize(SCORE)) for name, score in ranks
@@ -480,7 +495,8 @@ def rotation_night(
         return RotationNight(gate_on, ranking, target)
     chosen = rotation.Plan(date.min, tuple(ranks), target, filtered=filtered)
     used = {n: p for n in {*target, *held} if (p := prices.get(n)) is not None}
-    capital, orders = sizing(chosen, book.lots, used, book.at_cost, rules)
+    share = rotation.capital_share(rules, scaled)
+    capital, orders = sizing(chosen, book.lots, used, book.at_cost, rules, share=share)
     return RotationNight(
         gate_on,
         ranking,
@@ -497,16 +513,18 @@ def backtest_sizing(
     prices: Mapping[str, Decimal],
     at_cost: Decimal,
     rules: Rotation,
+    *,
+    share: Decimal = Decimal(1),
 ) -> tuple[Decimal, list[rotation.Order]]:
-    """The backtest's sizing (`loop._rotate_book`): the account's equity as the loop marks it,
-    its free cash plus each holding at its price (at its entry price without one), and the
-    order diff on it."""
+    """The backtest's sizing (`loop._rotate_book`): `share` (the scale-down's) of the account's
+    equity as the loop marks it, its free cash plus each holding at its price (at its entry
+    price without one), and the order diff on it."""
     held = {name: sum(q for q, _ in parts) for name, parts in lots.items()}
     cost = sum((q * e for parts in lots.values() for q, e in parts), Decimal(0))
     marked = sum(
         (q * prices.get(name, e) for name, parts in lots.items() for q, e in parts), Decimal(0)
     )
-    equity = at_cost - cost + marked
+    equity = (at_cost - cost + marked) * share
     return equity, rotation.orders(chosen, held, prices, equity, rules)
 
 
@@ -806,7 +824,14 @@ def live_side(
                 night = night_ranking(session, b.bot, b.config, inputs[index], trade_date)
                 if night is not None:
                     side.rotation[b.id] = rotation_night(
-                        b.config, night[1], night[2], books[b.id], prices, rebalance_orders
+                        b.config,
+                        night[1],
+                        night[2],
+                        books[b.id],
+                        prices,
+                        rebalance_orders,
+                        industry=industry_lookup(session, trade_date),
+                        scaled=_scaled(b.config.rotation, inputs[index]),
                     )
             continue
         members |= mine
@@ -816,6 +841,13 @@ def live_side(
     _add_exits(side, held, frame, day)
     _set_facts(side, frame, day, members, rotation_members, excluded, frozenset())
     return side
+
+
+def _scaled(rules: Rotation, inputs: ScanInputs) -> bool:
+    """Whether the rotation's scale-down fires on the close the side's inputs end at."""
+    return rules.scale_down is not None and rotation.scale_down_fires(
+        rules.scale_down, inputs.regime_closes, inputs.breadth
+    )
 
 
 def backtest_side(
@@ -877,7 +909,14 @@ def backtest_side(
             gate_on = regime_allows_longs(b.config.regime, inputs.regime_closes, inputs.breadth)
             if rotation.is_rebalance(day, trade_date, rules.rebalance):
                 side.rotation[b.id] = rotation_night(
-                    b.config, ranks, gate_on, books[b.id], prices, backtest_sizing
+                    b.config,
+                    ranks,
+                    gate_on,
+                    books[b.id],
+                    prices,
+                    backtest_sizing,
+                    industry=lambda n, data=data: industry_on(data, n, trade_date),
+                    scaled=_scaled(rules, inputs),
                 )
             continue
         night = members_on(scan_night_members(data.members, data.days), day)

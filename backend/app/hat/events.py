@@ -122,8 +122,10 @@ EVENT_GROUPS: dict[str, tuple[str, ...]] = {
         "sleeve.version_assigned",
         "regime.state_recorded",
         "allocation.computed",
-        # a rotation's ranked night and what its job at the next open traded (paper)
+        # a rotation's ranked night, a mid-period scale-down planned for the next open, and what
+        # its job at the next open traded (paper)
         "rotation.planned",
+        "rotation.scale_down",
         "rotation.rebalanced",
     ),
     "Sessions": (

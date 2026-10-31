@@ -509,6 +509,21 @@ ExitRule = Annotated[
 # --- rotation ---------------------------------------------------------------------------------
 
 
+class ScaleDown(Model):
+    """A rotation's mid-period scale-down (`engine.rotation.scale_down_fires`): each session's
+    close reads `checks`, regime rules (`RegimeRule`) on the strategy's regime index and the
+    market breadth; with `when` `any_off` (or `all_off`) one check off (or every one) fires it.
+    On a close that is not a rebalance close, a fire trims every holding to `keep_fraction` of
+    its shares at the next session's 09:20, once per rebalance period; on a rebalance close it
+    sizes that rebalance on `keep_fraction` of the sleeve's capital. The next rebalance whose
+    close does not fire restores full size: never mid-period, so a check that flips back and
+    forth trades at most once a period. Partial by design: the book never goes to all-cash."""
+
+    checks: list[RegimeRule] = Field(min_length=1, max_length=4)
+    when: Literal["any_off", "all_off"] = "any_off"
+    keep_fraction: float = Field(gt=0, lt=1)
+
+
 class Rotation(Model):
     """A cross-sectional momentum rotation (`engine.rotation`). On the close of each `rebalance`
     session (the last of its month, of its half month or of its week) every member that passes
@@ -522,7 +537,12 @@ class Rotation(Model):
     capital; a buy, top-up or trim under `min_change_pct` percent of the target is skipped, and
     with `reweight` false a held name keeps its size. No stop and no exit rule: a name leaves when
     it falls out of the buffer or the universe. With `market_filter` the regime gate off on the
-    rebalance close empties the book."""
+    rebalance close empties the book. `max_per_industry` (unset: no cap) holds at most that many
+    targets per industry (`engine.rotation.select`), the classification the risk policy's industry
+    cap reads, point in time; `unknown_industry` says how a name without one counts under it
+    (`free`, the default: never capped; `bucket`: every unknown name one industry);
+    `scale_down` (unset: off) is the mid-period scale-down (`ScaleDown`). All three are left out
+    of the canonical form at their defaults, so stored configs keep their hash."""
 
     rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
     score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
@@ -536,9 +556,19 @@ class Rotation(Model):
     reweight: bool = True
     min_change_pct: float = Field(default=2.0, ge=0, le=100)
     market_filter: bool = False
+    max_per_industry: int | None = Field(default=None, ge=1, le=200, exclude_if=lambda v: v is None)
+    unknown_industry: Literal["free", "bucket"] = Field(
+        default="free", exclude_if=lambda v: v == "free"
+    )
+    scale_down: ScaleDown | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Rotation:
+        if self.scale_down is not None and not self.reweight:
+            # without reweight a held name keeps its size: the restore would never come
+            raise ValueError("scale_down_needs_reweight")
+        if self.unknown_industry != "free" and self.max_per_industry is None:
+            raise ValueError("unknown_industry_without_cap")
         if self.buffer_rank < self.top_n:
             raise ValueError("buffer_rank_below_top_n")
         if self.short_sessions > self.long_sessions or self.skip_sessions >= self.long_sessions:
@@ -838,6 +868,7 @@ __all__ = [
     "Instance",
     "Playbook",
     "Rotation",
+    "ScaleDown",
     "SetupStage",
     "StrategyConfig",
     "parse_config",

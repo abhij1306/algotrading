@@ -1,7 +1,9 @@
 """The rotation job of the trading day: `rotation.rebalance` at 09:20 (`engine/rotation_live.py`).
 
 For each active bot whose live config is a rotation: the sales an earlier job left waiting for a
-price, then the rebalance its last rebalance night recorded for today, on paper, on the live
+price, then the mid-period scale-down its last night recorded for today (`rotation.scale_down`,
+only with the rules' `scale_down`), then the rebalance its last rebalance night recorded for
+today, on paper, on the live
 prices of the session (the instruments are priced and subscribed from `live.prepare`,
 `planned_instruments`). The entry context is the trigger service's (`LiveContexts`): the sleeve's
 equity and free cash, the kills, the feed and the quality gate. A bot that asks for confirm or
@@ -29,16 +31,20 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..configs.records import Bot
 from ..configs.unit import configs_of
+from ..engine.botlock import lock_bot
 from ..engine.rotation_live import (
     Planned,
     Rebalanced,
     RotationUnpricedError,
+    ScaleDownPlanned,
     pending_sales,
     planned,
     rebalance,
     rebalanced_on,
     record_rebalanced,
     rotation_config,
+    scale_down,
+    scale_down_planned,
     waiting_sales,
 )
 from ..execution.modes import bot_mode
@@ -133,6 +139,9 @@ class Rotations:
     def _one(self, bot_id: uuid.UUID, day: date) -> int:
         now = utc_now(self._clock)
         with self._session_factory() as session:
+            # the bot's lock before the ran-today check: a second worker waits here and then
+            # sees the first one's `rotation.rebalanced`, so a trim never compounds
+            lock_bot(session, bot_id)
             bot = configs_of(session).get(Bot, bot_id)
             if bot is None or rebalanced_on(session, bot_id, day):
                 return 0
@@ -140,7 +149,8 @@ class Rotations:
             done = Rebalanced(day)
             waiting = waiting_sales(session, bot_id)
             night = planned(session, bot_id, day)
-            if night is None and not waiting:
+            trim = scale_down_planned(session, bot_id, day)
+            if night is None and trim is None and not waiting:
                 return 0
             if asked != Mode.SHADOW:
                 # its entry context would be the real book's: nothing trades, and the waiting
@@ -149,7 +159,7 @@ class Rotations:
                 done.waiting.update(waiting)
             else:
                 # an unpriced name raises before the commit: this bot's writes roll back
-                self._trade(session, bot_id, night, waiting, now, done)
+                self._trade(session, bot_id, night, trim, waiting, now, done)
             record_rebalanced(session, bot_id, done, now, asked=asked)
             session.commit()
         self._tell(bot_id, day, asked, done)
@@ -160,6 +170,7 @@ class Rotations:
         session: Session,
         bot_id: uuid.UUID,
         night: Planned | None,
+        trim: ScaleDownPlanned | None,
         waiting: dict[str, str],
         now: datetime,
         done: Rebalanced,
@@ -167,6 +178,18 @@ class Rotations:
         def price(name: str) -> tuple[Decimal | None, str | None]:
             return self._prices.checked(session, uuid.UUID(name), now)
 
+        if trim is not None:
+            # before the waiting sales: an unpriced holding raises before anything is written
+            scale_down(
+                session,
+                bot_id,
+                trim,
+                price=price,
+                waiting=waiting,
+                now=now,
+                wait_until=self._wait_until(trim.trade_date),
+                done=done,
+            )
         if waiting:
             pending_sales(session, bot_id, waiting, price, now, done)
         if night is None:
