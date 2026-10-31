@@ -31,14 +31,14 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Protocol
 
 from ...time import IST
-from ..results.fetch import in_scope
+from ..results.fetch import annual_url, in_scope, listing_urls
 from ..results.ingest import (
     announcements_index,
     chain_owners,
     insurance_filings,
     member_filings,
 )
-from ..results.nse import Announcement, Filing
+from ..results.nse import LISTING_ANNUAL, Announcement, Filing, filings_of
 from ..results.scope import BASIS_CONSOLIDATED_FIRST, CONSOLIDATED, by_rule
 from ..results.secondary import page_url
 from ..results.timing import (
@@ -52,6 +52,8 @@ from ..results.timing import (
 from ..results.xbrl import XbrlError
 from .items import ANNUAL, SHAREHOLDING, SNAPSHOT
 from .nse import Document, fact_key, parse_document
+from .nse_html import HtmlPage, HtmlPageError, dated
+from .nse_html import parse_page as parse_html
 from .screener import Figure, parse_page
 
 if TYPE_CHECKING:
@@ -63,7 +65,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 NSE = "nse"
+NSE_HTML = "nse_html"
 SCREENER = "screener"
+FIRST_PUBLISHED = (NSE, NSE_HTML)  # point-in-time sources (`point_in_time` true)
 PAGE_FORMAT = "page"
 SHAREHOLDING_DAYS = 21  # SEBI LODR Reg 31: the pattern within 21 days of the quarter end
 QUARTER_DAYS = 45
@@ -218,6 +222,135 @@ def nse_versions(
             )
         )
     return out
+
+
+# --- NSE's HTML results pages ----------------------------------------------------------------
+
+
+def html_filings(
+    cache: RawCache, member: Member, owners: dict[str, str], span: tuple[date, date]
+) -> list[Filing]:
+    """The member's filings read from an HTML results page (no XBRL) with a period end in
+    `span`: from the cached quarterly and Annual listings of each symbol it had, one per page,
+    earliest broadcast first; a row naming another company's ISIN is left out (as
+    `results.ingest.member_filings`)."""
+    answers = []
+    for symbol in member.symbols:
+        for listing, url in [*listing_urls(symbol), (LISTING_ANNUAL, annual_url(symbol))]:
+            entry = cache.entry(url)
+            if entry is not None and entry.status == 200:
+                answers.append((listing, cache.body(entry)))
+    out: dict[str, Filing] = {}
+    for filing in sorted(filings_of(answers), key=_broadcast_order):
+        if filing.xbrl_url or not filing.html_url or filing.html_url in out:
+            continue
+        if not span[0] <= filing.period_end <= span[1]:
+            continue
+        if filing.isin and owners.get(filing.isin, member.instrument_id) != member.instrument_id:
+            continue
+        out[filing.html_url] = filing
+    return list(out.values())
+
+
+def _broadcast_order(filing: Filing) -> tuple[Any, ...]:
+    return (filing.broadcast_at is None, filing.broadcast_at or datetime.min, filing.seq)
+
+
+def html_rule(filings: Sequence[Filing], rule: str, consolidated: Iterable[date]) -> list[Filing]:
+    """The pages read under the basis rule: quarters per period end (`consolidated`: period
+    ends with consolidated XBRL), every Annual page in both bases (a standalone quarter needs
+    the standalone year beside it)."""
+    quarters = [f for f in filings if f.listing != LISTING_ANNUAL]
+    return by_rule(quarters, rule, consolidated) + [
+        f for f in filings if f.listing == LISTING_ANNUAL
+    ]
+
+
+@dataclass(frozen=True)
+class _Page:
+    filing: Filing
+    page: HtmlPage
+    sha256: str
+    fetched_at: datetime
+
+
+def html_pages(cache: RawCache, filings: Sequence[Filing], outcomes: Counter[str]) -> list[_Page]:
+    """The readable pages of `filings`, one per sha256."""
+    out = []
+    seen: set[str] = set()
+    for filing in filings:
+        entry = cache.entry(filing.html_url or "")
+        if entry is None or entry.status != 200:
+            outcomes["html_not_fetched" if entry is None else f"html_http_{entry.status}"] += 1
+            continue
+        if entry.sha256 in seen:
+            continue
+        seen.add(entry.sha256)
+        try:
+            parsed = parse_html(cache.body(entry))
+        except HtmlPageError as exc:
+            outcomes[str(exc)] += 1
+            continue
+        page = dated(parsed, filing.period_end, filing.broadcast_at)
+        outcomes["html_listing_period"] += page is not parsed
+        out.append(_Page(filing, page, entry.sha256, entry.fetched_at))
+    return out
+
+
+def html_versions(
+    pages: Sequence[_Page], announcements: Sequence[Announcement], outcomes: Counter[str]
+) -> list[FilingOut]:
+    """One filing per (period end, basis), versioned in broadcast order: a version holds the
+    latest quarter page and the latest year page seen so far (a March quarter's page and the
+    year's page are one filing, as one XBRL document holds both), and one that repeats the
+    latest version adds nothing. `public_at` follows `results.timing` with the listing's
+    broadcast as the filing time (no XBRL): the results announcement for a first version, else
+    the broadcast, estimated (a later re-broadcast is late, never early)."""
+    out = []
+    state: dict[tuple[date, str], dict[bool, _Page]] = {}
+    latest: dict[tuple[date, str], tuple[int, frozenset[Any]]] = {}
+    for p in sorted(pages, key=lambda p: _broadcast_order(p.filing)):
+        key = (p.page.period_end, p.page.basis)
+        held = state.setdefault(key, {})
+        held[p.page.annual] = p
+        facts = [f for one in held.values() for f in one.page.facts]
+        said = frozenset((f.period_kind, f.context, f.element, f.value.normalize()) for f in facts)
+        before = latest.get(key)
+        if before is not None and before[1] == said:
+            outcomes["html_same_facts"] += 1
+            continue
+        version = 1 if before is None else before[0] + 1
+        filed = xbrl_at(p.filing)
+        announced = _announced(p.filing, key[0], announcements) if version == 1 else None
+        when = public_at(version, announced, filed)
+        if when is None:
+            outcomes["html_no_time"] += 1
+            continue
+        latest[key] = (version, said)
+        outcomes["html_stored"] += 1
+        family = "bank" if any(one.page.family == "bank" for one in held.values()) else "html"
+        out.append(
+            FilingOut(
+                key[0],
+                key[1],
+                NSE_HTML,
+                "html",
+                family,
+                version,
+                when,
+                p.fetched_at,
+                p.filing.html_url or "",
+                p.sha256,
+                [Row(**vars(fact)) for fact in facts],
+            )
+        )
+    return out
+
+
+def _announced(filing: Filing, period_end: date, items: Sequence[Announcement]) -> datetime | None:
+    anchor = anchor_date(filing)
+    match = match_announcement(items, anchor, period_end) if anchor else None
+    return match.public if match else None
 
 
 # --- the secondary source ---------------------------------------------------------------------
@@ -389,7 +522,7 @@ def filing_values(member: Member, filing: FilingOut, now: datetime) -> tuple[obj
         filing.public_at.at,
         filing.public_at.source,
         filing.public_at.estimated,
-        filing.source == NSE,
+        filing.source in FIRST_PUBLISHED,
         filing.fetched_at,
         filing.source_url,
         filing.sha256,
@@ -434,6 +567,9 @@ def member_filings_out(
     items = sorted((a for s in member.symbols for a in announced.get(s, [])), key=lambda a: a.at)
     nse = nse_versions(nse_candidates(nse_cache, filings, outcomes), items, outcomes)
     consolidated = {f.period_end for f in filings if f.basis == CONSOLIDATED}
+    consolidated |= {f.period_end for f in nse if f.basis == CONSOLIDATED}
+    html = html_rule(html_filings(nse_cache, member, owners, span), rule, consolidated)
+    nse += html_versions(html_pages(nse_cache, html, outcomes), items, outcomes)
     consolidated |= {f.period_end for f in nse if f.basis == CONSOLIDATED}
     pages = []
     for basis in (CONSOLIDATED, "standalone"):
@@ -491,7 +627,7 @@ def extract(
                 (v for f in filings for v in fact_values(f)),
             )
             report.members = n
-            report.nse_filings += sum(1 for f in filings if f.source == NSE)
+            report.nse_filings += sum(1 for f in filings if f.source in FIRST_PUBLISHED)
             report.screener_filings += sum(1 for f in filings if f.source == SCREENER)
             report.facts += sum(len(f.rows) for f in filings)
             if n % 50 == 0:
