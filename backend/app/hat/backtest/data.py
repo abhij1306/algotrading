@@ -50,6 +50,7 @@ from ..data.features import features_read_lock
 from ..data.features_state import features_current, inputs_digest
 from ..data.identity import series_changes
 from ..data.index_history import NIFTY_500_TRI
+from ..data.isin import ordinary_equity
 from ..data.lineage_review import unexplained_jumps
 from ..data.point_in_time import chain_pending
 from ..data.series_break import segment_start
@@ -776,21 +777,20 @@ WHERE list_contains(?, index_name) AND date <= ? ORDER BY index_name, date
 
 
 # The built-in research universe (no stored row, `--universe NSE_STOCKS`): every NSE stock the
-# instrument table holds, its ISIN `INE...` (a company's equity share) or `IN9...` (a DVR share;
-# a partly paid share's too, which trades in its own series), never an ETF's or a fund's
-# (`INF...`), a member throughout. A stock is only scanned on the nights it has bars, so a
-# delisted one is in the universe until its last trade and a listing from its first; the bot's
-# universe criteria (series, turnover, price) filter it point in time.
+# instrument table holds whose ISIN is ordinary equity (`isin.ordinary_equity`, type `01`): a
+# company's share (`INE...`) or its DVR or partly paid class (`IN9...`), never a rights
+# entitlement, InvIT or REIT unit or an ETF's or a fund's (`INF...`), a member throughout. A
+# stock is only scanned on the nights it has bars, so a delisted one is in the universe until its
+# last trade and a listing from its first; the bot's universe criteria (series, turnover, price)
+# filter it point in time.
 NSE_STOCKS = "NSE_STOCKS"
 NSE_STOCKS_VERSION_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000001")
 NSE_STOCKS_UNIVERSE_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000002")
-STOCK_ISIN_PREFIXES = ("INE", "IN9")
 
 
-def is_stock_isin(isin: str | None) -> bool:
-    """Whether an ISIN is an Indian company's share (`INE...`, or `IN9...` for a DVR or a partly
-    paid share), not an ETF or fund unit (`INF...`) or another security."""
-    return isin is not None and isin.startswith(STOCK_ISIN_PREFIXES)
+def nse_stocks(rows: Iterable[tuple[uuid.UUID, str | None]]) -> list[uuid.UUID]:
+    """The ids, sorted, of the (instrument id, ISIN) `rows` whose ISIN is ordinary equity."""
+    return sorted(i for i, isin in rows if ordinary_equity(isin))
 
 
 def nse_stock_members(
@@ -803,7 +803,7 @@ def nse_stock_members(
         .join(HatMarket, HatMarket.id == HatInstrument.market_id)
         .where(HatMarket.code == "NSE")
     ).all()
-    stocks = sorted(i for i, isin in rows if is_stock_isin(isin))
+    stocks = nse_stocks(rows)
     members = point_in_time_members(
         (), include=stocks, exclude=(), lineage=lineage, since=since, until=until
     )
