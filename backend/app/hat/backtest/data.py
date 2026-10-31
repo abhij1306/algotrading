@@ -926,7 +926,7 @@ def membership_cover_refusal(
     """Why a run over `start..until` cannot read an index history covering `cover` (first and
     last day), or None when it can: `backtest_no_index_membership` without a history,
     `backtest_starts_before_membership@<first day>` for a run starting before the history (the
-    NIFTY 500's starts 2016-01-01; earlier bars still warm the indicators up), and
+    NIFTY 500's starts 2011-06-22, HAT's first bar day), and
     `backtest_ends_after_membership@<last day>` for one ending after it."""
     if cover is None:
         return "backtest_no_index_membership"

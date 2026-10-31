@@ -178,11 +178,12 @@ command (data check, run, sweep, rerun, compare, review request), knob and audit
 `docs/backtests/process.md`; this section holds only the operator facts around it.
 
 `--universe` takes the universe's id or name. The universe is its index's members as of each
-session, through lineage (Index membership). Backtests run from 2016-01-01 onward until the
-2011-2015 membership is resolved (decisions.md "Backtests from 2016-01-01"): a `--from` before the
-loaded history's first day is refused `backtest_starts_before_membership@2016-01-01`, a `--to`
+session, through lineage (Index membership). The NIFTY 500 history starts 2011-06-22
+(decisions.md "NIFTY 500 history from 2011-06-22"): a `--from` before the
+loaded history's first day is refused `backtest_starts_before_membership@<day>`, a `--to`
 after its last day `backtest_ends_after_membership@<day>`, and a universe whose index has no
-history loaded `backtest_no_index_membership`. Bars before 2016 still warm the indicators up.
+history loaded `backtest_no_index_membership`. A run before 2016 also needs a cost schedule in
+force (the schedules start 2016-01-01: `cost_no_schedule`).
 `--universe NSE_STOCKS` (research only, no stored row) is every NSE-market ordinary equity share
 (ISIN type `01`, `INE...` or `IN9...` for a DVR or partly paid class; no rights entitlement, InvIT,
 REIT, ETF or fund) the instrument table holds, delisted ones included, a
@@ -324,9 +325,13 @@ from the NSE Indices change notices (`index_name,isin,symbol_at_the_time,from_da
 source_notice`; `to_date` is the first session no longer a member, empty for a member on
 `as_of`) by `scripts/data/nifty500_membership.py` in a working directory outside the repo:
 `fetch` (notices and today's list), `text`, `parse`, `reference` (hat_live and the daily bars,
-read-only), `build --as-of <list date>`; its docstring has the hand-kept `overrides.json` and
-`symbol_alias.json`. Write the coverage report beside the CSV. Load it from
-`<HAT_DATA_ROOT>/admin/`:
+read-only), `build --as-of <list date> --start 2011-06-22 --strict-from 2014-01-22 --anchor <list>...`, the
+anchors being the archived full lists (`raw/wayback/*_cnx500.csv`: 2010-01-02, 2014-01-22,
+2014-07-09, 2015-03-25). The build undoes the notices back from today's list and resets to each
+archived list at its day, recording every name a list or notice does not fit in
+`nifty500-membership-build.json`; it refuses any from `--strict-from` on. Its docstring has the
+hand-kept `overrides.json` and `symbol_alias.json`. Write the coverage report beside the CSV. Load
+it from `<HAT_DATA_ROOT>/admin/`:
 
 ```bash
 $ADMIN load-index-membership --csv nifty500-membership.csv --as-of <list date>          # dry run
@@ -353,9 +358,10 @@ $ADMIN load-industry-history --dir nifty500-industry --apply
 ```
 
 It replaces each classified chain's rows dated up to the newest snapshot (rows the nightly load
-wrote later stay) and prints the old-label mapping it used and the NIFTY 500 coverage from 2016
-(member chains classified, unknown member-days before and after, the names left unknown).
-Loading the same files again changes nothing.
+wrote later stay) and prints the old-label mapping it used, the archived-list fill
+(`archived_fill`: the best-fit label mapping with its agreement, the chains and member-days it
+fills) and the NIFTY 500 coverage from 2011-06-22 (member chains classified, unknown member-days
+before and after, the names left unknown). Loading the same files again changes nothing.
 
 ### Financial results
 
@@ -464,7 +470,7 @@ counted). D3, D4 and D7 read theirs the same way (`exceptions.py`) from `d3_exce
 resolved to the one ISIN it has had), D7 by the index name under `key`; D4 pins the bars and the
 scale (`bars=62;scale=1.3367`). A row two items match excepts neither, and a row listed twice is
 refused. A membership history that starts after 2020-03-31 fails D5
-(`scope_unknown`). D3 judges every session from 2016-01-01 (`sessions_before_history` warns
+(`scope_unknown`). D3 judges every session from 2011-06-22 (`sessions_before_history` warns
 before it); D7 compares an index day neither NSE's archive nor niftyindices' copy has a day file
 for with niftyindices' price history (`verify_reference/index/history_<index>_<year>.json`). A
 check without its reference fails

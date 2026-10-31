@@ -62,6 +62,47 @@ def test_undo_refuses_a_change_that_does_not_fit(
         undo_changes({"A": "A"}, AS_OF, changes, START, TODAY)
 
 
+def test_undo_records_what_does_not_fit_when_asked() -> None:
+    """With a conflicts list, a key a change does not fit is recorded and skipped, and the rest
+    of the change is undone."""
+    found: list = []
+    late = _change(date(2020, 1, 1), {"A": "A", "Z": "Z"}, {"X": "X"}, "n")
+    rows = undo_changes({"A": "A", "B": "B"}, AS_OF, [late], START, TODAY, found)
+    assert [(c.source, k) for c, k in found] == [("n", "Z")]
+    assert sorted((m.key, m.effective_from, m.effective_to) for m in rows) == [
+        ("A", date(2020, 1, 1), None),
+        ("B", START, None),
+        ("X", START, date(2020, 1, 1)),
+    ]
+
+
+def test_undo_resets_to_an_archived_list() -> None:
+    """An archived list replaces the rebuilt members once the changes from its day on are
+    undone; each key it differs on is a conflict of the implied change on its day."""
+    found: list = []
+    day = date(2018, 1, 1)
+    changes = [_change(date(2019, 1, 1), {"B": "B"}, {"C": "C"}, "n1")]
+    agrees = {"A": "A", "C": "C"}  # as the undone notice left it
+    anchors = {day: (agrees, "list.csv"), date(2010, 1, 1): ({}, "before-start.csv")}
+    undo_changes({"A": "A", "B": "B"}, AS_OF, changes, START, TODAY, found, anchors)
+    assert found == []  # and an anchor before the start is not reached
+    # C missing: a notice before the list put it in; M: a missing notice took it out after
+    anchors = {day: ({"A": "A", "M": "M"}, "list.csv")}
+    rows = undo_changes({"A": "A", "B": "B"}, AS_OF, changes, START, TODAY, found, anchors)
+    assert sorted((c.day, c.source, k) for c, k in found) == [
+        (day, "list.csv", "C"),
+        (day, "list.csv", "M"),
+    ]
+    assert sorted((m.key, m.effective_from, m.effective_to, m.source) for m in rows) == [
+        ("A", START, None, TODAY),
+        ("B", date(2019, 1, 1), None, "n1"),
+        ("C", day, date(2019, 1, 1), "list.csv;n1"),
+        ("M", START, day, "list.csv"),
+    ]
+    with pytest.raises(ValueError, match="anchors need a conflicts list"):
+        undo_changes({"A": "A"}, AS_OF, [], START, TODAY, None, anchors)
+
+
 def test_undo_refuses_a_change_outside_the_cover() -> None:
     late = _change(date(2026, 10, 30), {"A": "A"}, {"B": "B"}, "n")
     with pytest.raises(IndexMembershipError, match="membership_change_outside_cover"):

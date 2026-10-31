@@ -49,7 +49,7 @@ Commands, in first-deploy order:
     load-industry-history --dir DIR [--apply]  the point-in-time industries (hat_industry) from
                                               the NIFTY 500 list snapshots DIR/YYYY-MM-DD.csv
                                               (docs/decisions.md, Industry history), with the
-                                              NIFTY 500 coverage from 2016; without --apply a
+                                              NIFTY 500 coverage from 2011-06-22; without --apply a
                                               dry run that writes nothing
     save-draft --strategy ID --config YAML    a new draft version, outside market hours
                                               (HAT-BOT-084)

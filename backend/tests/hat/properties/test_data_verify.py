@@ -1592,14 +1592,14 @@ def test_d3_a_capture_is_judged_on_the_last_session_closed_when_it_was_taken() -
 
 
 def test_d3_sessions_before_the_history_warn_and_after_it_fail() -> None:
-    days = [date(2015, 12, 31), date(2016, 1, 1), date(2016, 1, 4), date(2016, 1, 5)]
+    days = [date(2011, 6, 21), date(2011, 6, 22), date(2011, 6, 23), date(2011, 6, 24)]
     found = {f["code"]: f for f in membership.scope_findings(days, days[1], days[2])}
     assert found["sessions_before_history"]["severity"] == "warn"
-    assert found["sessions_without_membership"]["days"] == ["2016-01-05"]
+    assert found["sessions_without_membership"]["days"] == ["2011-06-24"]
     assert "history_starts_late" not in found
     late = {f["code"]: f for f in membership.scope_findings(days, days[2], days[3])}
-    # a history starting after 2016-01-01 leaves a backtest session without members
-    assert late["history_starts_late"]["days"] == ["2016-01-01"]
+    # a history starting after 2011-06-22 leaves a backtest session without members
+    assert late["history_starts_late"]["days"] == ["2011-06-22"]
     assert late["sessions_before_history"]["sessions"] == 1
 
 

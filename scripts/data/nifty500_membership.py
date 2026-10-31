@@ -14,8 +14,9 @@ Usage (from the repo root, backend venv active):
 The steps, each writing under `--work` (or `NIFTY500_DIR`), a directory outside the repo:
 
 - `fetch`: the niftyindices press-release page -> `press_index.csv` (date, href, title); every
-  notice from 2011 on that is not a debt, ETF or launch notice -> `raw/press/*.pdf` (skips files
-  it has); today's list -> `raw/ind_nifty500list.csv`.
+  notice from 2010 on that is not a debt, ETF or launch notice -> `raw/press/*.pdf` (skips files
+  it has; NSE's archive copy where niftyindices serves an error page); today's list ->
+  `raw/ind_nifty500list.csv`.
 - `text`: each PDF's text -> `raw/text/*.txt` (pdfplumber; skips files it has).
 - `parse`: from each text naming NIFTY 500 or CNX 500, its effective dates and the excluded and
   included symbols of its NIFTY 500 sections -> `changes_parsed.json`.
@@ -48,7 +49,7 @@ import time
 import urllib.request
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -57,9 +58,11 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 SITE = "https://www.niftyindices.com"
 PRESS_PAGE = f"{SITE}/press-release"
 LIST_URL = f"{SITE}/IndexConstituent/ind_nifty500list.csv"
+# NSE's copy of each notice, for one niftyindices serves as an HTML error page
+ARCHIVE = "https://nsearchives.nseindia.com/content/indices"
 LIST_SOURCE = "ind_nifty500list.csv"
 USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130"
-FIRST_YEAR = 2011
+FIRST_YEAR = 2010  # the oldest archived list is 2010-01-02
 SKIP_TITLES = (
     "fixed income",
     "g-sec",
@@ -240,9 +243,11 @@ class Reference:
     spans: dict[str, list[tuple[date, date, str]]]  # symbol -> (first, last, instrument id)
     history: dict[str, list[tuple[date, date | None, str]]]  # instrument id -> symbol spans
     alias: dict[str, str] = field(default_factory=dict)
+    listed: dict[str, list[tuple[date, str]]] = field(default_factory=dict)  # symbol -> (day, ISIN)
 
     def __post_init__(self) -> None:
         self.by_isin = {v: k for k, v in self.isin.items()}
+        self.first_bar = min((s[0] for spans in self.spans.values() for s in spans), default=None)
         self.successor = {old: new for old, new, _ in self.lineage}
         self.predecessors: dict[str, list[tuple[str, date]]] = defaultdict(list)
         for old, new, eff in self.lineage:
@@ -261,13 +266,18 @@ class Reference:
 
     def resolve(self, symbol: str, day: date, side: str) -> str | None:
         """The instrument `symbol` named around `day`: on the day before for an exclusion
-        (`out`), on the day for an inclusion (`in`), else the nearest span within RESOLVE_DAYS."""
+        (`out`), on the day for an inclusion (`in`), else the nearest span within RESOLVE_DAYS
+        (of the first bar day, for a day before HAT's bars begin);
+        failing that, the ISIN the nearest archived list (`listed`) gives the symbol, as its
+        instrument or `PSEUDO:<isin>` (a stock that left before HAT's bars begin)."""
         symbol = self.alias.get(symbol, symbol)
         if symbol.startswith("ISIN:"):
             return self.by_isin.get(symbol[5:])
         if symbol.startswith("PSEUDO:"):
             return symbol
         ref = day - timedelta(days=1) if side == "out" else day
+        if self.first_bar and ref < self.first_bar:
+            ref = self.first_bar
 
         def distance(span: tuple[date, date, str]) -> int:
             first, last, _ = span
@@ -276,10 +286,15 @@ class Reference:
             return min(abs((first - ref).days), abs((last - ref).days))
 
         candidates = self.spans.get(symbol)
-        if not candidates:
+        if candidates:
+            best = min(candidates, key=distance)
+            if distance(best) <= RESOLVE_DAYS:
+                return best[2]
+        listed = self.listed.get(symbol)
+        if not listed:
             return None
-        best = min(candidates, key=distance)
-        return best[2] if distance(best) <= RESOLVE_DAYS else None
+        _, isin = min(listed, key=lambda x: abs((x[0] - ref).days))
+        return self.by_isin.get(isin) or f"PSEUDO:{isin}"
 
     def symbol_on(self, iid: str, day: date, fallback: str) -> str:
         for first, last, symbol in self.history.get(iid, ()):
@@ -367,7 +382,10 @@ def cmd_fetch(work: Path) -> None:
             continue
         try:
             tmp = target.with_suffix(".part")  # a stopped run leaves no partial PDF
-            tmp.write_bytes(_get(SITE + href))
+            body = _get(SITE + href)
+            if not body.startswith(b"%PDF"):
+                body = _get(f"{ARCHIVE}/{os.path.basename(href)}")
+            tmp.write_bytes(body)
             os.replace(tmp, target)
             got += 1
         except OSError as e:
@@ -455,18 +473,94 @@ def cmd_reference(work: Path) -> None:
     print({k: len(v) for k, v in out.items()}, "bar spans from", HAT_DATA_ROOT)
 
 
-def current_list(path: Path, ref: Reference) -> dict[str, str]:
-    """Today's members, key -> symbol; an ISIN without an instrument becomes `PSEUDO:<isin>`."""
-    with path.open(encoding="utf-8-sig", newline="") as f:
-        rows = list(csv.DictReader(f))
+def read_list(path: Path) -> list[dict[str, str]]:
+    """The rows of an NSE constituent list (`Company Name`, `Industry`, `Symbol`, `ISIN Code`);
+    the old lists' title lines above the header are skipped."""
+    lines = path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+    head = next(n for n, line in enumerate(lines) if line.startswith("Company Name"))
+    return [
+        {k.strip(): (v or "").strip() for k, v in r.items() if k}
+        for r in csv.DictReader(lines[head:])
+        if (r.get("ISIN Code") or "").strip()
+    ]
+
+
+def list_day(path: Path) -> date:
+    """An archived list's day from its file name: `YYYYMMDD...` (a Wayback capture) or
+    `YYYY-MM-DD...`."""
+    m = re.match(r"(\d{4})-?(\d{2})-?(\d{2})", path.name)
+    if not m:
+        raise ValueError(f"no date in {path.name}")
+    return date(int(m[1]), int(m[2]), int(m[3]))
+
+
+def list_members(rows: Iterable[Mapping[str, str]], ref: Reference, day: date) -> dict[str, str]:
+    """A list's members, key -> symbol: by ISIN; an ISIN without an instrument by its symbol's
+    instrument around `day`, else `PSEUDO:<isin>`."""
     out = {}
     for r in rows:
-        isin = r["ISIN Code"].strip()
-        out[ref.key(ref.by_isin.get(isin) or f"PSEUDO:{isin}")] = r["Symbol"].strip()
+        isin, symbol = r["ISIN Code"], r["Symbol"]
+        iid = ref.by_isin.get(isin)
+        if iid is None:
+            found = ref.resolve(symbol, day, "in")
+            iid = found if found and not found.startswith("PSEUDO:") else f"PSEUDO:{isin}"
+        out[ref.key(iid)] = symbol
     return out
 
 
-def cmd_build(work: Path, start: date, as_of: date, out: Path) -> int:
+def current_list(path: Path, ref: Reference) -> dict[str, str]:
+    """Today's members, key -> symbol; an ISIN without an instrument becomes `PSEUDO:<isin>`."""
+    out = {}
+    for r in read_list(path):
+        isin = r["ISIN Code"]
+        out[ref.key(ref.by_isin.get(isin) or f"PSEUDO:{isin}")] = r["Symbol"]
+    return out
+
+
+def clip(members: Iterable[Any], start: date, current_source: str) -> list[Any]:
+    """`members` (index_membership.Member) from `start` on, as a build from `start` gives them:
+    an interval ending by `start` goes, and one begun before it starts on it, with the source of
+    its end (`current_source` when it has none)."""
+    out = []
+    for m in members:
+        if m.effective_to is not None and m.effective_to <= start:
+            continue
+        if m.effective_from < start:
+            source = current_source if m.effective_to is None else m.source.split(";")[-1]
+            m = replace(m, effective_from=start, source=source)
+        out.append(m)
+    return out
+
+
+def conflict_rows(
+    conflicts: Iterable[tuple[Any, str]], anchor_sources: set[str]
+) -> list[dict[str, str]]:
+    """One row per key a change or an archived list does not fit: its day, source, kind
+    (`notice` or `list`), side (`in`: joined after the day, `out`: left on it) and symbol."""
+    rows = []
+    for change, key in conflicts:
+        side = "in" if key in change.added else "out"
+        rows.append(
+            {
+                "day": change.day.isoformat(),
+                "source": change.source,
+                "kind": "list" if change.source in anchor_sources else "notice",
+                "side": side,
+                "symbol": (change.added if side == "in" else change.removed)[key],
+                "key": str(key),
+            }
+        )
+    return sorted(rows, key=lambda r: (r["day"], r["source"], r["side"], r["symbol"]))
+
+
+def cmd_build(
+    work: Path,
+    start: date,
+    as_of: date,
+    out: Path,
+    anchor_files: Sequence[Path] = (),
+    strict_from: date | None = None,
+) -> int:
     sys.path.insert(0, str(REPO_ROOT / "backend"))
     from app.hat.data.index_membership import (  # noqa: PLC0415 - after the sys.path change
         COLUMNS,
@@ -475,30 +569,57 @@ def cmd_build(work: Path, start: date, as_of: date, out: Path) -> int:
         undo_changes,
     )
 
+    strict_from = strict_from or start
     ref = load_reference(work)
+    lists = sorted((list_day(p), p.name, read_list(p)) for p in anchor_files)
+    for day, _, rows in lists:
+        for r in rows:
+            ref.listed.setdefault(r["Symbol"], []).append((day, r["ISIN Code"]))
+    # the undo runs back to the oldest list, to check it, and the history is cut at `start`
+    cover = min([start, *(day - timedelta(days=1) for day, _, _ in lists)])
     overrides_file = work / "overrides.json"
     overrides = json.loads(overrides_file.read_text()) if overrides_file.exists() else {}
     parsed = json.loads((work / "changes_parsed.json").read_text())
     current = current_list(work / "raw" / LIST_SOURCE, ref)
     changes, unresolved = [], []
-    for day, notice, excluded, included in notice_events(parsed, overrides, start, as_of):
+    for day, notice, excluded, included in notice_events(parsed, overrides, cover, as_of):
         sides: dict[str, dict[str, str]] = {"in": {}, "out": {}}
         for side, symbols in (("in", included), ("out", excluded)):
             for symbol in symbols:
                 iid = ref.resolve(symbol, day, side)
                 if iid is None:
-                    unresolved.append(f"{day} {notice} {side} {symbol}")
+                    unresolved.append(
+                        {"day": day.isoformat(), "notice": notice, "side": side, "symbol": symbol}
+                    )
                 else:
                     sides[side][ref.key(iid)] = symbol
         for key in sides["in"].keys() & sides["out"].keys():
             del sides["in"][key], sides["out"][key]
         changes.append(Change(day, sides["in"], sides["out"], notice))
-    if unresolved:
-        print("UNRESOLVED (add to symbol_alias.json):", *unresolved, sep="\n  ")
+    anchors = {day: (list_members(rows, ref, day), name) for day, name, rows in lists}
+    found: list[tuple[Any, Any]] = []
+    members = undo_changes(current, as_of, changes, cover, LIST_SOURCE, found, anchors)
+    conflicts = conflict_rows(found, {name for _, name, _ in lists})
+    strict = [c for c in conflicts if c["day"] >= strict_from.isoformat()]
+    strict += [u for u in unresolved if u["day"] >= strict_from.isoformat()]
+    report = {
+        "start": start.isoformat(),
+        "as_of": as_of.isoformat(),
+        "strict_from": strict_from.isoformat(),
+        "lists": [{"day": d.isoformat(), "file": n, "rows": len(r)} for d, n, r in lists],
+        "conflicts": conflicts,
+        "unresolved": unresolved,
+    }
+    report_file = out.with_name(out.stem + "-build.json")
+    report_file.write_text(json.dumps(report, indent=1))
+    print(f"{len(conflicts)} conflicts, {len(unresolved)} unresolved symbols -> {report_file}")
+    if strict:
+        print(f"REFUSED: {len(strict)} from {strict_from} on (overrides.json, symbol_alias.json):")
+        for c in strict:
+            print("  ", *c.values())
         return 1
-    members = undo_changes(current, as_of, changes, start, LIST_SOURCE)
     rows, pseudo = [], []
-    for m in members:
+    for m in clip(members, start, LIST_SOURCE):
         key = str(m.key)
         if key.startswith("PSEUDO:"):
             pseudo.append(f"{m.symbol} {m.effective_from}..{m.effective_to or ''}")
@@ -544,6 +665,18 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     b.add_argument("--as-of", type=date.fromisoformat, required=True, help="today's list's day")
     b.add_argument("--start", type=date.fromisoformat, default=date(2016, 1, 1))
     b.add_argument("--out", type=Path, help="default: <work>/nifty500-membership.csv")
+    b.add_argument(
+        "--anchor",
+        type=Path,
+        action="append",
+        default=[],
+        help="an archived full list (YYYYMMDD... or YYYY-MM-DD... file name), repeatable",
+    )
+    b.add_argument(
+        "--strict-from",
+        type=date.fromisoformat,
+        help="refuse any conflict or unresolved symbol from this day on (default: --start)",
+    )
     args = p.parse_args(argv)
     if args.work is None:
         p.error("--work or NIFTY500_DIR is required")
@@ -565,7 +698,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             cmd_reference(work)
         case "build":
             return cmd_build(
-                work, args.start, args.as_of, args.out or work / "nifty500-membership.csv"
+                work,
+                args.start,
+                args.as_of,
+                args.out or work / "nifty500-membership.csv",
+                args.anchor,
+                args.strict_from,
             )
     return 0
 

@@ -112,6 +112,9 @@ class HatIndustry(Base):
     sector = Column(Text, nullable=False)
     industry = Column(Text, nullable=False)
     effective_from = Column(Date, primary_key=True)
+    # None: NSE's list (the snapshots' current taxonomy or the nightly reference load);
+    # `archived_list`: a best fit from an archived pre-2016 list (data/industry_history.py)
+    source = Column(Text)
 
 
 class HatCorporateAction(Base):

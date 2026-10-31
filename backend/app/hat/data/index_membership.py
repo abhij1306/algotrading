@@ -92,29 +92,70 @@ def undo_changes(
     changes: Iterable[Change],
     start: date,
     current_source: str,
+    conflicts: list[tuple[Change, Hashable]] | None = None,
+    anchors: Mapping[date, tuple[Mapping[Hashable, str], str]] | None = None,
 ) -> list[Member]:
     """The membership intervals from `start` to `as_of`, rebuilt by undoing `changes` (each
     effective after `start` and on or before `as_of`) from `current`, the members on `as_of`
     (key -> symbol), newest first: before a change the members were those after it, less
     `added`, plus `removed`. A change that adds a key not a member after it, removes one that
     still is, or names a key on both sides does not fit the list and is refused
-    (`membership_undo_conflict`), as is one outside (start, as_of]."""
+    (`membership_undo_conflict`), as is one outside (start, as_of].
+
+    Given a `conflicts` list, each key that does not fit is appended to it as (change, key) and
+    skipped instead, and the rest of the change is undone; and each of `anchors` (an archived
+    list: day -> (members before the changes effective that day, its source), after `start`)
+    resets the rebuilt members to it once the changes from its day on are undone. A key the
+    list differs on is appended as a conflict of the implied change on the anchor's day, which
+    the intervals then carry as their source. A history known to be incomplete is reported this
+    way, never loaded silently."""
+    if anchors and conflicts is None:
+        raise ValueError("anchors need a conflicts list")
+    found = conflicts if conflicts is not None else []
     members = dict(current)
     ends: dict[Hashable, tuple[date | None, str]] = dict.fromkeys(members, (None, current_source))
     out: list[Member] = []
+    pending = sorted((anchors or {}).items(), reverse=True)
+
+    def undo(change: Change) -> None:
+        misfit = (
+            (change.added.keys() & change.removed.keys())
+            | {k for k in change.added if k not in members}
+            | {k for k in change.removed if k in members}
+        )
+        if misfit:
+            if conflicts is None:
+                raise IndexMembershipError("membership_undo_conflict")
+            conflicts.extend((change, k) for k in sorted(misfit, key=str))
+        for key in change.added.keys() - misfit:
+            end, end_source = ends.pop(key)
+            out.append(_member(key, members.pop(key), change.day, end, change.source, end_source))
+        for key in change.removed.keys() - misfit:
+            members[key] = change.removed[key]
+            ends[key] = (change.day, change.source)
+
+    def reset(day: date, listed: Mapping[Hashable, str], source: str) -> None:
+        implied = Change(
+            day,
+            {k: s for k, s in members.items() if k not in listed},
+            {k: s for k, s in listed.items() if k not in members},
+            source,
+        )
+        if implied.added or implied.removed:
+            found.extend((implied, k) for k in sorted([*implied.added, *implied.removed], key=str))
+            undo(implied)
+
     for change in sorted(changes, key=lambda c: c.day, reverse=True):
         if not start < change.day <= as_of:
             raise IndexMembershipError("membership_change_outside_cover")
-        if change.added.keys() & change.removed.keys():
-            raise IndexMembershipError("membership_undo_conflict")
-        if any(k not in members for k in change.added) or any(k in members for k in change.removed):
-            raise IndexMembershipError("membership_undo_conflict")
-        for key in change.added:
-            end, end_source = ends.pop(key)
-            out.append(_member(key, members.pop(key), change.day, end, change.source, end_source))
-        for key, symbol in change.removed.items():
-            members[key] = symbol
-            ends[key] = (change.day, change.source)
+        while pending and pending[0][0] > change.day:
+            day, (listed, source) = pending.pop(0)
+            if start < day <= as_of:
+                reset(day, listed, source)
+        undo(change)
+    for day, (listed, source) in pending:
+        if start < day <= as_of:
+            reset(day, listed, source)
     for key, symbol in members.items():
         end, end_source = ends[key]
         out.append(
