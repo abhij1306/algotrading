@@ -345,6 +345,11 @@ def test_results__listing_without_results() -> None:
         nse.parse_results_listing(b'{"msg": "Resource not found"}')
 
 
+def test_results__announcements_day_without_any() -> None:
+    """NSE answers a day with no announcements as an object (recorded for 2012-06-03)."""
+    assert nse.parse_announcements(b'{"data": [], "msg": "no data found"}') == []
+
+
 def test_results__results_announcement_rules() -> None:
     items = nse.parse_announcements((FIXTURES / "announcements.json").read_bytes())
     found = timing.results_announcements(items)

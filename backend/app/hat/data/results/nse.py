@@ -213,10 +213,12 @@ class Announcement:
 
 
 def parse_announcements(body: bytes) -> list[Announcement]:
-    """The `corporate-announcements` answer (a JSON list): `an_dt` is the submission time,
-    `exchdisstime` the dissemination time."""
+    """The `corporate-announcements` answer (a JSON list, or `{"data": [], "msg": ...}` for a day
+    with none): `an_dt` is the submission time, `exchdisstime` the dissemination time."""
+    answer = json.loads(body or b"[]")
+    rows = (answer.get("data") or []) if isinstance(answer, dict) else answer
     items = []
-    for row in json.loads(body or b"[]"):
+    for row in rows:
         at = nse_time(row.get("an_dt"))
         if at is not None:
             items.append(
