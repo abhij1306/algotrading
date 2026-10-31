@@ -1,5 +1,5 @@
 {
-  "format_version": "1.5",
+  "format_version": "1.6",
   "identity": {
     "run_id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
     "strategy": "S1",
@@ -74,6 +74,16 @@
     "sortino": null,
     "invested_pct": 33.7,
     "avg_open_positions": null,
+    "avg_position_size_pct": null,
+    "zero_position_days_pct": null,
+    "cagr_per_invested_pct": null,
+    "profit_factor": null,
+    "payoff_ratio_r": null,
+    "avg_win_pct": null,
+    "avg_loss_pct": null,
+    "payoff_ratio_pct": null,
+    "mfe_capture": null,
+    "planned_rr": null,
     "longest_dd_sessions": 739,
     "longest_dd_recovered": null,
     "longest_dd_start": null,

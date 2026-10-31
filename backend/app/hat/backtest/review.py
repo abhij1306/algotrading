@@ -53,6 +53,18 @@ CRITERIA_JSON = "criteria.json"
 CRITERIA_MD = "criteria.md"
 HOLD_OUT = "hold_out"
 _HEADLINE = (
+    "invested_pct",
+    "avg_open_positions",
+    "avg_position_size_pct",
+    "zero_position_days_pct",
+    "profit_factor",
+    "payoff_ratio_r",
+    "payoff_ratio_pct",
+    "avg_win_pct",
+    "avg_loss_pct",
+    "cagr_per_invested_pct",
+    "mfe_capture",
+    "planned_rr",
     "trades",
     "expectancy_r",
     "win_pct",

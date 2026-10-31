@@ -53,7 +53,7 @@
   },
   "properties": {
     "format_version": {
-      "const": "1.5"
+      "const": "1.6"
     },
     "identity": {
       "type": "object",
@@ -369,6 +369,36 @@
           "$ref": "#/$defs/num"
         },
         "avg_open_positions": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_position_size_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "zero_position_days_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "cagr_per_invested_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "profit_factor": {
+          "$ref": "#/$defs/num"
+        },
+        "payoff_ratio_r": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_win_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "avg_loss_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "payoff_ratio_pct": {
+          "$ref": "#/$defs/num"
+        },
+        "mfe_capture": {
+          "$ref": "#/$defs/num"
+        },
+        "planned_rr": {
           "$ref": "#/$defs/num"
         },
         "longest_dd_sessions": {

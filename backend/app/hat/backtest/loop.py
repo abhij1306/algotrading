@@ -298,7 +298,7 @@ from .spec import (
     RunSpec,
     sleeve_weight,
 )
-from .standard import exit_sma, fwd_r
+from .standard import exit_sma, fwd_r, planned_target
 
 __all__ = ["run_backtest"]
 
@@ -2469,7 +2469,13 @@ class _Run:
         """The strategy's watchlist and trade rows, its playbooks named with its prefix."""
         watched = ledger_watch_rows(self.session, leg.bot_id)
         trades = tuple(
-            replace(t, exit_sma=exit_sma(leg.config.exits_for(t.playbook), t.rules_fired))
+            replace(
+                t,
+                exit_sma=exit_sma(leg.config.exits_for(t.playbook), t.rules_fired),
+                target_price=planned_target(
+                    leg.config.exits_for(t.playbook), t.entry_price, t.initial_stop
+                ),
+            )
             for t in ledger_trade_rows(self.session, leg.bot_id, watched)
         )
         if not leg.prefix:

@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.5
+# Backtest Result Standard v1.6
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.5 changes amend them, a
-later one winning where they differ. `format_version` is `1.5` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.6 changes amend them, a
+later one winning where they differ. `format_version` is `1.6` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -65,6 +65,15 @@ Why four files: headline metrics say *whether* a variant is better. Trades, equi
 | `sortino` | annualised daily, downside deviation only |
 | `invested_pct` | mean of daily (position value ÷ equity) |
 | `avg_open_positions` | mean of daily open positions |
+| `avg_position_size_pct` | over sessions with ≥ 1 position, mean of (position value ÷ equity ÷ open positions) |
+| `zero_position_days_pct` | sessions with no open position ÷ sessions |
+| `cagr_per_invested_pct` | cagr_pct ÷ (invested_pct ÷ 100): CAGR per unit of capital invested |
+| `profit_factor` | sum of net P&L of trades with net P&L > 0 ÷ the absolute sum of those < 0 |
+| `payoff_ratio_r` | avg_win_r ÷ \|avg_loss_r\| |
+| `avg_win_pct`, `avg_loss_pct` | mean net P&L ÷ entry value (shares bought × entry price) of winners / losers |
+| `payoff_ratio_pct` | avg_win_pct ÷ \|avg_loss_pct\| |
+| `mfe_capture` | sum of net R ÷ sum of MFE R, over trades with an MFE |
+| `planned_rr` | mean (target − entry) ÷ (entry − initial stop) over trades whose exit stack has a price target (the lowest `partial_at_r` or `pct_gain_target` price) |
 | `longest_dd_sessions` | peak to recovery; to period end if never recovered |
 | `longest_dd_recovered` | true / false |
 | `longest_dd_start`, `longest_dd_end` | dates |
@@ -467,6 +476,18 @@ gt25), `by_trigger_time` (0920_0945, 0945_1100, after_1100), `by_adr20` (lt3, 3_
 `by_range_126d` (lt30, 30_60, gt60) and `by_exit_reason` with the mean hold; run.json
 `funnel.by_playbook.<playbook>` counts candidates through `gap_scan`, `gap_up`, the hard setup criteria,
 `earnings_catalyst`, `early_volume`, `price_breaks_level`, the entry filters and `filled`.
+
+---
+
+## v1.6 changes
+
+**metrics.** Added `avg_position_size_pct`, `zero_position_days_pct`, `cagr_per_invested_pct`,
+`profit_factor`, `payoff_ratio_r`, `avg_win_pct`, `avg_loss_pct`, `payoff_ratio_pct`,
+`mfe_capture` and `planned_rr` (section 1, metrics); each is null where undefined (no losers, a
+zero denominator, no trade with a target). Winners and losers split on net R as `avg_win_r`
+does; `mar` is the Calmar ratio.
+
+---
 
 ## Accuracy checks and the fills' approximations
 

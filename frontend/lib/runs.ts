@@ -1,5 +1,5 @@
 /**
- * Backtest runs in the Result Standard v1.4 (docs/backtests/result-standard.md): the run.json shape and
+ * Backtest runs in the Result Standard v1.6 (docs/backtests/result-standard.md): the run.json shape and
  * the pure shaping the Backtests pages draw from (deltas, grouping, sorting, CSV parsing and the
  * summaries of the run's CSV files). Units follow the standard: % as 0 to 100, R as a multiple,
  * money in rupees.
@@ -69,6 +69,16 @@ export type Metrics = {
   sortino?: Num;
   invested_pct: Num;
   avg_open_positions?: Num;
+  avg_position_size_pct?: Num;
+  zero_position_days_pct?: Num;
+  cagr_per_invested_pct?: Num;
+  profit_factor?: Num;
+  payoff_ratio_r?: Num;
+  avg_win_pct?: Num;
+  avg_loss_pct?: Num;
+  payoff_ratio_pct?: Num;
+  mfe_capture?: Num;
+  planned_rr?: Num;
   avg_dd_pct?: Num;
   longest_dd_sessions: Num;
   longest_dd_recovered: boolean | null;
@@ -246,6 +256,18 @@ export const STICKY_METRICS = 4;
 
 /** The headline metrics of a run's page and of the compare view. */
 export const HEADLINE: readonly MetricDef[] = [
+  metric("invested_pct", "Invested %", "pct", null),
+  metric("avg_open_positions", "Avg open positions", "ratio", null),
+  metric("avg_position_size_pct", "Avg position size %", "pct", null),
+  metric("zero_position_days_pct", "Zero-position days %", "pct", null),
+  metric("profit_factor", "Profit factor", "ratio", "higher"),
+  metric("payoff_ratio_r", "Payoff ratio (R)", "ratio", "higher"),
+  metric("payoff_ratio_pct", "Payoff ratio (%)", "ratio", "higher"),
+  metric("avg_win_pct", "Avg win %", "pct", "higher"),
+  metric("avg_loss_pct", "Avg loss %", "pct", "higher"),
+  metric("cagr_per_invested_pct", "CAGR per invested %", "pct", "higher"),
+  metric("mfe_capture", "MFE capture", "ratio", "higher"),
+  metric("planned_rr", "Planned R:R", "ratio", null),
   metric("trades", "Trades", "int", null),
   metric("signals", "Signals", "int", null),
   metric("win_pct", "Win %", "pct", "higher"),
@@ -265,8 +287,6 @@ export const HEADLINE: readonly MetricDef[] = [
   metric("dsr_prob", "DSR prob", "prob", "higher"),
   metric("pbo", "PBO", "prob", "lower"),
   metric("avg_dd_pct", "Avg DD %", "pct", "lower"),
-  metric("invested_pct", "Invested %", "pct", null),
-  metric("avg_open_positions", "Avg open positions", "ratio", null),
   metric("final_equity", "Final equity", "money", "higher"),
   metric("fees", "Fees", "money", "lower"),
   metric("cost_share_pct", "Cost share %", "pct", "lower"),

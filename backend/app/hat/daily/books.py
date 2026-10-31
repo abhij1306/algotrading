@@ -71,6 +71,7 @@ ANNUALISED = (
     "sortino",
     "benchmark_cagr_pct",
     "cagr_ex_top5_trades_pct",
+    "cagr_per_invested_pct",
 )
 MIN_ANNUAL_SESSIONS = TRADING_DAYS
 _ZERO = Decimal(0)
@@ -124,6 +125,7 @@ class ClosedTrade:
     r: Decimal
     mfe_r: Decimal | None = None  # a paper trade's; None on a real one
     mae_r: Decimal | None = None
+    entry_value: Decimal | None = None  # the shares bought times their price
 
 
 @dataclass(frozen=True)
@@ -239,7 +241,10 @@ def book_report(
     before = curve[-2].equity if len(curve) > 1 else start
     ordered = sorted(trades, key=lambda t: (t.entry, t.symbol, t.exit))
     metrics = book_metrics(
-        [BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.mfe_r, t.mae_r) for t in ordered],
+        [
+            BookTrade(t.symbol, t.r, t.net_pnl, t.fees, t.hold, t.mfe_r, t.mae_r, t.entry_value)
+            for t in ordered
+        ],
         [(s.day, s.equity) for s in curve],
         curve,
         start,
@@ -446,6 +451,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                     steps.append((as_utc(event.occurred_at), position.signal_id, qty, 0, 0, True))
             fills, cash, held = [], defaultdict(lambda: _ZERO), defaultdict(int)
             sold, sold_today = defaultdict(lambda: _ZERO), defaultdict(lambda: _ZERO)
+            bought = defaultdict(lambda: _ZERO)
             for at, signal_id, qty, price, fee, rescale in sorted(steps, key=lambda s: s[0]):
                 day = trade_date_of(at)
                 if day > as_of:
@@ -461,6 +467,8 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                     continue
                 cash[signal_id] += -qty * Decimal(price) - Decimal(fee)
                 held[signal_id] += qty
+                if qty > 0:
+                    bought[signal_id] += qty * Decimal(price)
                 if qty < 0:  # a sale: its realised P&L, as the shadow book's free cash counts it
                     gain = sold_gain(
                         Decimal(position.avg_entry), -qty, Decimal(price), Decimal(fee)
@@ -505,6 +513,7 @@ def read_books(session: Session, store: DataStore, as_of: date) -> list[BookRepo
                             Decimal(result.r_multiple),
                             None if result.mfe_r is None else Decimal(result.mfe_r),
                             None if result.mae_r is None else Decimal(result.mae_r),
+                            bought.get(p.signal_id) or None,
                         )
                     )
                     dividends.extend(earned)
