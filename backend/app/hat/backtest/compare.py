@@ -68,6 +68,13 @@ COLUMNS: tuple[tuple[str, str, str], ...] = (
     ("cagr_ex5%", "metrics", "cagr_ex_top5_trades_pct"),
     (">5%adv", "metrics", "trades_over_5pct_adv"),
     ("inv%", "metrics", "invested_pct"),
+    ("avg_pos", "metrics", "avg_open_positions"),
+    ("size%", "metrics", "avg_position_size_pct"),
+    ("flat%", "metrics", "zero_position_days_pct"),
+    ("PF", "metrics", "profit_factor"),
+    ("payoff_R", "metrics", "payoff_ratio_r"),
+    ("cagr/inv%", "metrics", "cagr_per_invested_pct"),
+    ("mfe_cap", "metrics", "mfe_capture"),
 )
 
 

@@ -632,6 +632,10 @@ def _metrics(
                 t.hold,
                 t.row.mfe_r,
                 t.row.mae_r,
+                t.row.qty * t.row.entry_price,
+                t.row.entry_price,
+                t.row.initial_stop,
+                t.row.target_price,
             )
             for t in trades
         ],

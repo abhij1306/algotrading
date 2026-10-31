@@ -17,6 +17,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from ..money import require_exact
 from ..risk.decision import Reason
 from .overlay import INSUFFICIENT_CREDIT
 from .spec import BacktestError
@@ -44,7 +45,10 @@ __all__ = [
     "mean_of",
     "money_of",
     "pct_of",
+    "planned_target",
+    "position_size_pct",
     "quintile",
+    "ratio_of",
     "refusal_code",
     "rounded",
     "sessions_held",
@@ -54,7 +58,7 @@ __all__ = [
     "trade_list_hash",
 ]
 
-FORMAT_VERSION = "1.5"
+FORMAT_VERSION = "1.6"
 TRADING_DAYS = 252
 _PLACES = 4
 _ZERO = Decimal(0)
@@ -393,6 +397,21 @@ def exit_sma(rules: Sequence[Any], rules_fired: Iterable[str]) -> int | None:
     return found.pop() if len(found) == 1 else None
 
 
+def planned_target(rules: Sequence[Any], entry: Decimal, stop: Decimal) -> Decimal | None:
+    """The first price target of the exit stack `rules` for a trade entered at `entry` with
+    initial stop `stop`: the lowest of its enabled `partial_at_r` (entry + at_r x risk) and
+    `pct_gain_target` (entry x (1 + pct %)) prices; None when the stack has neither."""
+    risk = entry - stop
+    prices = [
+        entry + require_exact(r.at_r, "at_r", floats=True) * risk
+        if r.rule == "partial_at_r"
+        else entry * (1 + require_exact(r.pct, "pct", floats=True) / _HUNDRED)
+        for r in rules
+        if r.enabled and r.rule in ("partial_at_r", "pct_gain_target")
+    ]
+    return min(prices) if prices else None
+
+
 # The engine's exit rules onto the spec's exit codes; any other reason is written as the engine
 # names it (`demerger`, `delisted`, `early_failure`, `trailing_atr`, ...).
 EXIT_OF: Mapping[str, str] = {
@@ -489,6 +508,13 @@ def pct_of(value: Decimal | None, whole: Decimal | None) -> float | None:
     return rounded(value / whole * _HUNDRED)
 
 
+def ratio_of(part: float | Decimal | None, whole: float | Decimal | None) -> float | None:
+    """`part` / `whole`, rounded; None when either is None or `whole` is 0."""
+    if part is None or whole is None or whole == 0:
+        return None
+    return rounded(float(part) / float(whole))
+
+
 @dataclass(frozen=True)
 class BookTrade:
     """A closed trade as the metrics read it: net of costs, its hold in sessions; `mfe_r` and
@@ -501,6 +527,10 @@ class BookTrade:
     hold: int
     mfe_r: Decimal | None = None
     mae_r: Decimal | None = None
+    entry_value: Decimal | None = None  # the shares bought times their price
+    entry: Decimal | None = None  # the entry price, initial stop and planned target price
+    stop: Decimal | None = None
+    target: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -517,6 +547,32 @@ def _before(closes: Sequence[tuple[date, Decimal]], day: date) -> Decimal | None
     """The last close before `day`."""
     found = [c for d, c in closes if d < day]
     return found[-1] if found else None
+
+
+def position_size_pct(sessions: Sequence[BookSession]) -> float | None:
+    """The mean position's value as % of equity: per session with a position open, the
+    positions' value ÷ equity ÷ their count, averaged over those sessions."""
+    return mean_of(
+        [
+            float(s.position_value / s.equity * _HUNDRED) / s.open_positions
+            for s in sessions
+            if s.open_positions > 0 and s.equity > 0
+        ]
+    )
+
+
+def _trade_pct(t: BookTrade) -> float | None:
+    """A trade's net P&L as % of its entry value."""
+    if t.entry_value is None or t.entry_value <= 0:
+        return None
+    return float(t.net_pnl / t.entry_value * _HUNDRED)
+
+
+def _planned_rr(t: BookTrade) -> float | None:
+    """(target - entry) ÷ (entry - stop) of a trade with a target and a stop below its entry."""
+    if t.target is None or t.entry is None or t.stop is None or t.entry <= t.stop:
+        return None
+    return float((t.target - t.entry) / (t.entry - t.stop))
 
 
 def book_metrics(
@@ -556,11 +612,18 @@ def book_metrics(
     gross = net + fees
     mfe = [t.mfe_r for t in trades if t.mfe_r is not None]
     mae = [t.mae_r for t in trades if t.mae_r is not None]
+    avg_win_r, avg_loss_r = mean_of([t.r for t in wins]), mean_of([t.r for t in losses])
+    win_pcts = [p for p in map(_trade_pct, wins) if p is not None]
+    loss_pcts = [p for p in map(_trade_pct, losses) if p is not None]
+    avg_win_pct, avg_loss_pct = mean_of(win_pcts), mean_of(loss_pcts)
+    invested = mean_of([pct_of(s.position_value, s.equity) or 0.0 for s in sessions])
+    rr = [x for x in map(_planned_rr, trades) if x is not None]
+    with_mfe = [t for t in trades if t.mfe_r is not None]
     return {
         "trades": len(trades),
         "win_pct": rounded(len(wins) / len(trades) * 100) if trades else None,
-        "avg_win_r": rounded(mean_of([t.r for t in wins])),
-        "avg_loss_r": rounded(mean_of([t.r for t in losses])),
+        "avg_win_r": rounded(avg_win_r),
+        "avg_loss_r": rounded(avg_loss_r),
         "expectancy_r": rounded(mean_of(rs)),
         "avg_mfe_r": rounded(mean_of(mfe)),
         "avg_mae_r": rounded(mean_of(mae)),
@@ -570,10 +633,32 @@ def book_metrics(
         "mar": rounded(cagr / dd.max_pct) if cagr is not None and dd.max_pct > 0 else None,
         "sharpe": rounded(sharpe(returns, rf_daily)),
         "sortino": rounded(sortino(returns, rf_daily)),
-        "invested_pct": rounded(
-            mean_of([pct_of(s.position_value, s.equity) or 0.0 for s in sessions])
-        ),
+        "invested_pct": rounded(invested),
         "avg_open_positions": rounded(mean_of([s.open_positions for s in sessions])),
+        # mean over sessions with a position of (value ÷ equity ÷ positions), so invested_pct
+        # ≈ avg_open_positions x this when the size does not move with the count
+        "avg_position_size_pct": rounded(position_size_pct(sessions)),
+        "zero_position_days_pct": rounded(
+            sum(1 for s in sessions if s.open_positions == 0) / len(sessions) * 100
+        )
+        if sessions
+        else None,
+        "cagr_per_invested_pct": ratio_of(cagr, None if invested is None else invested / 100),
+        "profit_factor": ratio_of(
+            sum((t.net_pnl for t in trades if t.net_pnl > 0), _ZERO),
+            -sum((t.net_pnl for t in trades if t.net_pnl < 0), _ZERO),
+        ),
+        "payoff_ratio_r": ratio_of(avg_win_r, None if avg_loss_r is None else abs(avg_loss_r)),
+        "avg_win_pct": rounded(avg_win_pct),
+        "avg_loss_pct": rounded(avg_loss_pct),
+        "payoff_ratio_pct": ratio_of(
+            avg_win_pct, None if avg_loss_pct is None else abs(avg_loss_pct)
+        ),
+        "mfe_capture": ratio_of(
+            sum((t.r for t in with_mfe), _ZERO) if with_mfe else None,
+            sum((t.mfe_r for t in with_mfe if t.mfe_r is not None), _ZERO),
+        ),
+        "planned_rr": rounded(mean_of(rr)),
         "longest_dd_sessions": dd.longest_sessions,
         "longest_dd_recovered": dd.longest_recovered,
         "longest_dd_start": None if dd.longest_start is None else dd.longest_start.isoformat(),

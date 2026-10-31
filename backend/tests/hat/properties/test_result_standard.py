@@ -165,6 +165,36 @@ def test_losses_and_concentration() -> None:
     assert standard.top_share_pct(pnls, 2, D(-1)) is None
 
 
+def test_ratio_of() -> None:
+    assert standard.ratio_of(D(3), D(2)) == 1.5
+    assert standard.ratio_of(1.0, 3.0) == 0.3333
+    assert standard.ratio_of(D(3), D(0)) is None
+    assert standard.ratio_of(None, 2.0) is None
+    assert standard.ratio_of(2.0, None) is None
+
+
+def test_position_size_is_per_position_over_invested_sessions() -> None:
+    day = date(2026, 10, 26)
+    sessions = [
+        standard.BookSession(day, D(1000), D(0), 0),  # flat: left out
+        standard.BookSession(day, D(1000), D(400), 2),  # 20% each
+        standard.BookSession(day, D(1000), D(100), 1),  # 10%
+    ]
+    assert standard.position_size_pct(sessions) == pytest.approx(15.0)
+    assert standard.position_size_pct(sessions[:1]) is None
+
+
+def test_planned_target_is_the_stacks_nearest_price_target() -> None:
+    at_r = SimpleNamespace(rule="partial_at_r", at_r=2.0, enabled=True)
+    pct = SimpleNamespace(rule="pct_gain_target", pct=15.0, enabled=True)
+    off = SimpleNamespace(rule="partial_at_r", at_r=1.0, enabled=False)
+    trail = SimpleNamespace(rule="step_trail", enabled=True)
+    assert standard.planned_target([at_r, trail], D(100), D(95)) == D(110)
+    assert standard.planned_target([pct, at_r], D(100), D(90)) == D(115)  # 2R is 120
+    assert standard.planned_target([off, trail], D(100), D(95)) is None
+    assert standard.planned_target([], D(100), D(95)) is None
+
+
 def test_changed_paths() -> None:
     base = {"exits": [{"at_r": 2}, {"days": 10}], "risk": {"pct": 0.01}}
     mine = {"exits": [{"at_r": 3}, {"days": 10}], "risk": {"pct": 0.01, "cap": 5}}

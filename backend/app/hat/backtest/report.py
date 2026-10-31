@@ -163,6 +163,8 @@ class TradeRow:
     entry_rank: int | None = None
     exit_rank: int | None = None
     exit_score: Decimal | None = None
+    # the first price target of its exit stack (`standard.planned_target`), None without one
+    target_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
