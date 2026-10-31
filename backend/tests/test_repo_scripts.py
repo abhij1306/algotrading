@@ -370,6 +370,8 @@ def test_n500__a_dummy_alias_follows_the_list_to_the_listed_company() -> None:
     assert ref.resolve("DUMMYX", day, "in") == "co"
     assert n500.alias_target(["PSEUDO:DUM8", "ISIN:INE8"], ref) == "PSEUDO:DUM8"
     assert ref.resolve("ALIASED", day, "in") == "other"  # a plain alias is unchanged
+    ref.alias["EMPTY"] = []
+    assert ref.resolve("EMPTY", day, "in") is None  # unresolved, reported by the build
 
 
 def test_n500__the_build_is_anchored_on_every_archived_list_by_default(tmp_path: Path) -> None:
@@ -384,6 +386,8 @@ def test_n500__the_build_is_anchored_on_every_archived_list_by_default(tmp_path:
     args = n500.parse_args(["--work", str(tmp_path), "build", "--as-of", "2026-10-30"])
     assert (args.start, args.strict_from) == (date(2011, 6, 22), date(2014, 1, 22))
     assert n500.default_anchors(tmp_path / "none") == []
+    # only anchors the undo reaches (on or before --as-of) count for a pre-2016 history
+    assert n500.main(["--work", str(tmp_path), "build", "--as-of", "2009-12-31"]) == 1
 
 
 def test_n500__split_by_isin_at_lineage_dates() -> None:

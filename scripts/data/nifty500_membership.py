@@ -243,12 +243,15 @@ def notice_events(
 # instruments
 
 
-def alias_target(candidates: Sequence[str], ref: Reference) -> str:
+def alias_target(candidates: Sequence[str], ref: Reference) -> str | None:
     """The alias a candidate list stands for: the first `ISIN:` or `PSEUDO:` candidate whose
     ISIN is on today's list, else the first `ISIN:` candidate HAT has an instrument for, else
-    the first candidate. A demerger's dummy (`PSEUDO:<dummy ISIN>`) and the company that lists
-    in its place (`ISIN:<its ISIN>`) are one member: the dummy while today's list holds it, the
-    company from the day the list names it, and after the company leaves the index."""
+    the first candidate; None for an empty list (the symbol stays unresolved). A demerger's
+    dummy (`PSEUDO:<dummy ISIN>`) and the company that lists in its place (`ISIN:<its ISIN>`)
+    are one index slot, so every notice of either resolves to one key: the dummy while today's
+    list holds it, the company from the day the list names it, and after it leaves the index
+    (its rows then start at the dummy's inclusion; it has no bar before its listing, so no
+    universe can pick it earlier)."""
     isin = {c: c.split(":", 1)[1] for c in candidates if c.startswith(("ISIN:", "PSEUDO:"))}
     for c in candidates:
         if isin.get(c) in ref.on_list:
@@ -256,7 +259,7 @@ def alias_target(candidates: Sequence[str], ref: Reference) -> str:
     for c in candidates:
         if c.startswith("ISIN:") and isin[c] in ref.by_isin:
             return c
-    return candidates[0]
+    return candidates[0] if candidates else None
 
 
 @dataclass
@@ -297,7 +300,10 @@ class Reference:
         failing that, the ISIN the nearest archived list (`listed`) gives the symbol, as its
         instrument or `PSEUDO:<isin>` (a stock that left before HAT's bars begin)."""
         target = self.alias.get(symbol, symbol)
-        symbol = target if isinstance(target, str) else alias_target(target, self)
+        picked = target if isinstance(target, str) else alias_target(target, self)
+        if picked is None:
+            return None
+        symbol = picked
         if symbol.startswith("ISIN:"):
             isin = symbol[5:]
             # a member of today's list HAT holds no instrument for yet keys as current_list does
@@ -776,7 +782,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             cmd_reference(work)
         case "build":
             anchors = args.anchor or default_anchors(work)
-            if not anchors and args.start < date(2016, 1, 1):
+            # an anchor after --as-of is never reached by the undo, so it anchors nothing
+            reached = [a for a in anchors if list_day(a) <= args.as_of]
+            if not reached and args.start < date(2016, 1, 1):
                 print(
                     f"REFUSED: no archived list ({ANCHOR_GLOB}) under {work} for a history "
                     f"from {args.start}"
