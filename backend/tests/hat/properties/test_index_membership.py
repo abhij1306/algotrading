@@ -3,11 +3,12 @@ the count check and the CSV parser (`data/index_membership.py`)."""
 
 from __future__ import annotations
 
+import uuid
 from datetime import date
 
 import pytest
 
-from app.hat.backtest.data import is_stock_isin
+from app.hat.backtest.data import nse_stocks
 from app.hat.data.index_membership import (
     Change,
     IndexMembershipError,
@@ -107,8 +108,16 @@ def test_parse_refuses_a_bad_file(body: str, code: str) -> None:
     assert raised.value.code == code
 
 
-def test_nse_stocks_reads_shares_and_dvrs_not_funds() -> None:
-    assert is_stock_isin("INE002A01018")  # an equity share
-    assert is_stock_isin("IN9155A01020")  # a DVR share
-    assert not is_stock_isin("INF204KB14I2")  # an ETF unit
-    assert not is_stock_isin(None)
+def test_nse_stocks_keeps_ordinary_equity_only() -> None:
+    ids = [uuid.UUID(int=n) for n in range(8)]
+    rows = [
+        (ids[7], "INE002A01018"),  # RELIANCE, an equity share
+        (ids[6], "IN9155A01020"),  # TATAMTRDVR, a DVR share
+        (ids[5], "INE621L20012"),  # TRAIL-RE, a rights entitlement
+        (ids[4], "INE183W23014"),  # an InvIT
+        (ids[3], "INE041025011"),  # a REIT
+        (ids[2], "INF204KB14I2"),  # an ETF unit
+        (ids[1], None),
+        (ids[0], "INE621L01012"),  # TEXRAIL
+    ]
+    assert nse_stocks(rows) == [ids[0], ids[6], ids[7]]
