@@ -4,9 +4,12 @@ restatement counts."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from app.hat.data.fundamentals.book import Book, KnownFact
 from app.hat.data.fundamentals.nse_html import dated, item_of, label_key, number, parse_page
@@ -24,8 +27,18 @@ from app.hat.data.fundamentals.research import (
     screener_shares,
     worst,
 )
-from app.hat.data.results.fetch import history_documents
-from app.hat.data.results.nse import LISTING_ANNUAL, Filing, parse_announcements
+from app.hat.data.results.fetch import history_documents, mark_failed
+from app.hat.data.results.nse import (
+    FAILED,
+    LISTING_ANNUAL,
+    OUTAGE_LIMIT,
+    Client,
+    Filing,
+    NseUnavailableError,
+    failed,
+    parse_announcements,
+)
+from app.hat.data.results.raw import RawCache
 from app.hat.time import IST
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "nse_results"
@@ -188,3 +201,56 @@ def test_restatement_counts() -> None:
     ]
     got = restatement(pairs)[(2016, "net_profit")]
     assert got == {"n": 3, ">1%": 2, ">5%": 2, ">20%": 1, "sign": 1}
+
+
+ARCHIVE = "https://nsearchives.nseindia.com/archives/financial_results/financial_res_X_1.html"
+OUTAGE = b"<html><head><title>Service Temporarily Unavailable</title></head></html>"
+
+
+def test_failed_answers() -> None:
+    xml = "https://nsearchives.nseindia.com/corporate/xbrl/X_1.xml"
+    api = "https://www.nseindia.com/api/corporate-announcements?index=equities"
+    assert failed(ARCHIVE, 200, OUTAGE)
+    assert failed(ARCHIVE, 200, b"")
+    assert not failed(ARCHIVE, 200, b'<td class="tablehead">Particulars</td>')
+    assert not failed(ARCHIVE, 200, b"<td>No data available</td>")
+    assert not failed(ARCHIVE, 404, b"")  # a status is judged by the status
+    assert failed(xml, 200, OUTAGE)
+    assert not failed(xml, 200, b'<?xml version="1.0"?><xbrli:xbrl>')
+    assert failed(api, 200, OUTAGE)
+    assert not failed(api, 200, b"[]")
+
+
+class _Fake(Client):
+    def __init__(self, cache: RawCache, answers: Callable[[str], tuple[int, bytes]]) -> None:
+        self.pauses: list[float] = []
+        super().__init__(cache, interval=0, sleep=self.pauses.append)
+        self.answers = answers
+
+    def _fetch(self, url: str, referer: str | None) -> tuple[int, bytes]:
+        return self.answers(url)
+
+
+def test_outage_page_is_never_cached_and_stops_the_run(tmp_path: Path) -> None:
+    cache = RawCache(tmp_path)
+    client = _Fake(cache, lambda _url: (200, OUTAGE))
+    for n in range(OUTAGE_LIMIT - 1):
+        assert client.get(f"{ARCHIVE}?{n}", None).status == FAILED
+    assert cache.entries() == {}
+    assert min(client.pauses) >= 60  # the long backoff, not the 1 s pace
+    with pytest.raises(NseUnavailableError):
+        client.get(ARCHIVE, None)
+    good = _Fake(cache, lambda _url: (200, b"<td class='tablehead'>Q</td>"))
+    assert good.get(ARCHIVE, None).status == 200
+    assert cache.entry(ARCHIVE) is not None
+
+
+def test_mark_failed_requeues_cached_outage_pages(tmp_path: Path) -> None:
+    cache = RawCache(tmp_path)
+    cache.put(ARCHIVE, 200, OUTAGE)
+    cache.put(ARCHIVE + "?ok", 200, b"<td class='tablehead'>Q</td>")
+    assert mark_failed(cache) == {"nsearchives.nseindia.com": 1}
+    entry = cache.entry(ARCHIVE)
+    assert entry is not None
+    assert entry.status == 0
+    assert mark_failed(RawCache(tmp_path)) == {}
