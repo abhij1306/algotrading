@@ -2,6 +2,7 @@
 
 import ast
 import re
+import typing
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -54,6 +55,38 @@ def test_risk__no_risk_keys_in_strategy_schema() -> None:
         for name in kind.FIELDS:
             assert name not in names, f"{kind.KIND}.{name}"
             assert not re.search(r"risk_pct|p_max|adv_cap|drawdown|stopout", name), (kind, name)
+
+
+def test_risk__every_strategy_config_field_passes_the_risk_key_scan() -> None:
+    """No field of the strategy config model, at any depth, nor of a criterion's parameters,
+    has a name `parse_config`'s risk-key scan refuses: such a field could never be set."""
+    from pydantic import BaseModel
+
+    from app.hat.engine.criteria import REGISTRY
+    from app.hat.engine.strategy.config import POLICY_KEYS, RISK_KEY, StrategyConfig
+
+    def models(annotation: object) -> list[type[BaseModel]]:
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return [annotation]
+        return [m for arg in typing.get_args(annotation) for m in models(arg)]
+
+    seen: set[type[BaseModel]] = set()
+    refused: list[str] = []
+
+    def walk(model: type[BaseModel], path: str) -> None:
+        if model in seen:
+            return
+        seen.add(model)
+        for name, field in model.model_fields.items():
+            if name in POLICY_KEYS or RISK_KEY.search(name):
+                refused.append(f"{path}.{name}")
+            for inner in models(field.annotation):
+                walk(inner, f"{path}.{name}")
+
+    walk(StrategyConfig, "config")
+    for name, ctype in REGISTRY.items():
+        walk(ctype.params, f"criterion[{name}].params")
+    assert refused == []
 
 
 def test_initial_risk_policy_seed() -> None:

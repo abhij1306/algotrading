@@ -339,7 +339,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     never topped up (only trimmed), and live's subscription depth reaches past those names as it
     does past the industry cap's. A rupee `min_turnover` in the universe stage still applies to
     holdings too: a config meant to replace it disables it.
-  - `riskadj_skip: true`: both `riskadj` returns end `skip_sessions` before the decision close
+  - `score_skip: true`: both `riskadj` returns end `skip_sessions` before the decision close
     (12-1 / 6-1, the lookbacks still counted from the close); the volatility still ends on the
     close. Off, `riskadj` keeps reading the last month, as every stored run did.
   - `inverse_beta: {sessions: 252, floor: 0.5}`: target weights 1 / max(beta, floor), beta to the

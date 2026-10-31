@@ -13,6 +13,7 @@ import polars as pl
 import pytest
 
 from app.hat.backtest.data import band_on
+from app.hat.backtest.overrides import Overrides, parse_set
 from app.hat.backtest.report import FillRow
 from app.hat.backtest.run_audit import check_fills, fill_impacts
 from app.hat.backtest.spec import IMPACT_RULE, BacktestError, RunConventions
@@ -24,7 +25,9 @@ from app.hat.engine.strategy.config import (
     Liquidity,
     Rotation,
     Tranches,
+    parse_config,
 )
+from app.hat.engine.strategy.versions import seed_config
 from app.hat.engine.trigger import DailyInputs
 
 D = Decimal
@@ -34,27 +37,49 @@ SMALL = {"short_sessions": 5, "long_sessions": 8, "skip_sessions": 2, "vol_sessi
 
 def test_the_new_keys_are_left_out_at_their_defaults() -> None:
     dumped = Rotation().model_dump(mode="json")
-    for key in ("liquidity", "riskadj_skip", "inverse_beta", "tranches", "refuse_near_limit"):
+    for key in ("liquidity", "score_skip", "inverse_beta", "tranches", "refuse_near_limit"):
         assert key not in dumped
     set_ = Rotation(
         liquidity={"entry_pct": 60, "hold_pct": 80},
-        riskadj_skip=True,
+        score_skip=True,
         inverse_beta={},
         tranches={"count": 4, "offset_sessions": 3},
         refuse_near_limit=True,
     ).model_dump(mode="json")
     assert set_["liquidity"] == {"entry_pct": 60.0, "hold_pct": 80.0, "days": 20}
     assert set_["inverse_beta"] == {"sessions": 252, "floor": 0.5}
-    assert set_["riskadj_skip"] is True
+    assert set_["score_skip"] is True
     assert set_["refuse_near_limit"] is True
+
+
+@pytest.mark.parametrize(
+    "sets",
+    [
+        ('rotation.liquidity={"entry_pct": 60, "hold_pct": 80}',),
+        ("rotation.score_skip=true", "rotation.skip_sessions=21"),
+        ("rotation.inverse_beta={}",),
+        ('rotation.tranches={"count": 4, "offset_sessions": 3}',),
+        ("rotation.refuse_near_limit=true",),
+    ],
+)
+def test_each_new_key_is_set_through_a_run_override(sets: tuple[str, ...]) -> None:
+    # the path a backtest takes: `--set` on the stored config, parsed afresh by `parse_config`
+    # (its risk-key scan first), and the result stored and parsed again under the same hash
+    base = seed_config("momentum-rotation")
+    found = Overrides(sets=tuple(parse_set(text) for text in sets)).apply_config(base)
+    key = parse_set(sets[0])[0].split(".")[1]
+    assert key in found.to_json()["rotation"]
+    assert found.hash() != base.hash()
+    assert parse_config(found.to_json()).hash() == found.hash()
+    assert parse_config(base.to_json()).hash() == base.hash()
 
 
 @pytest.mark.parametrize(
     ("fields", "code"),
     [
         ({"liquidity": {"entry_pct": 70, "hold_pct": 50}}, "hold_pct_below_entry_pct"),
-        ({"riskadj_skip": True, "score": "r12_1"}, "riskadj_skip_needs_riskadj"),
-        ({"riskadj_skip": True, "skip_sessions": 126}, "riskadj_skip_needs_riskadj"),
+        ({"score_skip": True, "score": "r12_1"}, "score_skip_needs_riskadj"),
+        ({"score_skip": True, "skip_sessions": 126}, "score_skip_needs_riskadj"),
         ({"tranches": {"count": 4, "offset_sessions": 5}}, "tranches_beyond_period"),
         (
             {"tranches": {"count": 2, "offset_sessions": 3}, "rebalance": "weekly"},
@@ -67,12 +92,12 @@ def test_the_new_keys_refuse_what_cannot_run(fields: dict[str, object], code: st
         Rotation.model_validate(fields)
 
 
-def test_riskadj_skip_ends_both_returns_before_the_close_but_not_the_volatility() -> None:
+def test_score_skip_ends_both_returns_before_the_close_but_not_the_volatility() -> None:
     rows = rotation.window_rows(Rotation(**SMALL))
     first = np.linspace(100, 130, rows) * (1 + 0.01 * np.sin(np.arange(rows)))
     closes = first.reshape(-1, 1)
     short0, long0 = rotation.riskadj_parts(closes, Rotation(**SMALL))
-    short1, long1 = rotation.riskadj_parts(closes, Rotation(**SMALL, riskadj_skip=True))
+    short1, long1 = rotation.riskadj_parts(closes, Rotation(**SMALL, score_skip=True))
     # with the skip both returns end `skip_sessions` before the close (the lookbacks still
     # counted from it), over the same volatility, which ends on the close either way
     assert short1[0] / short0[0] == pytest.approx(

@@ -526,7 +526,7 @@ the `impact_bps` convention (`fills`, `cost` in rupees over the fills at the sli
 `max_bps`). The run's evidence keeps the same counts.
 
 **Rotation options** (`decisions.md`, "Rotation engine options"): the keys `liquidity`,
-`riskadj_skip`, `inverse_beta`, `tranches` and `refuse_near_limit` are in `config.json`
+`score_skip`, `inverse_beta`, `tranches` and `refuse_near_limit` are in `config.json`
 `strategy_config` and run.json `config.resolved.strategy` only when set; the impact convention
 is in the conventions (`impact`: `rule`, `coef_bps`, `max_bps`) and the knobs (`impact_bps`) only
 when set, so runs without them keep their digests. New `rebalances.csv` blocks
