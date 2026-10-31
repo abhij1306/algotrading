@@ -218,6 +218,88 @@ def test_rebase_doc() -> None:
     assert not golden.validate(new)
 
 
+def test_rekey_doc() -> None:
+    span = {"isin": "INE000A01029", "index": "NIFTY 500", "field": "effective_to"}
+    doc = _doc(
+        [
+            _item("membership", span | {"effective_from": "2024-03-04"}, "2024-03-05", id="moved"),
+            _item("membership", span | {"effective_from": "2024-03-04"}, "2024-03-09", id="ended"),
+            _item("membership", span | {"effective_from": "2024-03-06"}, "2024-03-05", id="gone"),
+            _item("membership", span | {"effective_from": "2024-03-01"}, "2024-03-05", id="ok"),
+        ]
+    )
+    result = golden.check(doc, STORES)
+    source = ("2026-10-26.2.json", "d")
+
+    def rekey(ids: list[str], reason: str = "spans start earlier") -> dict:
+        return golden.rekey_doc(doc, result, STORES, ids, reason, D3, source)
+
+    with pytest.raises(golden.GoldenError, match="reason_required"):
+        rekey(["moved"], " ")
+    with pytest.raises(golden.GoldenError, match="not_missing"):
+        rekey(["ok"])
+    with pytest.raises(golden.GoldenError, match="value_changed"):
+        rekey(["ended"])  # the covering span ends on another day
+    with pytest.raises(golden.GoldenError, match="no_single_span"):
+        rekey(["gone"])  # no span covers the old start
+    new = rekey(["moved"])
+    moved = next(i for i in new["items"] if i["id"] == "moved")
+    assert moved["key"]["effective_from"] == "2024-03-01"
+    assert moved["value"] == "2024-03-05"
+    assert moved["verified_from"] == "hand"
+    assert moved["rebase"] == {
+        "reason": "spans start earlier",
+        "previous_value": "2024-03-05",
+        "previous_key": span | {"effective_from": "2024-03-04"},
+        "from_file": "2026-10-26.2.json",
+        "on": "2024-03-05",
+    }
+    assert new["rebased_from"] == {"file": "2026-10-26.2.json", "digest": "d"}
+    assert [i for i in new["items"] if i["id"] != "moved"] == doc["items"][1:]
+    assert doc["items"][0]["key"]["effective_from"] == "2024-03-04"  # the old one is untouched
+    assert golden.check(new, STORES)["items"][0]["status"] == golden.PASS
+
+
+def test_rekey_refuses_other_kinds() -> None:
+    doc = _doc([_item("bar_raw", {"isin": "INE000A01011", "date": "2024-03-04"}, 1.0, id="b")])
+    result = golden.check(doc, STORES)
+    with pytest.raises(golden.GoldenError, match="not_membership_span"):
+        golden.rekey_doc(doc, result, STORES, ["b"], "why", D3, ("f.json", "d"))
+
+
+def test_rekey_refuses_a_symbol_that_names_another_instrument() -> None:
+    # SYM is B's symbol until 2015-06-01, then A's: re-keyed to A's 2011 span start, the symbol
+    # would name B, whose span starts and ends on the same days.
+    a_, b_, start, old, end = "i-a", "i-b", date(2011, 6, 22), date(2016, 1, 1), date(2023, 7, 13)
+    stores = Stores(
+        instruments=[(a_, "INEA", "SYM"), (b_, "INEB", "OLDSYM")],
+        history=[
+            (b_, "SYM", date(2000, 1, 1), date(2015, 6, 1)),
+            (a_, "SYM", date(2015, 6, 1), None),
+        ],
+        members=[
+            {
+                "index_name": "NIFTY 500",
+                "instrument_id": i,
+                "effective_from": start,
+                "effective_to": end,
+            }
+            for i in (a_, b_)
+        ],
+    )
+    key = {"symbol": "SYM", "effective_from": old.isoformat(), "field": "effective_to"}
+    doc = _doc([_item("membership", key, end.isoformat(), id="m")])
+    result = golden.check(doc, stores)
+    assert result["items"][0]["status"] == golden.MISSING
+    with pytest.raises(golden.GoldenError, match="instrument_changed"):
+        golden.rekey_doc(doc, result, stores, ["m"], "why", D3, ("f.json", "d"))
+    by_isin = _doc([_item("membership", key | {"isin": "INEA"}, end.isoformat(), id="m")])
+    new = golden.rekey_doc(
+        by_isin, golden.check(by_isin, stores), stores, ["m"], "why", D3, ("f", "d")
+    )
+    assert new["items"][0]["key"]["effective_from"] == start.isoformat()
+
+
 def test_validate() -> None:
     good = _doc([_item("bar_raw", {"isin": "X"}, 1.0, tolerance={"abs": 0.01})])
     assert golden.validate(good) == []

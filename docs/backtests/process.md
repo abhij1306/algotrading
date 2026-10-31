@@ -83,7 +83,7 @@ based on the old one; refused `backtest_rerun_snapshot_differs` when the data ch
 Step 1 also runs inside every run (cached by data snapshot and window, so a sweep audits once);
 `--refresh` recomputes it. Step 1 includes the golden sample check (`golden-sample.md`; run it
 alone with `python -m app.hat.data.golden check`). When a deliberate data fix moves golden
-values, rebase them with a reason (`golden rebase`); never edit a golden file. Step 6 computes every criterion from the folders (never by hand) into `criteria.md`: `pass`
+values, rebase them with a reason (`golden rebase`, or `golden rebase --rekey` for a membership item whose span start moved); never edit a golden file. Step 6 computes every criterion from the folders (never by hand) into `criteria.md`: `pass`
 only when every row passes, `fail` when one fails, `incomplete` when one is `not_run` (no plateau
 sweep, no hold-out yet). Then hand `review_request.md` to an independent review agent, which
 writes `audit_report.md` beside it with a `promote`, `hold` or `reject` verdict. A candidate goes

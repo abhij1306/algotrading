@@ -67,3 +67,13 @@ drift. Never edit the golden file. Rebase instead:
 new dated file in which each named drifted item takes the current store value and records the
 reason, the previous value and the source file. It refuses without a reason, and it refuses any
 item that did not drift.
+
+A membership item keyed by its span's `effective_from` goes `missing` when a data change moves
+that start (for example, membership history extended further back, so the span now starts
+earlier). Re-key it instead:
+`python -m app.hat.data.golden rebase --rekey --reason "<why>" --item <id> [...]` (or
+`--items-file`). Each named item must be a `missing` membership item with an `effective_from`
+key, exactly one span of the same instrument and index must cover that day, and that span must
+still hold the verified value (within tolerance); otherwise nothing is written. The new dated
+file carries the item under the span's start, with its value, id and `verified_from` unchanged,
+and records the reason, the previous key and value, and the source file under `rebase`.
