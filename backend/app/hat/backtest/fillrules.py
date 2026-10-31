@@ -1,7 +1,8 @@
 """The pure fill rules of the day loop that read a daily bar (HAT-BT-020, HAT-BT-021,
 HAT-BT-025): the entry day's low before the break, the upper and lower circuit inferred from a
 bar, the first price on a day's way up at which the live exit rules act, the close entry's
-breakout volume test and `volume_pace` on the full day's volume."""
+breakout volume test, `volume_pace` on the full day's volume and the daily estimate of a stop
+order's fill."""
 
 from __future__ import annotations
 
@@ -11,15 +12,20 @@ from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import Any
 
 from ..engine import exits, trigger
+from ..engine.fill_0920 import gap_over_fill
+from ..engine.stops import SKIP_BAD_INPUT
 from ..money import require_exact
+from .fills import STOP_SLIPPAGE
 
 __all__ = [
     "breakout_volume_ok",
     "close_lower_locked",
+    "entry_day_lows",
     "first_trigger",
     "full_day_pace_skip",
     "inferred_band",
     "lower_circuit_locked",
+    "stop_order_fill",
     "pre_break_low",
     "upper_circuit_locked",
 ]
@@ -29,6 +35,9 @@ NSE_BANDS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))
 # `volume_pace` on the full day's volume: too little (live's reason), or the volumes are missing
 SKIP_PACE_LOW = trigger.PACE_LOW
 SKIP_PACE_MISSING = "volume_pace_missing"
+# a low-of-day stop on a daily estimate whose session gapped over the level: the low before the
+# break is the opening range's, which a daily bar does not have
+SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 
 
 def _acts(rules: Sequence[Any], state: exits.PositionState, price: Decimal) -> bool:
@@ -49,6 +58,58 @@ def pre_break_low(
     estimate = min(bar_open, level * (1 - adr20 / 100))
     before = max(bar_low, estimate)
     return before, (bar_low if bar_low < before else None)
+
+
+def stop_order_fill(
+    open_: Decimal,
+    high: Decimal,
+    level: Decimal,
+    tick: Decimal | None,
+    slippage: Decimal = STOP_SLIPPAGE,
+) -> Decimal | None:
+    """The daily estimate of a buy stop-limit at `level` resting from 09:20 (`entry_timing:
+    stop_order`, decisions.md "Setup entry orders"): a session that opens above the level buys
+    at 09:20 (`fill_0920.gap_over_fill`); one whose high reaches the stop's trigger (the first
+    tick above the level, `trigger.first_above`) buys at the trigger moved up by `slippage` (a
+    fraction), up to the tick and at most the high. That premium stands for the stop's
+    slippage and for a break between 09:15 and 09:20, which buys at the 09:20 price. None when
+    the high falls short or without a positive tick. `max_chase` judges the price after."""
+    if open_ > level:
+        return gap_over_fill(open_, high)
+    if tick is None or tick <= 0:
+        return None
+    stop = trigger.first_above(level, tick)
+    if high < stop:
+        return None
+    moved = (stop * (1 + slippage) / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+    return min(high, moved)
+
+
+def entry_day_lows(
+    bar: tuple[Decimal, Decimal],
+    level: Decimal,
+    price: Decimal,
+    adr20: Decimal | None,
+    *,
+    low_of_day: bool,
+) -> tuple[Decimal, Decimal | None] | str:
+    """(the entry day's low before the break, its low after the entry or None) of a daily
+    estimate entry at `price` breaking `level` on a session whose (open, low) is `bar`, or the
+    skip reason (HAT-BT-020, PR 60). A session that opened above the level gapped over it,
+    whatever it filled at (the 09:20 price is not the open): a low-of-day stop then needs the
+    opening range's low (`gap_over_no_intraday`), any other stop sees the whole day's low after
+    the fill. Otherwise the low before the break is `pre_break_low`'s at the entry price, and a
+    low-of-day stop without `adr20` is refused (`stop_input_missing`): it would read the whole day's
+    low before the break."""
+    bar_open, bar_low = bar
+    gapped = bar_open > level
+    if low_of_day:
+        if gapped:
+            return SKIP_GAP_NO_INTRADAY
+        if adr20 is None or adr20 < 0:
+            return SKIP_BAD_INPUT
+    before, after = pre_break_low(bar_open, bar_low, level if gapped else price, adr20)
+    return (before, bar_low) if gapped else (before, after)
 
 
 def upper_circuit_locked(

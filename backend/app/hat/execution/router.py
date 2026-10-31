@@ -576,7 +576,8 @@ class ExecutionRouter:
     def _entry_request(
         self, session: Session, signal: HatSignal, account_id: uuid.UUID
     ) -> OrderRequest:
-        price = snapshot.entry_price_of(session, signal)
+        # a stop order's LIMIT is its max-chase price (a buy stop-limit that has triggered)
+        price = snapshot.limit_price_of(session, signal)
         return OrderRequest(
             bot_id=signal.bot_id,
             signal_id=signal.id,

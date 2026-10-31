@@ -38,6 +38,7 @@ from app.hat.backtest.fills import (
     AMBIGUOUS_RULES,
     ENTRY_FILL_RULES,
     PENETRATION,
+    STOP_SLIPPAGE_MEASURED,
     SUSPENSION_SESSIONS,
     TOUCH,
     entry_fill,
@@ -60,6 +61,7 @@ from app.hat.backtest.spec import (
     GAP_OVER_ESTIMATED,
     KNOWN_GAPS,
     PROVISIONAL_0920,
+    PROVISIONAL_STOP_SLIPPAGE,
     REGIME_MULT_POLICY,
     REGIME_MULT_RULES,
     RESEARCH_SLEEVE_WEIGHT,
@@ -291,7 +293,8 @@ def test_known_gaps_name_only_the_estimates_taken() -> None:
     assert known_gaps(spec, ()) == list(KNOWN_GAPS)
     assert known_gaps(spec, {CATALYST_NOT_EVALUATED}) == [*KNOWN_GAPS, CATALYST_NOT_EVALUATED]
     provisional = [] if OPEN_TO_0920_MEASURED else [PROVISIONAL_0920]
-    assert known_gaps(spec) == [*KNOWN_GAPS, *ESTIMATE_GAPS, *provisional]
+    stop = [] if STOP_SLIPPAGE_MEASURED else [PROVISIONAL_STOP_SLIPPAGE]
+    assert known_gaps(spec) == [*KNOWN_GAPS, *ESTIMATE_GAPS, *provisional, *stop]
     # the estimate's values are in the conventions `config_digest` hashes
     recorded = spec.recorded_conventions()["open_to_0920"]
     assert recorded["measured"] is OPEN_TO_0920_MEASURED

@@ -428,6 +428,7 @@ def build(
     contexts = LiveContexts(gates, settings.user_id, feed_stale, desks.funds, calendar)
     service = TriggerService(TriggerMonitor(live.builder), sf, contexts, feed_stale, route)
     live.add_bar_listener(service.on_bar)
+    live.add_tick_listener(service.on_tick)  # stop-order and next-session entries fire on a trade
     live.add_bar_listener(entries.on_bar)
     views = ExitViews(book, live_prices.exit_price, clock, calendar, sf, notifier)
     shadow = ShadowExits(sf, views, desks.managed)

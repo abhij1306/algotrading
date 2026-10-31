@@ -39,6 +39,13 @@ REASON_LEVEL_UNDEFINED = "level_undefined"
 REASON_DAILY_CLOSE_NOT_LIVE = "daily_close_not_live"
 INTRADAY_BREAK = "intraday_break"
 DAILY_CLOSE = "daily_close"
+# A buy stop-limit from 09:20 to 15:05: the first trade above the level fills, at most the
+# max-chase price (decisions.md "Setup entry orders", E1).
+STOP_ORDER = "stop_order"
+# Decided on a session's close above the level, bought at the next session's 09:20 (E2).
+NEXT_SESSION = "next_session"
+# The timings live fires on a trade (`TriggerMonitor.on_tick`), not on a final 5-minute bar.
+TICK_TIMINGS = frozenset({STOP_ORDER, NEXT_SESSION})
 REASON_GAP_TOO_SMALL = "gap_too_small"
 REASON_LOW_PACE = "volume_pace_low"
 REASON_LOW_EARLY_VOLUME = "early_volume_low"
@@ -116,9 +123,12 @@ class PriceBreaksLevelParams(ParamModel):
     # is no break (PR 49); `high`: a trade above the level is enough
     confirm: Literal["close", "high"] = "close"
     # When the entry is taken. `intraday_break`: on the break of the level during the session, as
-    # live's 5-minute trigger takes it. `daily_close`: at the session's close when the close is
-    # above the level, a backtest variant; live does not trade it (`daily_close_not_live`).
-    entry_timing: Literal["intraday_break", "daily_close"] = Field(
+    # live's 5-minute trigger takes it. `stop_order`: a buy stop-limit resting 09:20 to 15:05, the
+    # first trade above the level filling (`confirm` is not read). `next_session`: the session
+    # after one that closed above the level, at its first trade from 09:20. `daily_close`: at the
+    # session's close when the close is above the level, a backtest variant; live does not trade
+    # it (`daily_close_not_live`).
+    entry_timing: Literal["intraday_break", "stop_order", "next_session", "daily_close"] = Field(
         default=INTRADAY_BREAK, exclude_if=lambda v: v == INTRADAY_BREAK
     )
     # Under `daily_close` only: the breakout session's volume at least `volume_vs_avg` x the mean
@@ -239,20 +249,32 @@ def resolve_level(
 
 def price_breaks_level(ctx: LiveContext, p: PriceBreaksLevelParams) -> CriterionResult:
     """HAT-CRIT-119: the final bar traded strictly above the level (its high is above it) and,
-    with `confirm: close` (the default, PR 49), closed at or above it. The level is reported as
-    the value and in `extras["level"]`, the trigger price of the signal. An `entry_timing:
-    daily_close` level never breaks live (`daily_close_not_live`): that timing is a backtest
-    variant, and its known gap blocks the version's promotion."""
+    with `confirm: close` (the default, PR 49), closed at or above it. Under `entry_timing:
+    stop_order` the bar is one trade (`TriggerMonitor.on_tick`) and a trade above the level is
+    the break; under `next_session` the previous session's close is above the level, whatever
+    trades now. The level is reported as the value and in `extras["level"]`, the trigger price
+    of the signal. An `entry_timing: daily_close` level never breaks live
+    (`daily_close_not_live`): that timing is a backtest variant, and its known gap blocks the
+    version's promotion."""
     if p.entry_timing == DAILY_CLOSE:
         return no_data(REASON_DAILY_CLOSE_NOT_LIVE)
     level = resolve_level(p.level, ctx.levels)
     if level is None:
         return no_data(REASON_LEVEL_UNDEFINED)
+    if p.entry_timing == NEXT_SESSION:
+        prev = _pos(ctx.prev_close)
+        if prev is None:
+            return no_data()
+        result = verdict(prev > level, float(level), REASON_BELOW_LEVEL)
+        return CriterionResult(
+            result.passed, result.score, result.value, result.reason, {"level": level}
+        )
     high = _pos(ctx.bar_high)
     close = _pos(ctx.bar_close)
-    if high is None or (p.confirm == "close" and close is None):
+    by_close = p.confirm == "close" and p.entry_timing != STOP_ORDER
+    if high is None or (by_close and close is None):
         return no_data()
-    held = p.confirm == "high" or (close is not None and close >= level)
+    held = not by_close or (close is not None and close >= level)
     result = verdict(high > level and held, float(level), REASON_BELOW_LEVEL)
     return CriterionResult(
         result.passed, result.score, result.value, result.reason, {"level": level}

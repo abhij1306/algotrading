@@ -12,6 +12,15 @@ first bar), the day volume is the volume of the bars up to the one being judged 
 the lowest low through it. So the level, the close confirmation, `volume_pace`, `gap_up`,
 `early_volume`, the entry LIMIT, the low-of-day stop and the entry filters are live's own.
 
+A candidate live fires on a trade (`entry_timing: stop_order` or `next_session`,
+`TriggerMonitor.on_tick`) is replayed on trades read from each bar (`bar_ticks`), before the bar
+is final: the 09:15 bar's close at 09:20 (the price at 09:20), then each bar's open at its
+start and, where the bar rose to it, each such candidate's stop trigger (`trigger.first_above`
+the level) just after. So a stop order fills at the 09:15 close when that is above the level,
+else at the stop trigger or a later bar's open above it; a next-session entry at the 09:15
+close. Their other trigger criteria read the volume of the final bars before the trade, as live
+does.
+
 `catalyst_attached` cannot be judged (no announcements are stored for the past): the replay
 evaluates under `NO_CATALYST_MODE`, a mode no `required_in` lists, so it is recorded and never
 blocks (the known gap `catalyst_not_evaluated`).
@@ -29,13 +38,13 @@ from __future__ import annotations
 
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 
 from app.paths import BARS5M_GAPS
 
 from ..data.audit import CLOSE_5M_PCT
-from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
+from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar, Tick
 from ..data.bars5m_gaps import gap_spans, in_gap, read_gaps
 from ..data.bars_store import BarStore, RejectRow
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
@@ -44,7 +53,9 @@ from ..engine.trigger import (
     CriterionResult,
     Trigger,
     TriggerMonitor,
+    daily_level,
     evaluate_trigger,
+    first_above,
     in_window,
 )
 from ..money import MONEY_SCALE, require_exact
@@ -58,6 +69,7 @@ __all__ = [
     "EpEstimate",
     "EpTrace",
     "after_trigger",
+    "bar_ticks",
     "traded_low_after",
     "REPLAY_RULE",
     "on_basis",
@@ -264,18 +276,56 @@ class _ReplayView:
         return min(lows, default=None)
 
 
+def bar_ticks(day: date, bar: Bar, stops: Collection[Decimal]) -> list[Tick]:
+    """The trades a stop order or a next-session entry is replayed on from one 5-minute bar (in
+    time order): the session's first bar's close at its end (the price at 09:20, when the
+    trigger window opens), each bar's open at its start, and each of `stops` (stop triggers) the
+    bar rose to from its open, ascending, just after the open. Nothing else of the bar is a
+    trade the replay reads: the first trade at or above a stop's trigger is one of these."""
+    ticks = [Tick(bar.symbol, bar.start, bar.open)]
+    above = sorted(t for t in stops if bar.open < t <= bar.high)
+    ticks += [
+        Tick(bar.symbol, bar.start + timedelta(microseconds=n + 1), t) for n, t in enumerate(above)
+    ]
+    if bar.start == datetime.combine(day, SESSION_OPEN, tzinfo=IST):
+        ticks.append(Tick(bar.symbol, bar.start + BAR_WIDTH, bar.close))
+    return ticks
+
+
+def _stop_trigger(candidate: Candidate) -> Decimal | None:
+    """A stop order's trigger: the first tick above its level (None without them)."""
+    level = daily_level(candidate.playbook, candidate.levels)
+    tick = candidate.daily.tick
+    if level is None or tick is None or tick <= 0:
+        return None
+    return first_above(level, tick)
+
+
 def replay(
     day: date, candidates: Iterable[Candidate], bars: Mapping[str, Sequence[Bar]]
 ) -> list[Trigger]:
     """The triggers live would fire on `day` for `candidates` (whose `symbol` is the instrument
     id `bars` is keyed by), in the order they fire: each fires at most once, as a written
-    signal closes its key for the day."""
+    signal closes its key for the day. A candidate that fires on a trade is fed the trades of
+    each bar (`bar_ticks`) before the bar is final."""
     view = _ReplayView(day, bars)
     monitor = TriggerMonitor(view)
+    stops: dict[str, set[Decimal]] = {}
     for candidate in candidates:
         monitor.add(candidate)
+        if candidate.playbook.on_ticks:
+            found = stops.setdefault(candidate.symbol, set())
+            if (
+                stop := _stop_trigger(candidate)
+            ) is not None and not candidate.playbook.next_session:
+                found.add(stop)
     fired: list[Trigger] = []
     for bar in sorted((b for series in bars.values() for b in series), key=_order):
+        if bar.symbol in stops:
+            for tick in bar_ticks(day, bar, stops[bar.symbol]):
+                for found in monitor.on_tick(tick):
+                    monitor.confirm(found.candidate.key)
+                    fired.append(found)
         view.seen(bar)
         for found in monitor.on_bar(bar):
             monitor.confirm(found.candidate.key)

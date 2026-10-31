@@ -52,6 +52,7 @@ Intraday (one `LiveFeed`, one Fyers data socket):
 
 ```text
 ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
+  (stop_order, next_session: ticks -> TriggerMonitor.on_tick)
   -> ExecutionRouter by mode: shadow (virtual fill) | confirm (card, Take/Skip) | auto
   -> reserve_order -> send_order -> HatBroker -> fill sync -> StopDesk.protect (stop, then GTT)
   -> TradeManager: exit stack, 15:05-15:10 MA exits

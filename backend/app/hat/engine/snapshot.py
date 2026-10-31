@@ -43,6 +43,7 @@ __all__ = [
     "chain_members",
     "day_counts",
     "entry_price_of",
+    "limit_price_of",
     "industry_lookup",
     "industry_of",
     "last_hard_stop",
@@ -286,6 +287,21 @@ def last_hard_stop(
         )
     )
     return () if closed is None else (trade_date_of(as_utc(closed)),)
+
+
+def limit_price_of(session: Session, signal: HatSignal) -> Decimal:
+    """The entry order's LIMIT: a stop order's max-chase price from its `signal.triggered`
+    event (`limit_price`), else the planned entry price (`entry_price_of`)."""
+    payload = session.scalar(
+        select(HatEvent.payload).where(
+            HatEvent.correlation_id == signal.id, HatEvent.event_type == journal.SIGNAL_TRIGGERED
+        )
+    )
+    raw = (payload or {}).get("limit_price")
+    if raw is None:
+        return entry_price_of(session, signal)
+    price = require_exact(raw, "limit_price", floats=True)  # unreadable: fail, never guess
+    return price if price > 0 else entry_price_of(session, signal)
 
 
 def entry_price_of(session: Session, signal: HatSignal) -> Decimal:

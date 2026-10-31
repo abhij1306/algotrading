@@ -46,9 +46,12 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    out of a `max`, and a level of it alone never breaks. A level with `entry_timing: daily_close`
    never breaks live; the backtest enters it at the daily close above the level. A volume test
    reads only volume known at its decision: the breakout day's at that day's close, never the
-   full day's volume for an intraday break (`breakout_volume_needs_daily_close`); the backtest's
-   estimate of `volume_pace` is the one exception, recorded as the known gap
-   `volume_pace_on_full_day_volume`.
+   full day's volume for an intraday break (`breakout_volume_needs_daily_close`). A backtest
+   session without 5-minute bars refuses an enabled `volume_pace` (`volume_pace_no_intraday`);
+   the opt-in `volume_pace: full_day` convention reads the full day's volume and fails the run
+   audit (`lookahead_full_day_volume`). A `stop_order` or `next_session` level fires on a trade
+   (`TriggerMonitor.on_tick`), live and in the replay, and its order is a LIMIT at the
+   max-chase price (decisions.md "Setup entry orders").
    A backtest session with stored 5-minute bars is decided by the live `TriggerMonitor` replayed
    on them (`backtest/intraday.replay`: the opening range, the close confirmation, `volume_pace`,
    `gap_up`, `early_volume`, the entry LIMIT, the low-of-day stop from the bars up to the trigger

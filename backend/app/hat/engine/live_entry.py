@@ -48,7 +48,7 @@ from sqlalchemy.orm import Session
 from ..clock import SYSTEM_CLOCK, Clock
 from ..configs.records import Bot, StrategyVersion
 from ..configs.unit import configs_of
-from ..data.bars import Bar
+from ..data.bars import Bar, Tick
 from ..data.demerger_notice import SKIP_DEMERGER_PENDING, entry_blocked
 from ..data.gapscan import Gapper, is_candidate
 from ..data.results.derive import growth_by_result, results_as_of
@@ -170,8 +170,12 @@ def watchlist_candidates(
 ) -> list[Candidate]:
     """One candidate per Watchlisted row of `trade_date` of an active bot, judged by the playbook
     of the strategy version the row was scanned under, under the bot's effective mode for the
-    session. `bars` feeds the playbook's daily-bar trigger criteria."""
+    session. `bars` feeds the playbook's daily-bar trigger criteria. A playbook entering the
+    session after a close above its level (`Playbook.next_session`) takes its candidates from
+    the previous session's rows that did not trigger (Watchlisted, or Expired at that session's
+    end) instead; without the calendar it has none."""
     out: list[Candidate] = []
+    prev = None if calendar is None else calendar.previous_trading_day(trade_date)
     for bot in _active_bots(session):
         mode = _session_mode(session, bot, trade_date, calendar)
         configs = _versions_newest_first(session, bot.strategy_id)
@@ -184,6 +188,14 @@ def watchlist_candidates(
                 )
             )
         )
+        if prev is not None:
+            rows += session.scalars(
+                select(HatWatchlistEntry).where(
+                    HatWatchlistEntry.bot_id == bot.id,
+                    HatWatchlistEntry.trade_date == prev,
+                    HatWatchlistEntry.status.in_((lifecycle.WATCHLISTED, lifecycle.EXPIRED)),
+                )
+            )
         symbols = _symbols(session, (r.instrument_id for r in rows))
         for row in rows:
             version = configs_of(session).get(StrategyVersion, row.strategy_version_id)
@@ -191,7 +203,7 @@ def watchlist_candidates(
                 continue
             config = parse_config(version.config)
             playbook = _playbook(config, row.playbook)
-            if playbook is None:
+            if playbook is None or playbook.next_session != (row.trade_date != trade_date):
                 continue
             levels = (row.criteria_results or {}).get("levels", {})
             out.append(
@@ -477,6 +489,7 @@ def entry_request(
         context=context,
         skip_reason=plan.skip,
         criteria=criteria,
+        limit_price=plan.limit,
     )
 
 
@@ -573,7 +586,16 @@ class TriggerService:
         self._route = route
 
     def on_bar(self, bar: Bar) -> list[Trigger]:
-        fired = self.monitor.on_bar(bar)
+        return self._fire(self.monitor.on_bar(bar))
+
+    def on_tick(self, tick: Tick) -> list[Trigger]:
+        """A `LiveData` tick listener: the stop-order and next-session candidates fire on a trade
+        (`TriggerMonitor.on_tick`)."""
+        return self._fire(self.monitor.on_tick(tick))
+
+    def _fire(self, fired: list[Trigger]) -> list[Trigger]:
+        if not fired:
+            return fired
         stale = self._feed_stale()
         for trigger in fired:
             self._submit(lambda t=trigger: self.write(t, stale))

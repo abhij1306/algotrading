@@ -436,7 +436,8 @@ return, with no label) are replaced by fields named by their basis: `trades_ente
 counts by entry in the first and by exit in the second.
 
 **conventions.** `slot_order` may be `rs`; `volume_pace: full_day` is recorded only when a run
-asks for it (a default run keeps its digest). Known gap `volume_pace_on_full_day_volume`.
+asks for it (a default run keeps its digest). Known gap `volume_pace_on_full_day_volume`. A run
+with a stop-order playbook records `stop_slippage` (the fraction and whether it is measured).
 
 **funnel.** `run.json` adds `funnel`: `regime_off_nights` (nights the regime gate kept the scan
 off) and `by_playbook`, per playbook the count passing each gate in order, read as the run goes
@@ -581,9 +582,10 @@ The reads the run makes past the clock on purpose go through `MarketView.hindsig
 counted by reason (`BacktestResult.hindsight`); the run audit's `lookahead` check warns
 `lookahead_hindsight` with the counts of those a decision made: `ep_estimate_close` (above),
 `ep_estimate_volume` (the day's volume for the EP daily estimate, `episodic_pivot_trigger_estimated`; a daily bar has no earlier
-volume, so there is no point-in-time alternative), `volume_pace_full_day` (a session paced on
-its full day's volume: on a daily estimate always, the same reason; on 5-minute bars only under
-the opt-in `volume_pace: full_day` convention, the default `live` paces on the bars) and
+volume, so there is no point-in-time alternative), `volume_pace_full_day` (a 5-minute session
+paced on its full day's volume under the opt-in `volume_pace: full_day` convention; it also
+fails the audit, `lookahead_full_day_volume`; the daily estimate refuses an enabled
+`volume_pace` instead, skip `volume_pace_no_intraday`) and
 `delisted_exit` (each exit at a delisting's last close: which session was the last is known
 from the registry and the later bars, not on the day, and the data has no point-in-time
 delisting notice). The descriptive `breakout_vol_ratio` column is counted, not warned. What
@@ -604,13 +606,15 @@ the runs are compared exactly up to the session before its exit and reported div
 | Event | The run's rule |
 | --- | --- |
 | The path through a daily bar | open, low, high, close (`FILL_PATH`): a stop and a target in one bar is a stop |
-| A buy-stop entry | the high breaking the level, one tick in (`level_break_estimated`); a gap over the level at the open moved by the median to 09:20, at most the day's high (`gap_over_fills_0920_estimate`), refused beyond max chase |
-| The entry day's low before the break | max(low, min(open, level x (1 - ADR20/100))) (`entry_day_low_estimated`) |
+| A level-break entry (`intraday_break`) | the high breaking the level, one tick in (`trigger_is_level_break_only`); a gap over the level at the open moved by the median to 09:20, at most the day's high (`gap_over_fills_0920_estimate`), refused beyond max chase |
+| A stop order (`stop_order`) | a gap over as above; else the trigger (the first tick above the level) plus the stop slippage, 0.12% (`stop_order_fill_estimated`, `stop_slippage_provisional` until refitted), at most the high; refused beyond max chase. On 5-minute bars: the 09:15 close when above the level, else the trigger or a later bar's open above it |
+| A next-session entry (`next_session`) | after a close above the level, the next open moved by the median to 09:20 (`next_session_fills_0920_estimate`), the 09:15 close on 5-minute bars; the whole day's low after it; refused beyond max chase |
+| The entry day's low before the break | max(low, min(open, level x (1 - ADR20/100))) (`entry_day_low_estimated`); after an open above the level the whole day's low comes after the fill, and a low-of-day stop is refused (`gap_over_no_intraday`) |
 | A stop gapped through | the open |
 | A stop raised on the way up | holds through that day's dip unless the close is below it (`ambiguous: optimistic`, the default; counted in `ambiguous_days`) |
 | A 5-minute entry | the LIMIT at the trigger bar's close fills only if a later 5-minute bar trades at or below it (a daily low no bar shows does not count; else skip `limit_not_reached`), never above the limit after slippage; after the trigger the low comes before the high |
 | Pre-open (EP) entries on daily bars | the EP estimate (`EP_ESTIMATE`) |
-| `volume_pace` | on the full day's volume (`volume_pace_on_full_day_volume`) |
+| `volume_pace` | refused without 5-minute bars (`volume_pace_no_intraday`); on the full day's volume only under `volume_pace: full_day` (`volume_pace_on_full_day_volume`, audit fail) |
 | Close rules and close entries | the official close for live's pre-15:15 price (`close_rules_decided_on_official_close`); F&O expiry and index rebalance days tagged `auction_risk` (exits only) |
 | Circuits | read off the bar, no band table: an entry at the high within a tick of a 2/5/10/20% band is locked; no sale on a day locked down all day (O = H = L = C at the band), nor at a close that is the low at the band |
 | Suspension, delisting | no fill without a bar; the mark is the last close for 5 sessions, then 5% lower each; a delisting exits at its last close |

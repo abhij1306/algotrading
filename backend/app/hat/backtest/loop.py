@@ -52,9 +52,11 @@ from the session's 5-minute bars when the run has them and otherwise estimated a
 max(day low, min(open, level x (1 - adr20 / 100))) with `adr20` as of the session before; a low-of-
 day stop is planned from it, as live plans it from the bars up to the trigger. Whatever of the
 day's low lies below the pre-break low came after the break, and is taken before the high (the
-adverse order): a stop it reaches fills that day, and it seeds the trade's MAE. A gap-over entry
-with a low-of-day stop needs the opening range's low, so without 5-minute bars it is skipped
-(`gap_over_no_intraday`). The rule is recorded in every run's metrics (`entry_day_low`).
+adverse order): a stop it reaches fills that day, and it seeds the trade's MAE. A session that
+opened above the level gapped over it, whatever its 09:20 fill (`fillrules.entry_day_lows`): a
+low-of-day stop then needs the opening range's low, so without 5-minute bars it is skipped
+(`gap_over_no_intraday`), and any other stop sees the whole day's low after the fill. The rule
+is recorded in every run's metrics (`entry_day_low`).
 
 Entry filters (PR 61, HAT-BT-025): at each trigger the playbook's entry filters run as live runs
 them (`trigger.evaluate_entry_filters`): `adtr_filter` on the planned stop and ADTR(20) as of the
@@ -78,11 +80,26 @@ first, then (level - open) / open ascending, ties by score. `score` (the PR 12 o
 variants; the rule is part of the run's conventions and `config_digest`.
 
 Volume pace: a session decided on 5-minute bars judges an enabled `volume_pace` as live does, on
-the pace of the volume up to each bar. The daily estimate cannot: it judges it on the full day's
-volume against `vs_avg50` x the mean of the 50 sessions through the previous one
-(`volume_pace_low`, `volume_pace_missing` skips), a look-ahead the run records as the known gap
-`volume_pace_on_full_day_volume`. Under the `volume_pace` convention `full_day` the 5-minute
-sessions take that rule too, the replay deciding the trigger without the pace.
+the pace of the volume up to each bar. The daily estimate cannot know the volume at the trigger,
+and the full day's is a look-ahead, so it refuses the rule: a break of a playbook with an
+enabled `volume_pace` on a session without 5-minute bars is skipped `volume_pace_no_intraday`,
+which ends the setup's window (decisions.md "Setup entry orders", L1). Under the `volume_pace`
+convention `full_day` the 5-minute sessions judge it on the full day's volume against `vs_avg50`
+x the mean of the 50 sessions through the previous one (`volume_pace_low`, `volume_pace_missing`
+skips), the replay deciding the trigger without the pace: the known gap
+`volume_pace_on_full_day_volume`, and the run audit fails (`lookahead_full_day_volume`).
+
+Entry orders (decisions.md "Setup entry orders"): a level trigger with `entry_timing:
+stop_order` is a buy stop-limit resting from 09:20, which live fires on the first trade above the
+level. On 5-minute bars the replay feeds live's monitor the trades of each bar
+(`intraday.bar_ticks`); without them a session that opens above the level fills at 09:20
+(`gap_over_fill`), and one whose high reaches the stop's trigger at the trigger plus the
+calibrated stop slippage (`fillrules.stop_order_fill`), the known estimate gap
+`stop_order_fill_estimated`. A `next_session` trigger's candidates are the previous session's
+rows whose close was above the level, bought at 09:20: the 09:15 close on 5-minute bars, else the
+open moved to 09:20 (`next_session_fills_0920_estimate`), with the whole day's low after the
+fill (a low-of-day stop is refused there, `gap_over_no_intraday`). Either way `max_chase` judges
+the fill.
 
 Path pessimism (PR 64, HAT-BT-021): a stop the way up raised was placed after the
 low on the assumed path, though the low may have come after the high. A day whose low reaches
@@ -124,7 +141,7 @@ does; a run may replace it (`with_cooldown`, `--cooldown-sessions`) and records 
 Known gaps, recorded by fixed code in every run's metrics (`KNOWN_GAPS`, HAT-BT-070) and
 measured in shadow, besides the estimates the run took (`ESTIMATE_GAPS`: on a session without
 5-minute bars the trigger is the daily high's break of the level, without the opening range,
-with `volume_pace` on the full day's volume, and a pre-open playbook's the calibrated
+a stop order's fill the calibrated estimate, and a pre-open playbook's the calibrated
 `intraday.EP_ESTIMATE`;
 `catalyst_attached` is never judged): close-based exits decide on and fill at the daily close
 (the auction price), which stands in for the price live acts on before the 15:15 cut-off (owner
@@ -230,15 +247,17 @@ from .data import (
     symbol_on,
 )
 from .fillrules import (
+    SKIP_GAP_NO_INTRADAY,
     SKIP_PACE_LOW,
     SKIP_PACE_MISSING,
     breakout_volume_ok,
     close_lower_locked,
+    entry_day_lows,
     first_trigger,
     full_day_pace_skip,
     inferred_band,
     lower_circuit_locked,
-    pre_break_low,
+    stop_order_fill,
     upper_circuit_locked,
 )
 from .fills import (
@@ -310,8 +329,10 @@ from .spec import (
     GAP_OVER_ESTIMATED,
     IMPACT_DAYS,
     LEVEL_BREAK_ESTIMATED,
+    NEXT_SESSION_ESTIMATED,
     OVERLAP_FUNDING_ESTIMATED,
     REGIME_MULT_ONE,
+    STOP_ORDER_ESTIMATED,
     VOLUME_PACE_ESTIMATED,
     VOLUME_PACE_FULL_DAY,
     BacktestError,
@@ -324,11 +345,13 @@ __all__ = ["run_backtest"]
 
 SKIP_NO_LEVEL = "no_trigger_level"
 SKIP_FACTOR_PENDING = "factor_pending"  # CA5: the day's adjusted history is not point in time
-SKIP_GAP_NO_INTRADAY = "gap_over_no_intraday"
 SKIP_DEMERGER_PENDING = "demerger_pending"  # the demerger exit session (`data/demerger_notice.py`)
 SKIP_LOW_VOLUME = "breakout_volume_low"  # a close above the level on too little volume
 SKIP_NO_VOLUME = "breakout_volume_missing"  # the volumes the breakout volume test reads
 VOLUME_SKIPS = frozenset({SKIP_LOW_VOLUME, SKIP_NO_VOLUME})
+# An enabled `volume_pace` on a session without 5-minute bars: its volume at the trigger is not
+# known, and the full day's is a look-ahead (decisions.md "Setup entry orders", L1).
+SKIP_PACE_NO_INTRADAY = "volume_pace_no_intraday"
 
 
 def consumes(reason: str) -> bool:
@@ -349,7 +372,7 @@ _ZERO = Decimal(0)
 # opening-range break, and the catalyst no backtest can judge.
 _EP_ESTIMATED_TYPES = frozenset({trigger.PRICE_BREAKS_LEVEL, trigger.CATALYST})
 # The trigger types the estimate leaves to its own checks: those, and `volume_pace`, which has no
-# elapsed share of a session on a daily bar and is judged on the full day (`_full_day_pace`).
+# elapsed share of a session on a daily bar, so the estimate refuses it (`volume_pace_no_intraday`).
 _EP_SEPARATE_TYPES = _EP_ESTIMATED_TYPES | {trigger.VOLUME_PACE}
 # The estimated trigger times (seconds after midnight IST) of the daily estimate under the `time`
 # slot order: a gap over at the first trigger bar's end (09:20, ahead of a 5-minute trigger
@@ -422,6 +445,8 @@ class _EntryPlan:
     # the highest price after the entry (None: the day's high, the daily estimate's path)
     high: Decimal | None = None
     basis: str = BASIS_DAILY  # what decided it: the session's 5-minute bars or the daily bar
+    # a 5-minute stop order's LIMIT, its max-chase price (None: the LIMIT is `price`)
+    limit: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -1539,14 +1564,25 @@ class _Run:
             calendar=self.calendar,
         )
 
-    def _rows(self, day: date, *, at_close: bool) -> list[_Row]:
-        """The day's watchlist rows of the intraday-break playbooks, or with `at_close` of the
-        daily-close ones, in the watchlist's score order."""
-        return [
+    def _rows(self, day: date, *, at_close: bool, prev: date | None = None) -> list[_Row]:
+        """The day's watchlist rows of the intraday playbooks (a break or a stop order) and,
+        with `prev`, the next-session ones' rows of the previous session dated `day` (live's
+        `watchlist_candidates`); or with `at_close` the daily-close ones' rows; in the
+        watchlist's score order."""
+        rows = [
             _Row.of(row)
             for row in self._watchlist(day)
             if self.config.playbook(row.playbook).at_close == at_close
+            and not self.config.playbook(row.playbook).next_session
         ]
+        if prev is None or at_close:
+            return rows
+        rows += [
+            replace(_Row.of(row), trade_date=day)
+            for row in self._watchlist(prev)
+            if self.config.playbook(row.playbook).next_session
+        ]
+        return rows
 
     def _entries(self, day: date, prev: date, *, at_close: bool = False) -> None:
         """The day's entries in the order their triggers take the open slots (HAT-BT-026): the
@@ -1597,7 +1633,7 @@ class _Run:
         """The active strategy's triggers of the day: its watchlist rows and pre-open
         candidates, each on the session's 5-minute bars when it has them, else the daily
         estimate."""
-        rows = [r for r in self._rows(day, at_close=False) if self._open_for(r, day)]
+        rows = [r for r in self._rows(day, at_close=False, prev=prev) if self._open_for(r, day)]
         gappers = self._gappers(day, prev)
         bars = self._session_bars(day, {str(r.instrument_id) for r in (*rows, *gappers)})
         decisions = self._on_bars(day, prev, (*rows, *gappers), bars)
@@ -1654,16 +1690,19 @@ class _Run:
         if price is None:
             return None  # the level did not break: the row expires at the session end
         self._passed(row.playbook, "trigger")
-        if not at_close and (paced := self._full_day_pace(playbook, instrument_id, day)):
-            self._skip(paced)
+        if not at_close and trigger.volume_pace_multiple(playbook) is not None:
+            self._skip(SKIP_PACE_NO_INTRADAY, row)  # no volume known at the trigger (L1)
             return None
         self._passed(row.playbook, "breakout_volume")
-        # A close entry comes after the whole day's path: its low is the day's low.
-        lows = (
-            (bar.low, None)
-            if at_close
-            else self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
-        )
+        # A close entry comes after the whole day's path: its low is the day's low. A next-session
+        # entry buys at 09:20, before which the daily bar shows no low: the whole day comes after.
+        if at_close:
+            lows: tuple[Decimal, Decimal | None] | str = (bar.low, None)
+        elif playbook.next_session:
+            low_of_day = isinstance(playbook.stop, StopLowOfDay)
+            lows = SKIP_GAP_NO_INTRADAY if low_of_day else (min(bar.open, price), bar.low)
+        else:
+            lows = self._entry_lows(playbook, instrument_id, bar, level, price, (day, prev))
         if isinstance(lows, str):
             self._skip(lows, row)
             return None
@@ -1682,19 +1721,25 @@ class _Run:
         )
         if failed != MAX_CHASE:
             self._passed(row.playbook, MAX_CHASE)
-        if not at_close:
-            self.estimated.update((LEVEL_BREAK_ESTIMATED, ENTRY_DAY_LOW_ESTIMATED))
+        if playbook.next_session:
+            self.estimated.add(NEXT_SESSION_ESTIMATED)
+        elif not at_close:
+            self.estimated.add(ENTRY_DAY_LOW_ESTIMATED)
+            self.estimated.add(STOP_ORDER_ESTIMATED if playbook.on_ticks else LEVEL_BREAK_ESTIMATED)
             if bar.open > level:
                 self.estimated.add(GAP_OVER_ESTIMATED)
         basis = BASIS_CLOSE if at_close else BASIS_DAILY
         plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close, None, basis)
+        if playbook.next_session:
+            return _Decision(row, plan, bar, (_GAP_SECONDS, _ZERO))  # bought at 09:20
         rank = trigger_rank(bar.open, level, self.spec.conventions.entry_fill_rule)
         return _Decision(row, plan, bar, _estimated_rank(rank))
 
     def _full_day_pace(self, playbook: Playbook, instrument_id: str, day: date) -> str | None:
-        """The skip reason when the playbook's enabled `volume_pace` fails on the full day's
-        volume (`full_day_pace_skip`), None when it passes or the playbook has none; a judged
-        pace records the look-ahead gap `volume_pace_on_full_day_volume`."""
+        """Under the `volume_pace` convention `full_day`, the skip reason when the playbook's
+        enabled `volume_pace` fails on the full day's volume (`full_day_pace_skip`), None when it
+        passes or the playbook has none; a judged pace records the look-ahead gap
+        `volume_pace_on_full_day_volume` and its hindsight read fails the run audit."""
         multiple = trigger.volume_pace_multiple(playbook)
         if multiple is None:
             return None
@@ -1796,7 +1841,13 @@ class _Run:
             # whose replay fires only on the break with its confirmation and volume pace
             level, bar = self._level(row), self.view.bar(str(row.instrument_id), day)
             if str(row.instrument_id) in bars and level is not None and bar is not None:
-                if bar.high > level and not self.config.playbook(row.playbook).preopen:
+                playbook = self.config.playbook(row.playbook)
+                if playbook.next_session:
+                    prev_close = self.view.prev_close(str(row.instrument_id), day)
+                    broke = prev_close is not None and prev_close > level
+                else:
+                    broke = bar.high > level
+                if broke and not playbook.preopen:
                     self._passed(row.playbook, "trigger")
         for candidate in candidates:
             if candidate.playbook.preopen:
@@ -1829,7 +1880,11 @@ class _Run:
                 continue
             dip, high = after_trigger(bars[candidate.symbol], fired.at, bar.low)
             traded = traded_low_after(bars[candidate.symbol], fired.at)
-            if planned.skip is None and (traded is None or traded > planned.entry):
+            if (
+                planned.limit is None
+                and planned.skip is None
+                and (traded is None or traded > planned.entry)
+            ):
                 # live's LIMIT rests at the trigger bar's close: no bar after the trigger traded
                 # at or below it, so nothing fills
                 self._skip(SKIP_LIMIT_NOT_REACHED, row)
@@ -1852,6 +1907,7 @@ class _Run:
                 criteria,
                 high=high if high is not None else planned.entry,
                 basis=BASIS_5M,
+                limit=planned.limit,
             )
             if candidate.playbook.preopen:
                 self._catalyst_gaps(candidate.playbook)
@@ -2006,10 +2062,10 @@ class _Run:
             return None
         if not self._ep_fires(playbook, row, bar, daily, day, prev):
             return None
-        if paced := self._full_day_pace(playbook, instrument_id, day):
-            self._skip(paced)
+        if trigger.volume_pace_multiple(playbook) is not None:
+            self._skip(SKIP_PACE_NO_INTRADAY)  # no volume known at the trigger (L1)
             if record is not None:
-                record.failed(paced, trigger.VOLUME_PACE)
+                record.failed(SKIP_PACE_NO_INTRADAY, trigger.VOLUME_PACE)
             return None
         price = trigger.entry_limit(EP_ESTIMATE.entry(bar.open, bar.high), bar.open, daily.tick)
         if price > bar.high:
@@ -2046,8 +2102,8 @@ class _Run:
     ) -> bool:
         """The estimate's trigger: the bar fires `EP_ESTIMATE`, and every enabled `gap_up`,
         `early_volume`, `earnings_catalyst` and daily-bar trigger criterion passes on the daily
-        values at the estimate's trigger instant (`volume_pace` is judged on the full day's volume
-        after, `_full_day_pace`); the outcome goes into the EP log."""
+        values at the estimate's trigger instant (an enabled `volume_pace` is refused after,
+        `volume_pace_no_intraday`); the outcome goes into the EP log."""
         instrument_id = str(row.instrument_id)
         # the day's volume at the estimate's trigger: the known gap `EP_TRIGGER_ESTIMATED`
         with self.view.hindsight(HINDSIGHT_EP_VOLUME):
@@ -2099,7 +2155,24 @@ class _Run:
         """The entry fill of the row's `level` under the run's entry fill rule, None when the
         level did not break, or the skip reason when there is no tick to penetrate by
         (HAT-BT-020). A gap over the level fills at 09:20, not at the open
-        (`fill_0920.gap_over_fill`)."""
+        (`fill_0920.gap_over_fill`). A stop order fills as `stop_order_fill` estimates it, and a
+        next-session entry, after a previous close above the level, at 09:20 (`estimated_0920`),
+        whatever the level."""
+        playbook = self.config.playbook(row.playbook)
+        if playbook.next_session:
+            prev_close = self.view.prev_close(str(row.instrument_id), day)
+            if prev_close is None:
+                return SKIP_BAD_INPUT
+            if prev_close <= level:
+                return None
+            return fill_0920.estimated_0920(bar.open, "buy", low=bar.low, high=bar.high)
+        if playbook.on_ticks:
+            tick = None
+            if bar.open <= level:
+                tick = self.view.tick(str(row.instrument_id), day)
+                if tick is None:
+                    return SKIP_BAD_INPUT
+            return stop_order_fill(bar.open, bar.high, level, tick)
         rule = self.spec.conventions.entry_fill_rule
         # The tick matters only to a penetration from below; read it only then.
         tick = None
@@ -2198,21 +2271,7 @@ class _Run:
         _, prev = days
         adr20 = self.view.feature(prev, instrument_id, "adr20")
         low_of_day = isinstance(playbook.stop, StopLowOfDay)
-        gapped = price == bar.open
-        if low_of_day:
-            if gapped:
-                # A gap over enters at the open: its stop needs the opening range's low.
-                return SKIP_GAP_NO_INTRADAY
-            if adr20 is None or adr20 < 0:
-                return SKIP_BAD_INPUT  # the whole day's low would be read before the break
-        # The break is at the entry price (level + 1 tick under penetration); a gap over at the
-        # open breaks on the first bar either way.
-        broke = level if gapped else price
-        before, after = pre_break_low(bar.open, bar.low, broke, adr20)
-        if gapped and not low_of_day:
-            # A gap over enters at the open and then sees the whole day's way down.
-            return before, bar.low
-        return before, after
+        return entry_day_lows((bar.open, bar.low), level, price, adr20, low_of_day=low_of_day)
 
     def _enter(
         self,
@@ -2268,9 +2327,11 @@ class _Run:
             outcome = entries.open_entry(
                 self.session,
                 request,
-                # a 5-minute entry is live's LIMIT at its price: never filled above it
+                # a 5-minute entry is live's LIMIT (at its price, or a stop order's max-chase
+                # price): never filled above it
                 fills=self.spec.fills.within(
-                    self._free_cash() + credit, plan.price if plan.basis == BASIS_5M else None
+                    self._free_cash() + credit,
+                    (plan.limit or plan.price) if plan.basis == BASIS_5M else None,
                 ),
                 confidence=BACKTEST_CONFIDENCE,
             )

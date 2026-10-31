@@ -118,7 +118,9 @@ class EntryRequest:
 
     `skip_reason` (one of `ENTRY_SKIP_REASONS`) records a trigger whose stop or entry filters
     already failed: the signal is stored Rejected with that reason and no risk check runs.
-    `criteria` is each trigger and entry-filter result, kept on `signal.triggered`."""
+    `criteria` is each trigger and entry-filter result, kept on `signal.triggered`, and
+    `limit_price` a stop order's LIMIT (its max-chase price, `trigger.chase_limit`) when it is
+    not the entry price, kept there too for the order (`snapshot.limit_price_of`)."""
 
     bot_id: uuid.UUID
     playbook: str
@@ -129,6 +131,7 @@ class EntryRequest:
     last_prices: dict[uuid.UUID, Decimal] | None = None
     skip_reason: str | None = None
     criteria: tuple[dict[str, object], ...] = ()
+    limit_price: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -367,6 +370,8 @@ def _triggered_payload(
     }
     if request.criteria or mode != Mode.SHADOW:
         payload["entry_price"] = str(entry)
+    if request.limit_price is not None:
+        payload["limit_price"] = str(request.limit_price)
     if request.criteria:
         payload["criteria"] = [dict(item) for item in request.criteria]
     if mode != Mode.SHADOW:

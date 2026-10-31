@@ -28,6 +28,13 @@ Rules:
 - The entry is a LIMIT at the larger of the level and the bar's close, rounded up to the tick, so
   it never buys below the level it broke (`entry_limit`, PR 49); `max_chase`
   checks that price.
+- A playbook whose level trigger is `entry_timing: stop_order` or `next_session`
+  (`Playbook.on_ticks`) fires on a trade, not on a final bar (`on_tick`, decisions.md "Setup
+  entry orders"): a stop order on the first trade above the level in the trigger window, a
+  next-session entry on the first trade in it after a previous close above the level. Its other
+  trigger criteria read the day volume of the final bars so far. The entry is that trade's price
+  and its order a LIMIT at the max-chase price (`EntryPlan.limit`, `chase_limit`): a buy
+  stop-limit, which `max_chase` checks at the trade's price. `on_bar` never fires one.
 - At the trigger the initial stop is computed with the instrument's real tick (HAT-EXEC-053),
   then the entry filters run in their configured order; `max_chase` always runs, with the
   playbook's last configured percentage, even when the config deleted or disabled it
@@ -46,13 +53,13 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from fractions import Fraction
 from typing import Protocol
 
 import polars as pl
 
-from ..data.bars import BAR_WIDTH, Bar
+from ..data.bars import BAR_WIDTH, Bar, Tick
 from ..data.series_break import segment_start
 from ..data.sessions import SESSION_CLOSE, SESSION_OPEN
 from ..money import exact, require_exact
@@ -110,7 +117,9 @@ __all__ = [
     "daily_trigger_results",
     "elapsed_fraction",
     "entry_filter_context",
+    "chase_limit",
     "entry_limit",
+    "first_above",
     "entry_stop",
     "entry_filter_instances",
     "evaluate_entry_filters",
@@ -299,6 +308,8 @@ class EntryPlan:
     locked_upper_circuit: bool | None
     skip: str | None
     filters: tuple[CriterionOutcome, ...]
+    # the order's LIMIT when it is not `entry`: a stop order's max-chase price (`chase_limit`)
+    limit: Decimal | None = None
 
 
 @dataclass(frozen=True)
@@ -463,6 +474,29 @@ def evaluate_trigger(
     return TriggerEvaluation(fired, tuple(outcomes), level)
 
 
+def first_above(level: Decimal, tick: Decimal) -> Decimal:
+    """The first price on the `tick` grid strictly above `level`: level + tick for a level on
+    the grid, the next grid price for one between (an adjusted level). A buy stop's trigger."""
+    return (level / tick).to_integral_value(rounding=ROUND_FLOOR) * tick + tick
+
+
+def chase_limit(level: Decimal, pct: Decimal, tick: Decimal | None) -> Decimal:
+    """The highest price `max_chase` at `pct` allows over `level` (level x (1 + pct/100)), down
+    to the tick when it is known: a stop order's LIMIT, so it never fills past the chase."""
+    raw = level * (_HUNDRED + pct) / _HUNDRED
+    return raw if tick is None or tick <= 0 else floor_to_tick(raw, tick)
+
+
+def chase_pct(playbook: Playbook, configured_pct: Decimal | None, strategy_key: str) -> Decimal:
+    """The max-chase percentage a trigger is checked at (`entry_filter_instances`): the least
+    of the enabled `max_chase` filters', else the forced one's."""
+    return min(
+        require_exact(i.params["pct"], "pct", floats=True)
+        for i in entry_filter_instances(playbook, configured_pct, strategy_key)
+        if i.type == MAX_CHASE
+    )
+
+
 def entry_limit(level: Decimal, price: Decimal, tick: Decimal | None) -> Decimal:
     """The entry LIMIT price at a trigger (PR 49): the larger of the level and the
     live price (the trigger bar's close), rounded up to the tick when it is known, so the order
@@ -470,7 +504,11 @@ def entry_limit(level: Decimal, price: Decimal, tick: Decimal | None) -> Decimal
     limit = max(level, price)
     if tick is None or tick <= 0:
         return limit
-    return (limit / tick).to_integral_value(rounding=ROUND_CEILING) * tick
+    return ceil_to_tick(limit, tick)
+
+
+def ceil_to_tick(price: Decimal, tick: Decimal) -> Decimal:
+    return (price / tick).to_integral_value(rounding=ROUND_CEILING) * tick
 
 
 def plan_entry(
@@ -488,7 +526,20 @@ def plan_entry(
     if level is None:
         locked = locked_upper_circuit(price, candidate.daily)
         return EntryPlan(price, None, None, locked, SKIP_NO_LEVEL, ())
-    entry = entry_limit(level, price, candidate.daily.tick)
+    tick = candidate.daily.tick
+    limit = None
+    if candidate.playbook.on_ticks:
+        # a trade's price: the order is a LIMIT at the max-chase price, a buy stop-limit
+        entry = price if tick is None or tick <= 0 else ceil_to_tick(price, tick)
+        pct = chase_pct(
+            candidate.playbook, candidate.configured_max_chase_pct, candidate.strategy_key
+        )
+        limit = max(entry, chase_limit(level, pct, tick))
+        upper = upper_circuit_price(candidate.daily)
+        if upper is not None and entry <= upper < limit:
+            limit = upper  # the exchange refuses a buy above the band
+    else:
+        entry = entry_limit(level, price, tick)
     locked = locked_upper_circuit(entry, candidate.daily)
     planned = entry_stop(
         candidate.playbook, candidate.daily, entry, day_lows, candidate.final_contraction_low
@@ -500,7 +551,7 @@ def plan_entry(
         configured_pct=candidate.configured_max_chase_pct,
         strategy_key=candidate.strategy_key,
     )
-    return EntryPlan(entry, level, planned.stop, locked, planned.skip or failed, outcomes)
+    return EntryPlan(entry, level, planned.stop, locked, planned.skip or failed, outcomes, limit)
 
 
 def watchlist_levels(stored: Mapping[str, object]) -> dict[str, Decimal | None]:
@@ -702,8 +753,58 @@ class TriggerMonitor:
             results_since=candidate.results_since,
         )
 
+    def tick_context(self, candidate: Candidate, tick: Tick) -> LiveContext:
+        """The live context of `candidate` at a trade (`on_tick`): the trade is the bar (price,
+        high and close), the day volume that of the final bars so far."""
+        day = candidate.trade_date
+        start = self._view.session_start(day)
+        return replace(
+            daily_context(tick.at, candidate.daily, candidate.levels),
+            price=tick.price,
+            bar_high=tick.price,
+            bar_close=tick.price,
+            cum_volume=self._view.day_volume(candidate.symbol, day),
+            elapsed=elapsed_fraction(
+                tick.at,
+                session_open=start.astimezone(IST).time(),
+                session_close=self._view.session_end(day).astimezone(IST).time(),
+            ),
+            open_price=candidate.open_price,
+            announcements=candidate.announcements,
+            minutes=Fraction(int((tick.at - start).total_seconds()), 60),
+            results=candidate.results,
+            results_since=candidate.results_since,
+        )
+
+    def on_tick(self, tick: Tick) -> list[Trigger]:
+        """Evaluate every unfired candidate of the trade's symbol that fires on a trade
+        (`Playbook.on_ticks`) at the trade's exchange time; return the triggers fired. The day
+        low of a stop plan is the final bars' so far."""
+        day = tick.at.astimezone(IST).date()
+        if not in_window(tick.at, self._view.session_start(day), self._view.session_end(day)):
+            return []
+        fired: list[Trigger] = []
+        for key, candidate in sorted(
+            self._by_symbol.get(tick.symbol, {}).items(), key=lambda kv: str(kv[0])
+        ):
+            if not candidate.playbook.on_ticks or candidate.trade_date != day:
+                continue
+            if not self._open(key):
+                continue
+            ctx = self.tick_context(candidate, tick)
+            evaluation = evaluate_trigger(
+                candidate.playbook, ctx, candidate.mode, candidate.daily_results
+            )
+            if not evaluation.fired or not self._claim(key):
+                continue
+            low = self._view.day_low(tick.symbol, day)
+            plan = plan_entry(candidate, ctx, evaluation.level, () if low is None else (low,))
+            fired.append(Trigger(candidate, tick.at, evaluation, plan, ctx))
+        return fired
+
     def on_bar(self, bar: Bar) -> list[Trigger]:
-        """Evaluate every unfired candidate of the bar's symbol; return the triggers fired."""
+        """Evaluate every unfired candidate of the bar's symbol; return the triggers fired. A
+        candidate that fires on a trade (`on_tick`) is not evaluated here."""
         day = bar.start.astimezone(IST).date()
         if not in_window(bar.final_at, self._view.session_start(day), self._view.session_end(day)):
             return []
@@ -711,6 +812,8 @@ class TriggerMonitor:
         for key, candidate in sorted(
             self._by_symbol.get(bar.symbol, {}).items(), key=lambda kv: str(kv[0])
         ):
+            if candidate.playbook.on_ticks:
+                continue
             if candidate.trade_date != day or not self._open(key):
                 continue
             ctx = self.context(candidate, bar)

@@ -31,6 +31,8 @@ from ..criteria.live import (
     DAILY_CLOSE,
     INTRADAY_BREAK,
     LEVEL_OPENING_RANGE,
+    NEXT_SESSION,
+    TICK_TIMINGS,
     GapUpParams,
     PriceBreaksLevelParams,
     level_names,
@@ -702,6 +704,15 @@ class Playbook(Model):
             for i in self.trigger
         ):
             raise ValueError("preopen_level_not_opening_range")
+        # A stop order rests from 09:20 and a next-session entry buys then: neither waits for a
+        # level of the session's own bars, so neither reads the opening range.
+        found = self.level_trigger
+        if (
+            found is not None
+            and found.entry_timing in TICK_TIMINGS
+            and (self.preopen or LEVEL_OPENING_RANGE in level_names(found.level))
+        ):
+            raise ValueError("tick_entry_needs_setup_level")
         # Every level a trigger names is one its setup exposes or the opening range (HAT-BOT-071),
         # else the playbook could never trigger.
         exposed = {LEVEL_OPENING_RANGE, *self.setup_levels}
@@ -745,6 +756,18 @@ class Playbook(Model):
     def at_close(self) -> bool:
         """The level trigger enters at the daily close (`entry_timing: daily_close`)."""
         return self.entry_timing == DAILY_CLOSE
+
+    @property
+    def on_ticks(self) -> bool:
+        """The level trigger fires on a trade (`stop_order`, `next_session`), not on a final
+        5-minute bar (`TriggerMonitor.on_tick`)."""
+        return self.entry_timing in TICK_TIMINGS
+
+    @property
+    def next_session(self) -> bool:
+        """The level trigger enters the session after a close above the level (`next_session`):
+        its candidates are the previous session's watchlist rows."""
+        return self.entry_timing == NEXT_SESSION
 
     @property
     def level_expression(self) -> str | None:
