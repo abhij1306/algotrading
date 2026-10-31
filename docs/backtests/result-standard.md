@@ -487,6 +487,27 @@ gt25), `by_trigger_time` (0920_0945, 0945_1100, after_1100), `by_adr20` (lt3, 3_
 zero denominator, no trade with a target). Winners and losers split on net R as `avg_win_r`
 does; `mar` is the Calmar ratio.
 
+**Overlap runs** (portfolio `conventions: {overlap: true}`, backtest only). A portfolio with
+exactly one rotation leg (no overlay) may weigh above 1 in all: the rotation keeps its weight and
+the setup sleeves keep theirs beside it (their own sum at most 1), the allocator leaving the
+rotation out of the whole-book cap. A setup entry sizes on its sleeve's weight of the equity as
+always, its cash being the free cash plus what selling the rotation would net at its instant; when
+it takes more than the free cash, the rotation sells for the rest before it fills: the weakest
+holding first (unranked on the last rebalance's close, then the lowest rank), the fewest shares
+that cover it, priced as a rotation sale at the entry's instant (never before 09:20: the close of
+the 5-minute bar ending then, else the 09:20 price, a close entry the daily close; a holding
+whose bar closed locked at the lower band is skipped for the next-weakest). Each such sale
+is a `rebalances.csv` `sell` or `trim` row and a trade leg with the reason `rotation_funding`
+(the exit reason when it closes the trade); metrics `rotation_funding_fills` counts them by price
+source (`bar_5m`, `close`, `at_0920`, `stale_0920`), and a `stale_0920` sale (the 09:20 price for a
+later entry: a `daily` run or a 5-minute coverage gap) adds the known gap
+`overlap_funding_priced_at_0920`. The rotation's next rebalance sizes on its weight of the equity
+less the funded setup positions at their mark (each one's shares open × its last close, times the
+share of its entry cost the sales covered), so it neither buys back what the setups hold nor
+leaves a losing position's funding idle. The conventions record `overlap` (`funding`,
+`rotation_capital`) and the knobs `overlap` only when set, so other runs keep their digests;
+known gap `overlap_funding_not_live`.
+
 ---
 
 ## Accuracy checks and the fills' approximations

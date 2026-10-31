@@ -1,0 +1,212 @@
+"""An overlap run's seams (`RunConventions.overlap`): the allocator's whole-book cap leaving the
+rotation out, the leg weights' fit, the order a funding sale sells in, the shares it sells, the
+rotation's capital at its next rebalance and the convention's record. Small hand-built inputs;
+no run, no database."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from hat_risk_support import policy_with
+
+from app.hat.backtest.discipline import knobs_of
+from app.hat.backtest.portfolio import parse_portfolio
+from app.hat.backtest.rotation import (
+    RotationBook,
+    _Holding,
+    bar_ending_at,
+    funding_order,
+    funding_sale,
+    overlap_capital,
+    shares_to_fund,
+)
+from app.hat.backtest.spec import (
+    ENTRY_BARS_DAILY,
+    OVERLAP_FUNDING,
+    OVERLAP_FUNDING_ESTIMATED,
+    OVERLAP_ROTATION_CAPITAL,
+    BacktestError,
+    RunConventions,
+    known_gaps,
+    weights_fit,
+)
+from app.hat.engine.portfolio.allocator import SleeveInput, allocate
+from app.hat.engine.portfolio.health import Health
+from app.hat.engine.strategy.versions import seed_config
+from tests.hat.hat_backtest_support import POLICY, VERSION, config, sessions, spec, zero_fills
+
+D = Decimal
+ROTATION, VCP = "rotation", "vcp"
+
+
+def _sleeve(key: str) -> SleeveInput:
+    return SleeveInput(
+        bot_id=uuid.uuid4(),
+        sleeve=key,
+        cluster=key,
+        lifecycle_state="live",
+        regime_table_value=D(1),
+        health=Health(D(1), probation=False),
+    )
+
+
+def _weights(overlap: str | None) -> list[Decimal]:
+    policy = policy_with(base_weight={ROTATION: "1.0", VCP: "0.3"}, cluster_cap="1.0")
+    found = allocate([_sleeve(ROTATION), _sleeve(VCP)], policy, D(1_000_000), overlap=overlap)
+    return [a.final_weight for a in found]
+
+
+def test_the_book_cap_scales_both_legs_without_overlap() -> None:
+    rotation, vcp = _weights(None)
+    assert rotation + vcp <= 1
+    assert rotation == (D("1.0") / D("1.3")).quantize(D("1E-12"), rounding="ROUND_DOWN")
+
+
+def test_overlap_leaves_the_rotation_out_of_the_book_cap() -> None:
+    assert _weights(ROTATION) == [D("1.0"), D("0.3")]
+
+
+def test_overlap_still_caps_the_setup_sleeves_book() -> None:
+    policy = policy_with(base_weight={ROTATION: "1.0", "a": "0.7", "b": "0.6"}, cluster_cap="1.0")
+    found = allocate(
+        [_sleeve(ROTATION), _sleeve("a"), _sleeve("b")], policy, D(1), overlap=ROTATION
+    )
+    rotation, a, b = (x.final_weight for x in found)
+    assert rotation == D("1.0")
+    assert a + b <= 1
+    assert a > b
+
+
+@pytest.mark.parametrize(
+    ("weights", "rotations", "overlap", "fits"),
+    [
+        ([D("1.0"), D("0.3")], [True, False], False, False),
+        ([D("1.0"), D("0.3")], [True, False], True, True),
+        ([D("0.7"), D("0.3")], [True, False], False, True),
+        ([D("1.0"), D("0.6"), D("0.5")], [True, False, False], True, False),
+        ([D("1.1"), D("0.3")], [True, False], True, False),  # above the cluster cap
+        ([D("1.0"), D(0)], [True, False], True, False),
+    ],
+)
+def test_weights_fit(
+    weights: list[Decimal], rotations: list[bool], overlap: bool, fits: bool
+) -> None:
+    assert weights_fit(weights, rotations, D("1.0"), overlap=overlap) is fits
+
+
+def test_funding_sells_unranked_then_the_lowest_rank_first() -> None:
+    ranks = {"a": 1, "b": 7, "c": 3}
+    assert funding_order(["a", "b", "c", "z", "y"], ranks) == ["y", "z", "b", "c", "a"]
+
+
+def test_shares_to_fund_are_the_fewest_that_cover_the_need() -> None:
+    def net(qty: int) -> Decimal:  # ₹100 a share less a ₹15 charge
+        return D(100) * qty - D(15)
+
+    assert shares_to_fund(D(0), 10, net) == 0
+    assert shares_to_fund(D(185), 10, net) == 2
+    assert shares_to_fund(D(186), 10, net) == 3
+    assert shares_to_fund(D(10_000), 10, net) == 10  # short: all of them
+
+
+def test_the_rotation_sizes_on_its_weight_less_what_it_funds_at_mark() -> None:
+    equity = D(1_000_000)
+    assert overlap_capital(D(1), equity, []) == equity
+    # fully funded, 100 shares open marked at 400 (a loser bought at 500): 40,000, not its cost;
+    # half funded, 10 shares marked at 2,000 (a winner): 10,000
+    funded = [(D(1), 100, D(400)), (D("0.5"), 10, D(2_000))]
+    assert overlap_capital(D(1), equity, funded) == D(950_000)
+    assert overlap_capital(D("0.01"), equity, funded) == 0  # never below 0
+
+
+def test_overlap_is_a_knob_only_when_set() -> None:
+    def knobs(conventions: RunConventions) -> dict[str, str]:
+        return knobs_of(conventions, D(20), "v1", None)
+
+    assert "overlap" not in knobs(RunConventions())
+    assert knobs(RunConventions(overlap=True))["overlap"] == "true"
+
+
+def test_a_stale_funding_price_is_a_gap_of_an_overlap_run_only() -> None:
+    plain = spec(config(), sessions(30))
+    assert OVERLAP_FUNDING_ESTIMATED not in known_gaps(plain, [OVERLAP_FUNDING_ESTIMATED])
+    # what known_gaps reads of a spec; a real overlap spec needs a rotation leg's config
+    overlap: Any = SimpleNamespace(
+        config=plain.config, co_sleeves=(), overlay=None, conventions=RunConventions(overlap=True)
+    )
+    assert OVERLAP_FUNDING_ESTIMATED in known_gaps(overlap, [OVERLAP_FUNDING_ESTIMATED])
+    assert OVERLAP_FUNDING_ESTIMATED not in known_gaps(overlap, [])
+    assert OVERLAP_FUNDING_ESTIMATED in known_gaps(overlap, None)
+
+
+def test_overlap_is_recorded_only_when_set() -> None:
+    def record(conventions: RunConventions) -> dict[str, object]:
+        window = (date(2020, 1, 1), date(2020, 12, 31))
+        return conventions.record(zero_fills(), window, D("0.3"), {})
+
+    plain = record(RunConventions(entry_bars=ENTRY_BARS_DAILY))
+    overlap = record(RunConventions(entry_bars=ENTRY_BARS_DAILY, overlap=True))
+    assert "overlap" not in plain
+    assert overlap == {
+        **plain,
+        "overlap": {"funding": OVERLAP_FUNDING, "rotation_capital": OVERLAP_ROTATION_CAPITAL},
+    }
+
+
+def test_overlap_needs_a_rotation_among_several_legs() -> None:
+    with pytest.raises(BacktestError, match="backtest_bad_overlap"):
+        spec(config(), sessions(30), conventions=RunConventions(overlap=True))
+    with pytest.raises(BacktestError, match="backtest_bad_overlap"):
+        RunConventions(overlap="yes")  # type: ignore[arg-type]
+
+
+def test_a_portfolio_file_turns_overlap_on() -> None:
+    doc = {
+        "portfolio": "r4",
+        "universe": "NIFTY 500",
+        "window": {"from": "2016-01-01", "to": "2021-12-31"},
+        "strategies": [{"version": str(uuid.uuid4())}],
+        "conventions": {"overlap": True},
+    }
+    assert parse_portfolio(doc, lambda _: policy_with()).conventions.overlap is True
+    with pytest.raises(BacktestError, match="backtest_bad_overlap"):
+        parse_portfolio({**doc, "conventions": {"overlap": "true"}}, lambda _: policy_with())
+
+
+def test_a_funding_sale_on_a_bar_locked_at_the_lower_band_is_blocked() -> None:
+    prev, tick = D(100), D("0.05")
+    assert funding_sale(D(95), D(95), prev, tick) == (None, "lower_circuit")  # the 5% band
+    assert funding_sale(D("95.5"), D(95), prev, tick) == (D("95.5"), None)  # bounced off it
+    assert funding_sale(D(95), D(95), None, tick) == (D(95), None)  # unknown: not locked
+
+
+def test_the_funding_bar_is_the_one_ending_in_the_five_minutes_up_to_the_entry() -> None:
+    first = datetime(2024, 1, 2, 3, 45, tzinfo=UTC)  # 09:15 IST
+    bars = [SimpleNamespace(start=first + timedelta(minutes=5 * n)) for n in range(4)]
+    assert bar_ending_at(bars, first + timedelta(minutes=10)) is bars[1]
+    assert bar_ending_at(bars, first + timedelta(minutes=14, seconds=59)) is bars[1]
+    assert bar_ending_at(bars, first + timedelta(minutes=4)) is None  # none ended yet
+
+
+def test_fund_skips_a_locked_holding_and_sells_the_next_weakest() -> None:
+    book = RotationBook(seed_config("momentum-rotation"), VERSION, POLICY, zero_fills())
+    day = date(2024, 1, 2)
+    for name in ("a", "b", "c"):
+        book.holdings[name] = _Holding(name, day, None, None, D(100), D(100), qty=100)
+    book.ranks = {"a": 1, "b": 2, "c": 3}  # c the weakest, locked
+
+    def quote(name: str) -> tuple[Decimal | None, str | None]:
+        return (None, "lower_circuit") if name == "c" else (D(100), None)
+
+    assert book.fund(day, D(2_500), quote, str) == D(2_500)
+    assert book.holdings["c"].qty == 100
+    assert book.holdings["b"].qty == 75
+    assert book.holdings["a"].qty == 100
+    assert [(r["instrument_id"], r["action"], r["reason"]) for r in book.rows] == [
+        ("b", "trim", "rotation_funding")
+    ]
