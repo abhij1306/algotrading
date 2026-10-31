@@ -171,6 +171,7 @@ def test_top_names_rank_the_zero_filled_median_and_need_a_recent_bar() -> None:
         "spiky": {d: (100.0 if n < 4 else 1.0) for n, d in enumerate(days)},  # median 1
         "new": dict.fromkeys(days[6:], 50.0),  # 4 of 10 sessions: median 0
         "gone": dict.fromkeys(days[:7], 99.0),  # no bar in the last 3 sessions
+        "idle": {**dict.fromkeys(days[:7], 99.0), **dict.fromkeys(days[7:], 0.0)},  # bars, no trade
         "tie": full,
     }
     assert tu.top_names(values, days, 3, recent=3) == ["steady", "tie", "spiky"]

@@ -6,8 +6,9 @@ next session to the next list's (`members`).
 
 Computed from the daily bars alone (`data.top_traded_members` reads them), so a stock that later
 left the market is in the lists it traded into: no survivor list is read. A candidate is an
-ordinary-equity NSE stock (`data.nse_stocks`, as `NSE_STOCKS`) with a bar in the `EQ` series on
-one of the `RECENT_SESSIONS` sessions through the reform night; its median runs over all
+ordinary-equity NSE stock (`data.nse_stocks`, as `NSE_STOCKS`) that traded in the `EQ` series
+(an `EQ` bar with a positive traded value; a bar of zero traded value is no trade) on one of the
+`RECENT_SESSIONS` sessions through the reform night; its median runs over all
 `SESSIONS` sessions, a session without an `EQ` bar counting as no trade (zero), so a new listing
 or a suspended stock ranks on what it traded. Ties go to the lower id. The universe has no stored
 row: its version id carries `N` (`version_id`, `count_of`), so a rerun of a run's `config.json`
@@ -46,7 +47,7 @@ NAME = "TOP_TRADED"
 DEFAULT_COUNT = 500
 MAX_COUNT = 2000
 SESSIONS = 126  # the trailing market sessions of the median traded value
-RECENT_SESSIONS = 5  # a candidate has an EQ bar on one of these, through the reform night
+RECENT_SESSIONS = 5  # a candidate traded in EQ on one of these, through the reform night
 REFORM_MONTHS = (3, 9)  # re-formed on the last session of March and of September
 UNIVERSE_ID = uuid.UUID("01a18d00-0000-7000-8000-000000000003")
 _VERSION_PREFIX = "01a18d00-0000-7000-8001-"  # then `N` in 12 decimal digits
@@ -123,7 +124,7 @@ def top_names(
     """The `count` names with the highest median traded value over `sessions` (the window
     through a reform night, oldest first), best first, ties by name: `values` each candidate's
     EQ traded value by session, a session without one counting as zero; a candidate needs a
-    positive value on one of the last `recent` sessions."""
+    positive value (a trade, not merely a bar) on one of the last `recent` sessions."""
     tail = sessions[-recent:]
     ranked: list[tuple[float, str]] = []
     for name, by_day in values.items():

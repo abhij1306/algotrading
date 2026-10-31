@@ -389,7 +389,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     formed from the daily bars only, so delisted names are in it: the `N` ordinary-equity
     stocks with the highest median EQ traded value over the 126 sessions through the last
     session of March and of September (a session without an EQ bar counts as zero; a candidate
-    needs an EQ bar in the last 5 sessions), each list a member from the next session. Its rule
+    needs an EQ trade, a positive traded value, in the last 5 sessions), each list a member from the next session. Its rule
     and reform nights are in `config.json` (`data_snapshot.membership`) and run.json
     (`data.universe`, `data.universe_rule`).
 
