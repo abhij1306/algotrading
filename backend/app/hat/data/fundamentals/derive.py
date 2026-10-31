@@ -53,6 +53,7 @@ class StoredFiling:
     version: int
     known_at: datetime  # `known_at()`
     family: str
+    point_in_time: bool = True
 
     @classmethod
     def of(cls, row: HatFundamentalFiling) -> StoredFiling:
@@ -64,6 +65,7 @@ class StoredFiling:
             row.version,
             known_at(row.public_at, row.fetched_at, row.point_in_time),
             row.family,
+            row.point_in_time,
         )
 
 
@@ -121,7 +123,7 @@ def metric_history(
         while i < len(ordered) and as_utc(ordered[i].known_at) <= moment:
             filing = ordered[i]
             book.add(filing.source, filing.basis, filing.period_end, facts.get(filing.id, []))
-            if filing.source == "nse":
+            if filing.point_in_time:
                 book.family = filing.family
             i += 1
         day = moment.astimezone(IST).date()
@@ -350,6 +352,6 @@ def book_as_of(
     for filing in sorted(filings, key=lambda f: (as_utc(f.known_at), f.version)):
         if as_utc(filing.known_at) <= ts:
             book.add(filing.source, filing.basis, filing.period_end, facts.get(filing.id, []))
-            if filing.source == "nse":
+            if filing.point_in_time:
                 book.family = filing.family
     return book

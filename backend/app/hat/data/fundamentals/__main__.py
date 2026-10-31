@@ -1,16 +1,20 @@
 """The fundamentals store's command line (docs/fundamentals.md, docs/runbook.md).
 
-    python -m app.hat.data.fundamentals extract [--symbols A,B] [--from 2020-03-31] [--to ...]
+    python -m app.hat.data.fundamentals extract [--symbols A,B] [--from 2012-03-31] [--to ...]
     python -m app.hat.data.fundamentals derive
     python -m app.hat.data.fundamentals report [--out PATH] [--example RELIANCE]
+    python -m app.hat.data.fundamentals panel
 
 `extract` reads the raw results cache only (`$HAT_DATA_ROOT/raw/nse-results/` and
 `raw/secondary-results/`, never the network) and replaces `hat_fundamental_filing` and
 `hat_fundamental_fact` (only the given symbols' rows with `--symbols`); its outcome counts go to
 `$HAT_DATA_ROOT/fundamentals/extract-outcomes.json`. `derive` replaces `hat_fundamental_metric`
-from them and the daily closes. `report` writes the coverage report. Every step is rerunnable and
-gives the same rows from the same cache. The scope is the results store's (`results/scope.py`:
-NIFTY 500 point-in-time members, consolidated-first).
+from them and the daily closes. `report` writes the coverage report. `panel` reads the store
+(only) and writes the research panel and its report (`research.py`) under
+`$HAT_DATA_ROOT/fundamentals/`. Every step is rerunnable and
+gives the same rows from the same cache. The scope is the NIFTY 500 point-in-time members of any
+day from July 2012 (`results.__main__.HISTORY_SINCE`; those loaded so far), consolidated-first
+(`results/scope.py`), period ends from FY2012's year end.
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from pathlib import Path
 
 from ...settings import operator_settings
 from ...time import trade_date_of, utc_now
-from ..results.__main__ import FIRST_PERIOD_END, NSE_RAW, SECONDARY_RAW, UNIVERSE_SINCE
+from ..results.__main__ import HISTORY_FROM, HISTORY_SINCE, NSE_RAW, SECONDARY_RAW
 from ..results.scope import BASIS_CONSOLIDATED_FIRST, UNIVERSE_NIFTY500
 
 OUT_DIR = Path("fundamentals")  # under the data root
@@ -36,8 +40,8 @@ EXAMPLE = "RELIANCE"
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.fundamentals", description=__doc__)
-    p.add_argument("step", choices=["extract", "derive", "report"])
-    p.add_argument("--from", dest="start", type=date.fromisoformat, default=FIRST_PERIOD_END)
+    p.add_argument("step", choices=["extract", "derive", "report", "panel"])
+    p.add_argument("--from", dest="start", type=date.fromisoformat, default=HISTORY_FROM)
     p.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
     p.add_argument("--symbols", default="", help="extract: comma-separated symbols (default all)")
     p.add_argument("--out", type=Path, default=None, help="report: the Markdown file")
@@ -72,6 +76,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / OUTCOMES).write_text(json.dumps(dict(report.outcomes), indent=1, sort_keys=True))
         _out(report)
+    elif args.step == "panel":
+        from .research import run
+
+        _out(f"wrote {run(store, out_dir, HISTORY_SINCE, today)}")
     elif args.step == "derive":
         from .derive import derive
 
@@ -98,7 +106,14 @@ def _members(store: object, today: date, wanted: set[str]) -> list:  # pragma: n
     from ..results.universe import members
 
     with db_session_scope() as session:
-        covered = members(session, store, UNIVERSE_SINCE, today, UNIVERSE_NIFTY500)  # type: ignore[arg-type]
+        covered = members(
+            session,
+            store,  # type: ignore[arg-type]
+            HISTORY_SINCE,
+            today,
+            UNIVERSE_NIFTY500,
+            partial=True,
+        )
     if wanted:
         covered = [m for m in covered if wanted & set(m.symbols)]
     logging.info("%d instruments covered", len(covered))

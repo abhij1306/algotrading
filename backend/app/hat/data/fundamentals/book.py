@@ -2,7 +2,8 @@
 
 `Book` holds the canonical facts of the filings public so far: a later version of a filing
 (same source, basis and period end) replaces its predecessor's facts whole, and for each (basis,
-period kind, period end, item) an NSE value wins over the secondary source's. `metrics` reads one
+period kind, period end, item) a first-published value (NSE XBRL, then NSE's HTML page, then BSE
+XBRL: `SOURCES`) wins over the secondary source's. `metrics` reads one
 basis: consolidated when the latest quarter has consolidated figures, else standalone.
 
 Quarter flows: the quarter's own figure, else for a year end the year less the nine months (a Q4
@@ -26,6 +27,9 @@ from .items import ANNUAL, INSTANT, QUARTER, YTD
 
 NSE = "nse"
 SCREENER = "screener"
+# a cell's value: the first source that gives it (first-published before restated; the research
+# panel's later-known part of a secondary-source page last, `research.py`)
+SOURCES = (NSE, "nse_html", "bse", SCREENER, "screener_late")
 CONSOLIDATED = "consolidated"
 STANDALONE = "standalone"
 CAGR_YEARS = (3, 5, 10)
@@ -80,7 +84,12 @@ class Book:
         values = self.cells.get((basis, kind, end, item))
         if not values:
             return None
-        return values.get(NSE, values.get(SCREENER))
+        return next((values[s] for s in SOURCES if s in values), None)
+
+    def source(self, basis: str, kind: str, end: date | None, item: str) -> str | None:
+        """The source whose value `get` gives."""
+        values = self.cells.get((basis, kind, end, item)) if end is not None else None
+        return next((s for s in SOURCES if values and s in values), None)
 
     def latest_end(self, basis: str, kind: str, items: Iterable[str], until: date) -> date | None:
         found = [

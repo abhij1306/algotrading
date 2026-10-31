@@ -41,6 +41,7 @@ INTEGRATED_PAGE_SIZE = 500  # the endpoint pages by 20 unless asked; no symbol h
 LISTING_REG33 = "reg33"
 LISTING_INSURANCE = "insurance"
 LISTING_INTEGRATED = "integrated"
+LISTING_ANNUAL = "annual"  # the Reg 33 listing's `period=Annual` rows (history only)
 
 
 # --- URLs -----------------------------------------------------------------------------------
@@ -50,8 +51,10 @@ def api_url(base: str, params: Mapping[str, str]) -> str:
     return f"{base}?{urlencode(params)}"
 
 
-def results_url(symbol: str) -> str:
-    return api_url(RESULTS_API, {"index": "equities", "symbol": symbol, "period": "Quarterly"})
+def results_url(symbol: str, period: str = "Quarterly") -> str:
+    """A symbol's Reg 33 listing: `Quarterly` (every quarter's results) or `Annual` (the year's
+    results, whose results pages carry the reserves; `LISTING_ANNUAL`)."""
+    return api_url(RESULTS_API, {"index": "equities", "symbol": symbol, "period": period})
 
 
 def insurance_url(start: date, end: date) -> str:
@@ -99,6 +102,7 @@ class Filing:
     xbrl_url: str | None
     revision: bool  # integrated `type_Sub` Revision, or a later filing of a filed quarter
     markers: str  # the listing's own format markers, joined
+    html_url: str | None = None  # the results page (reg33 rows to 2018 that have no XBRL)
 
 
 def nse_time(raw: str | None) -> datetime | None:
@@ -153,6 +157,7 @@ def parse_results_listing(body: bytes, listing: str = LISTING_REG33) -> list[Fil
                 xbrl_url=_xbrl(row.get("xbrl")),
                 revision=False,
                 markers="/".join(m for m in markers if m != "-") or "-",
+                html_url=_xbrl(row.get("resultDetailedDataLink")),
             )
         )
     return filings
