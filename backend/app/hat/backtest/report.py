@@ -112,6 +112,9 @@ class FillRow:
     qty: int
     price: Decimal
     fees: Decimal
+    # the size-aware impact a rotation fill was moved by besides the slippage (the run's
+    # `impact_bps` convention); the ledger widens the fill's price range by it
+    impact_bps: Decimal = Decimal(0)
 
 
 @dataclass(frozen=True)

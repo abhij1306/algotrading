@@ -288,6 +288,51 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   rotation sleeve (its capital after `overlap_capital`), and the cash a trim frees is ordinary
   free cash the setup sleeves may use.
 
+- **Rotation engine options before the 10-year walk-forward (owner 2026-10-31).** Off unless set
+  (left out of the canonical config at their defaults, so stored versions keep their hashes and
+  replay unchanged); backtest and live read the same `rotation` keys (`strategy.config`).
+  - `liquidity: {entry_pct, hold_pct, days: 20}`: a relative floor, so every year admits the
+    same share of the index (the fixed Rs 10 cr turnover floor admits 185 of 500 members in 2015
+    and 348 in 2020). Each decision night the trade date's members with a bar that night are
+    ordered by the median traded value of their last `days` bars; a name is bought only in the
+    top `entry_pct`%, and ranked (so kept while within `buffer_rank`) in the top `hold_pct`%
+    (>= `entry_pct`). The ranking is over the hold tier and never depends on the holdings, so
+    live ranks it at night as before. A name below the entry tier is never bought, a held one
+    never topped up (only trimmed), and live's subscription depth reaches past those names as it
+    does past the industry cap's. A rupee `min_turnover` in the universe stage still applies to
+    holdings too: a config meant to replace it disables it.
+  - `riskadj_skip: true`: both `riskadj` returns end `skip_sessions` before the decision close
+    (12-1 / 6-1, the lookbacks still counted from the close); the volatility still ends on the
+    close. Off, `riskadj` keeps reading the last month, as every stored run did.
+  - `inverse_beta: {sessions: 252, floor: 0.5}`: target weights 1 / max(beta, floor), beta to the
+    NIFTY 500 TRI over `sessions` daily returns through the decision close (pairs with a return
+    on both; fewer than 20: beta 1), scaled to the share of the capital equal weights put in the
+    same targets (all of it with `top_n`), so the book stays as invested as the equal-weight one.
+    Live records the night's betas (to 4 places) with its plan.
+  - `tranches: {count, offset_sessions}`: the book split into `count` equal sub-books, tranche k
+    deciding `k x offset_sessions` sessions after its period's rebalance close (offsets must fit
+    the shortest period: under 15 sessions monthly, 6 fortnightly, 3 weekly); not with
+    `scale_down` nor an overlap run. **Backtest only:** live has no per-tranche lot accounting,
+    so a live night under `tranches` records nothing (`rotation_tranches_not_live`) and such a
+    version never trades.
+  - `refuse_near_limit: true`: **refuse, not fill at the band** (a buy one tick under a band
+    that then locks has no seller in practice): a buy priced at or within one tick of the day's
+    upper band is passed over, and a sale at or within one tick of the lower band waits for the
+    next session (a trim is skipped). One rule and one source for both books
+    (`rotation.near_limit`): the previous close, the tick and the stored band in force on the
+    trade date (`hat_price_band`, point in time), nothing of the session itself. A name with no
+    stored band then (the table starts when its loading began, so most of a long backtest) is
+    checked against every NSE band (2/5/10/20%): an order within one tick of any of those
+    prices is refused, one between two of them is not; a stored row without a band (F&O) never
+    is. `run.json` counts the refusals (`metrics.rotation.near_limit_refused`).
+  - Size-aware cost is a run convention, not a strategy key (a cost assumption like the
+    slippage; live paper fills are not moved by it): `--impact-bps C` moves each rotation
+    market order by C x sqrt(order value / the name's 20-session median traded value through
+    the night before) bps beside the slippage, capped at 1000 bps (on the shares actually
+    bought); sales at a close or the period's mark pay none. The ledger and the run audit widen
+    only those fills' ranges, each by its own impact;
+    `run.json` reports `metrics.rotation.impact` (fills, rupees, largest bps).
+
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
   backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
   sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that

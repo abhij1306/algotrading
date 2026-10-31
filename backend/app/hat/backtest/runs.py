@@ -88,7 +88,7 @@ from .overrides import (
     parse_set,
     read_policy_file,
 )
-from .run_audit import audit_run
+from .run_audit import audit_run, fill_impacts
 from .spec import (
     ENTRY_BARS_5M,
     INITIAL_EQUITY,
@@ -650,6 +650,7 @@ def _config_doc(
             "entry_bars": c.entry_bars,
             "volume_pace": c.volume_pace,
             **({"overlap": True} if c.overlap else {}),
+            **({} if c.impact_bps is None else {"impact_bps": str(c.impact_bps)}),
         },
         "labels": {
             "sweep_id": plan.labels.sweep_id,
@@ -881,6 +882,7 @@ def _execute(
             explained=data_audit.explanation_of(root, market.audit.get("digest")),
             ledger=result.ledger,
             hindsight=result.hindsight,
+            impacts=fill_impacts(result.fills),
         )
         pbo = built.pbo
         evidence = evidence_doc(
@@ -1014,6 +1016,7 @@ VARIANT_KEYS = frozenset(
         "start_capital",
         "entry_bars",
         "volume_pace",
+        "impact_bps",
     }
 )
 SWEEP_KEYS = frozenset({"sweep_id", "sweep_name", "variants"})
@@ -1041,8 +1044,8 @@ def parse_variants(
     `overrides.parse_policy_set`), `policy` (a policy file's path, relative to the working
     directory, read by `read_policy`), `risk_pct`, `max_positions`, `max_per_industry`,
     `flat_ladder` (a boolean), `sleeve_weight`, `slot_order`, `entry_fill`, `ambiguous`,
-    `suspension_sessions`, `regime_mult`, `start_capital`, `entry_bars` and `volume_pace` (each
-    replacing the base's), and
+    `suspension_sessions`, `regime_mult`, `start_capital`, `entry_bars`, `volume_pace` and
+    `impact_bps` (each replacing the base's), and
     `bundle: true` with a one-line `reason` (a variant with a base only).
     `backtest_sweep_bad_variants` for any other shape; a bad value raises the code its
     conventions or override raise. Each override path, and one change per variant, are checked
@@ -1186,6 +1189,7 @@ def _conventions(
         start_capital=base.start_capital if capital is None else capital,
         entry_bars=str(item.get("entry_bars", base.entry_bars)),
         volume_pace=str(item.get("volume_pace", base.volume_pace)),
+        impact_bps=_number(item, "impact_bps", base.impact_bps),
     )
 
 
@@ -1444,6 +1448,7 @@ def _replayed(
             entry_bars=c.get("entry_bars", ENTRY_BARS_5M),
             volume_pace=c.get("volume_pace", VOLUME_PACE_LIVE),
             overlap=c.get("overlap", False),
+            impact_bps=None if c.get("impact_bps") is None else exact(c["impact_bps"]),
         )
         universe = config["universe"]
         co = tuple(_replayed_co(item) for item in config.get("co_sleeves", ()))

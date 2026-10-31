@@ -170,6 +170,15 @@ class LivePrices:
     def price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
         return self.checked(session, instrument_id)[0]
 
+    def limits(
+        self, session: Session, instrument_id: uuid.UUID, now: datetime | None = None
+    ) -> DailyInputs:
+        """The instrument's `DailyInputs` of its trade date (the previous close, the tick and the
+        stored band in force then): what a rotation's `refuse_near_limit` reads
+        (`rotation.near_limit`), as the backtest reads them."""
+        at = utc_now(self._clock) if now is None else now
+        return self._book.day(trade_date_of(at)).daily(session, instrument_id)
+
     def exit_price(self, session: Session, instrument_id: uuid.UUID) -> Decimal | None:
         """The price an exit view acts on (`data.live.exit_price`); None when unknown."""
         at = utc_now(self._clock)

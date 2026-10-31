@@ -41,6 +41,7 @@ __all__ = [
     "CostModel",
     "CostSchedule",
     "charges",
+    "impact_bps",
     "load_cost_schedule",
     "parse_cost_model",
     "slipped",
@@ -247,6 +248,29 @@ def charges(model: CostModel, side: str, qty: int, price: Decimal, *, dp: bool =
     return Charges(found, gst, sum(found.values(), _ZERO) + gst)
 
 
+MAX_IMPACT_BPS = Decimal(1000)  # a size-aware impact is capped at 10% of the price
+_IMPACT_PLACES = Decimal("0.01")
+
+
+def impact_bps(coef_bps: Decimal, value: Decimal, median_value: Decimal | None) -> Decimal:
+    """The size-aware impact of an order of `value` on a name whose median daily traded value is
+    `median_value` (a backtest rotation order's, `backtest/spec.py` `IMPACT_RULE`): `coef_bps` x
+    sqrt(value / median_value) basis points (the square-root impact law), to 0.01 bps and at
+    most `MAX_IMPACT_BPS`; 0 without a positive median, value or coefficient."""
+    if median_value is None or median_value <= 0 or value <= 0 or coef_bps <= 0:
+        return _ZERO
+    found = coef_bps * (value / median_value).sqrt()
+    return min(MAX_IMPACT_BPS, found).quantize(_IMPACT_PLACES)
+
+
+def _moved(slippage_bps: Decimal, extra_bps: Decimal) -> Decimal:
+    """The slippage with an `extra_bps` move added, kept below `MAX_SLIPPAGE_BPS` (a run's
+    slippage near it plus an impact must not abort a fill); the slippage itself without one."""
+    if not extra_bps:
+        return slippage_bps
+    return min(slippage_bps + extra_bps, MAX_SLIPPAGE_BPS - _IMPACT_PLACES)
+
+
 def check_slippage(bps: Decimal) -> Decimal:
     """`bps` when 0 <= bps < 10000, else `CostError` (checked when a run starts)."""
     if not isinstance(bps, Decimal) or not bps.is_finite() or not _ZERO <= bps < MAX_SLIPPAGE_BPS:
@@ -289,33 +313,38 @@ class BacktestFills:
         *,
         sold_today: bool = False,
         limit: Decimal | None = None,
+        extra_bps: Decimal = _ZERO,
     ) -> tuple[Decimal, Decimal]:
         """(fill price, fees) of a fill of `qty` at the reference `price` on trade date `day`.
         A sell pays the DP charge unless the instrument was `sold_today` already (one DP debit
         per instrument per sell day, however many sales). A buy `limit` caps the slipped price:
-        a LIMIT order never fills above it."""
-        filled = slipped(price, side, self.slippage_bps)
+        a LIMIT order never fills above it. `extra_bps` moves the fill against the trade beside
+        the slippage (a rotation order's size-aware impact)."""
+        filled = slipped(price, side, _moved(self.slippage_bps, extra_bps))
         if limit is not None and side == "buy":
             filled = min(filled, limit)
         model = self.schedule.on(day)
         return filled, charges(model, side, qty, filled, dp=not sold_today).total
 
-    def outlay(self, qty: int, price: Decimal, day: date) -> Decimal:
+    def outlay(self, qty: int, price: Decimal, day: date, extra_bps: Decimal = _ZERO) -> Decimal:
         """The cash a buy of `qty` at the reference `price` on `day` takes: its value after
-        slippage plus its charges."""
-        filled, fees = self.fill("buy", qty, price, day)
+        slippage (and `extra_bps`) plus its charges."""
+        filled, fees = self.fill("buy", qty, price, day, extra_bps=extra_bps)
         return filled * qty + fees
 
-    def affordable(self, cash: Decimal, price: Decimal, day: date) -> int:
-        """The most shares a buy at the reference `price` can take whose outlay (slippage and
-        charges included) fits in `cash`; 0 when not one does, or `cash` is not positive. The
-        outlay grows with the quantity, so the largest one that fits is found by bisection."""
+    def affordable(
+        self, cash: Decimal, price: Decimal, day: date, extra_bps: Decimal = _ZERO
+    ) -> int:
+        """The most shares a buy at the reference `price` can take whose outlay (slippage,
+        `extra_bps` and charges included) fits in `cash`; 0 when not one does, or `cash` is not
+        positive. The outlay grows with the quantity, so the largest one that fits is found by
+        bisection."""
         if cash <= 0:
             return 0
-        low, high = 0, int(cash // slipped(price, "buy", self.slippage_bps))
+        low, high = 0, int(cash // slipped(price, "buy", _moved(self.slippage_bps, extra_bps)))
         while low < high:
             mid = (low + high + 1) // 2
-            if self.outlay(mid, price, day) <= cash:
+            if self.outlay(mid, price, day, extra_bps) <= cash:
                 low = mid
             else:
                 high = mid - 1

@@ -79,6 +79,7 @@ from ..models import (
     HatInstrument,
     HatInstrumentSymbolHistory,
     HatMarket,
+    HatPriceBand,
     HatUniverseVersion,
 )
 from ..money import exact
@@ -87,6 +88,7 @@ from .intraday import screened_buckets
 from .spec import BacktestError, membership_key
 
 __all__ = [
+    "band_on",
     "HINDSIGHT_BREAKOUT_VOL_RATIO",
     "HINDSIGHT_DELISTED_EXIT",
     "HINDSIGHT_EP_CLOSE",
@@ -258,6 +260,11 @@ class MarketData:
     # filing's quarter as known when it became public: what `earnings_catalyst` and the EP log
     # read (`results_events`); empty unless the run loads them (`load_market(results=True)`).
     results: Mapping[str, Sequence[ResultEvent]] = field(default_factory=dict)
+    # Each member's stored price bands (`hat_price_band`) as (effective_from, band_pct, None for
+    # no band) oldest first: what a rotation's `refuse_near_limit` reads point in time
+    # (`band_on`), as live reads the band in force on its trade date. Not in the content digest:
+    # no other rule reads it, so runs without that key keep their digests.
+    bands: Mapping[str, Sequence[tuple[date, Decimal | None]]] = field(default_factory=dict)
 
 
 def symbol_on(data: MarketData, instrument_id: str, day: date) -> str:
@@ -1102,6 +1109,35 @@ def _isins(session: Session, instruments: Iterable[uuid.UUID]) -> dict[str, str]
     }
 
 
+def _bands(
+    session: Session, instruments: Iterable[uuid.UUID]
+) -> dict[str, list[tuple[date, Decimal | None]]]:
+    """Each instrument's stored price bands (`MarketData.bands`), oldest first."""
+    wanted = set(instruments)
+    out: dict[str, list[tuple[date, Decimal | None]]] = defaultdict(list)
+    rows = session.execute(
+        select(
+            HatPriceBand.instrument_id, HatPriceBand.effective_from, HatPriceBand.band_pct
+        ).order_by(HatPriceBand.instrument_id, HatPriceBand.effective_from)
+    )
+    for instrument_id, effective_from, band_pct in rows:
+        if instrument_id in wanted:
+            out[str(instrument_id)].append((effective_from, exact(band_pct)))
+    return dict(out)
+
+
+def band_on(bands: Sequence[tuple[date, Decimal | None]], day: date) -> tuple[bool, Decimal | None]:
+    """(whether a band is stored for `day`, its band_pct, None for no band): the row with the
+    latest `effective_from` on or before `day`, as live's `instruments.current_band` reads it;
+    (False, None) before the first."""
+    found: tuple[bool, Decimal | None] = (False, None)
+    for effective_from, band_pct in bands:
+        if effective_from > day:
+            break
+        found = (True, band_pct)
+    return found
+
+
 def _symbols(
     session: Session, instruments: Iterable[uuid.UUID]
 ) -> tuple[dict[str, list[tuple[date, str]]], dict[str, date]]:
@@ -1478,6 +1514,7 @@ def load_market(
         screened_5m=_screened(intraday, sessions_5m),
         gaps_5m=_gaps(sessions_5m),
         results=filings,
+        bands=_bands(session, instruments),
     )
     snapshot = {
         "store_first": window[0].isoformat(),

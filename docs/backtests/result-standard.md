@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.6
+# Backtest Result Standard v1.7
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.6 changes amend them, a
-later one winning where they differ. `format_version` is `1.6` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.7 changes amend them, a
+later one winning where they differ. `format_version` is `1.7` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -422,8 +422,8 @@ price times the shares bought (no stop to risk against); trades.csv ends with `r
 not decide). Exit reasons: `rotation_out` (ranked below the buffer), `rotation_not_eligible`
 (failed the universe stage or unscored), `rotation_market_filter`, `rotation_trim` (a trim's
 partial exit). Every rotation order fills at 09:20 (`engine/fill_0920.py`: the 09:15 bar's
-close, else the daily open moved by the measured median to 09:20); `run.json` metrics count them,
-`rotation_fills_0920` and `rotation_fills_estimated`. Known gaps
+close, else the daily open moved by the measured median to 09:20); `run.json` metrics count them
+(`metrics.rotation`, v1.7). Known gaps
 `rotation_fills_0920_estimated_without_5m` and `rotation_sized_on_decision_close`; were the
 median unmeasured, `fill_0920_estimate_provisional` (also for a run whose daily-estimate
 entries gapped over their level).
@@ -498,7 +498,7 @@ that cover it, priced as a rotation sale at the entry's instant (never before 09
 the 5-minute bar ending then, else the 09:20 price, a close entry the daily close; a holding
 whose bar closed locked at the lower band is skipped for the next-weakest). Each such sale
 is a `rebalances.csv` `sell` or `trim` row and a trade leg with the reason `rotation_funding`
-(the exit reason when it closes the trade); metrics `rotation_funding_fills` counts them by price
+(the exit reason when it closes the trade); `metrics.rotation.funding_fills` (v1.7) counts them by price
 source (`bar_5m`, `close`, `at_0920`, `stale_0920`), and a `stale_0920` sale (the 09:20 price for a
 later entry: a `daily` run or a 5-minute coverage gap) adds the known gap
 `overlap_funding_priced_at_0920`. The rotation's next rebalance sizes on its weight of the equity
@@ -514,6 +514,26 @@ the firing close as `decision_date` (a trim that cannot fill has `qty` 0 and its
 keys (`max_per_industry` with `unknown_industry`, `scale_down`) are in `config.json`
 `strategy_config` and run.json `config.resolved.strategy` only when set, so a run without them
 keeps its hashes.
+
+## v1.7 changes
+
+**metrics.rotation** (a run with a rotation book only): `fills_0920` and `fills_estimated` (its
+fills by what their 09:20 price was read from), `near_limit_refused` (`buy`, `sell`: the orders
+`rotation.refuse_near_limit` refused, once per name and day, always 0 without it),
+`funding_fills` in an overlap run (`bar_5m`, `close`, `at_0920`, `stale_0920`), and `impact` under
+the `impact_bps` convention (`fills`, `cost` in rupees over the fills at the slippage alone,
+`max_bps`). The run's evidence keeps the same counts.
+
+**Rotation options** (`decisions.md`, "Rotation engine options"): the keys `liquidity`,
+`riskadj_skip`, `inverse_beta`, `tranches` and `refuse_near_limit` are in `config.json`
+`strategy_config` and run.json `config.resolved.strategy` only when set; the impact convention
+is in the conventions (`impact`: `rule`, `coef_bps`, `max_bps`) and the knobs (`impact_bps`) only
+when set, so runs without them keep their digests. New `rebalances.csv` blocks
+`near_upper_limit` and `near_lower_limit`; with `inverse_beta` a row's `target_value` is its own
+weight's; with `tranches` each tranche's rows and trades are its own (a name two tranches hold is
+two trades) and a row's `decision_date` names its tranche's close. A rotation fill that paid an
+impact has its range in the ledger and the run audit's `fills` check widened by its own impact,
+no other fill (`impact_fills_widened` in that check's summary).
 
 ---
 

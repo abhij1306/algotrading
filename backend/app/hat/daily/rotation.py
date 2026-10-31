@@ -1,23 +1,23 @@
 """The rotation job of the trading day: `rotation.rebalance` at 09:20 (`engine/rotation_live.py`).
 
 For each active bot whose live config is a rotation: the sales an earlier job left waiting for a
-price, then the mid-period scale-down its last night recorded for today (`rotation.scale_down`,
-only with the rules' `scale_down`), then the rebalance its last rebalance night recorded for
-today, on paper, on the live
-prices of the session (the instruments are priced and subscribed from `live.prepare`,
-`planned_instruments`). The entry context is the trigger service's (`LiveContexts`): the sleeve's
-equity and free cash, the kills, the feed and the quality gate. A bot that asks for confirm or
-auto does not trade at all (real rotation orders are not built, and its entry context would be the
-real book's): its job is recorded `real_orders_not_built`, its waiting sales wait on, and the
-owner is told (`rotation.shadow_only`); a rebalance that could not size (no allocation for the
-night) is told too (`rotation.skipped`), and so is every buy not made (`rotation.buy_refused`).
-A rebalance that reaches a name it may buy with no tick yet, or a stale one, or runs on a stale
-feed, writes nothing for its bot (no lower-ranked name takes its place) until `PRICES_WAIT_UNTIL`
-(09:45, with the open): the job fails `rotation_unpriced` and runs again each minute
-(`rotation.unpriced`, told once). After it such a name is passed over as the backtest passes over
-a name with no bar, the rest trades, and `rotation.unpriced` names what was skipped. Each bot is
-its own transaction, and a bot whose job already ran today (`rotation.rebalanced`) is not run
-again.
+price, then the mid-period scale-down its last night recorded for today (`rotation.scale_down`, only
+with the rules' `scale_down`), then the rebalance its last rebalance night recorded for today, on
+paper, on the live prices of the session (with the rules' `refuse_near_limit` a sale at or within a
+tick of the stored lower band waits and a buy at the upper one is passed over; the instruments are
+priced and subscribed from `live.prepare`, `planned_instruments`). The entry context is the trigger
+service's (`LiveContexts`): the sleeve's equity and free cash, the kills, the feed and the quality
+gate. A bot that asks for confirm or auto does not trade at all (real rotation orders are not built,
+and its entry context would be the real book's): its job is recorded `real_orders_not_built`, its
+waiting sales wait on, and the owner is told (`rotation.shadow_only`); a rebalance that could not
+size (no allocation for the night) is told too (`rotation.skipped`), and so is every buy not made
+(`rotation.buy_refused`). A rebalance that reaches a name it may buy with no tick yet, or a stale
+one, or runs on a stale feed, writes nothing for its bot (no lower-ranked name takes its place)
+until `PRICES_WAIT_UNTIL` (09:45, with the open): the job fails `rotation_unpriced` and runs again
+each minute (`rotation.unpriced`, told once). After it such a name is passed over as the backtest
+passes over a name with no bar, the rest trades, and `rotation.unpriced` names what was skipped.
+Each bot is its own transaction, and a bot whose job already ran today (`rotation.rebalanced`) is
+not run again.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from ..engine.rotation_live import (
     Rebalanced,
     RotationUnpricedError,
     ScaleDownPlanned,
+    near_limit_price,
     pending_sales,
     planned,
     rebalance,
@@ -47,6 +48,7 @@ from ..engine.rotation_live import (
     scale_down_planned,
     waiting_sales,
 )
+from ..engine.trigger import DailyInputs
 from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..notify import Notifier
@@ -178,20 +180,30 @@ class Rotations:
         def price(name: str) -> tuple[Decimal | None, str | None]:
             return self._prices.checked(session, uuid.UUID(name), now)
 
+        def limits(name: str) -> DailyInputs:
+            return self._prices.limits(session, uuid.UUID(name), now)
+
+        bot = configs_of(session).get(Bot, bot_id)
+        config = None if bot is None else rotation_config(session, bot)
+        rules = None if config is None else config.rotation
+        refuse = rules is not None and rules.refuse_near_limit
+        # a sale at or within a tick of the lower band waits (`refuse_near_limit`)
+        sell = near_limit_price(price, limits if refuse else None, "sell")
+
         if trim is not None:
             # before the waiting sales: an unpriced holding raises before anything is written
             scale_down(
                 session,
                 bot_id,
                 trim,
-                price=price,
+                price=sell,
                 waiting=waiting,
                 now=now,
                 wait_until=self._wait_until(trim.trade_date),
                 done=done,
             )
         if waiting:
-            pending_sales(session, bot_id, waiting, price, now, done)
+            pending_sales(session, bot_id, waiting, sell, now, done)
         if night is None:
             return
         done.absorb(
@@ -203,6 +215,7 @@ class Rotations:
                 context=lambda: self._contexts.entry_context(session, bot_id, now),
                 now=now,
                 wait_until=self._wait_until(night.trade_date),
+                limits=limits,
             )
         )
 

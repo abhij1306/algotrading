@@ -656,6 +656,8 @@ def _metrics(
         "pbo": rounded(inputs.pbo, 6),
         "max_position_pct_adv": rounded(max(adv)) if adv else None,
         "trades_over_5pct_adv": sum(1 for p in adv if p > ADV_LIMIT_PCT),
+        # a run with a rotation book: its fill counts, refusals at the band and impact (v1.7)
+        **({"rotation": result.metrics["rotation"]} if "rotation" in result.metrics else {}),
     }
 
 

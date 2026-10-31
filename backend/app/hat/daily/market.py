@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 
 from ..data.chains import stored_adjustment
 from ..data.features import features_read_lock
+from ..data.index_history import NIFTY_500_TRI
 from ..data.instruments import current_band
 from ..data.store import DATASET_BARS, DATASET_FEATURES, RAW_LATEST, DataStore
 from ..data.ticks import tick_for_date
@@ -98,6 +99,14 @@ def benchmark_closes(store: DataStore, through: date) -> list[tuple[date, float]
     return [(day, float(close)) for day, close in rows]
 
 
+def benchmark_tri_closes(store: DataStore, through: date) -> list[tuple[date, float]]:
+    """The NIFTY 500 TRI's `(date, close)` dated on or before `through`, oldest first (the
+    scan's `benchmark_tri`, a rotation's `inverse_beta` betas)."""
+    with store.connect() as con:
+        rows = con.execute(_INDEX_SQL, [NIFTY_500_TRI, through]).fetchall()
+    return [(day, float(close)) for day, close in rows]
+
+
 def breadth_series(store: DataStore, through: date) -> list[Decimal | None]:
     """The features job's `breadth_pct` of the last `BREADTH_SESSIONS` stored sessions through
     `through`, oldest first, None for a session without one (the breadth regime gate's input),
@@ -137,6 +146,7 @@ def scan_inputs(store: DataStore, session: Session, as_of: date, index: str) -> 
         features=_features(store, as_of),
         series=_series(session),
         benchmark=benchmark_closes(store, as_of),
+        benchmark_tri=benchmark_tri_closes(store, as_of),
     )
 
 

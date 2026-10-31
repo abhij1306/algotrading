@@ -36,6 +36,17 @@ and it carries the rank and score at entry and at exit.
 `rows` is the run's `rebalances.csv`: one row per order planned, traded or not, and one per
 target held unchanged.
 
+The optional rules (`strategy.config.Rotation`, `engine.rotation`): with `liquidity` the
+passers ranked are those in the floor's hold tier and a name below its entry tier is never
+bought (`plan`'s `hold_only`); with `inverse_beta` a rebalance sizes each target on its weight
+(`rebalance`'s `weights`, each row's `target_value` its own); with `tranches` the loop runs one
+book per tranche (`tranche`), each on its share of the sleeve's capital; with
+`refuse_near_limit` the loop's quotes refuse a buy, and hold a sale, at or within a tick of the
+band (`near_upper_limit`, `near_lower_limit`). Under the run's `impact_bps` convention each fill
+of a rebalance, a pending sale, a scale-down trim or a funding sale moves against the trade by
+its size-aware impact besides the slippage (`impact`, `costs.impact_bps`); a sale at a
+close (a delisting, a demerger) or the period's end is not a market order and pays none.
+
 In an overlap run (`spec.RunConventions.overlap`) the book also funds the setup sleeves beside
 it: a setup entry may size on what selling every holding would net at its instant (`credit`),
 and when it takes more than the free cash the book sells for the shortfall (`fund`), the weakest
@@ -242,6 +253,8 @@ class RotationBook:
         fills: BacktestFills,
         prefix: str = "",
         sold: set[tuple[date, str]] | None = None,
+        tranche: int = 0,
+        impact: Callable[[str, int, Decimal, date], Decimal] | None = None,
     ) -> None:
         if config.rotation is None:
             raise ValueError("not_a_rotation")
@@ -262,6 +275,13 @@ class RotationBook:
         self.scaled = False
         # one DP charge per name per sell day: the account's set, shared with its other books
         self._sold: set[tuple[date, str]] = set() if sold is None else sold
+        self.tranche = tranche  # which of the rules' `tranches` this book is (0 without)
+        # the size-aware impact of an order (name, shares, price, day) in bps, None: off; the
+        # impact it charged (its cost over the slipped fills, the fills, the largest in bps)
+        self.impact = impact
+        self.impact_cost = _ZERO
+        self.impact_fills = 0
+        self.impact_max_bps = _ZERO
 
     # --- what the loop reads ---------------------------------------------------------------
 
@@ -284,15 +304,18 @@ class RotationBook:
         gate_on: bool,
         can_buy: Callable[[str], bool],
         industry: Callable[[str], str] | None = None,
+        hold_only: frozenset[str] = frozenset(),
     ) -> Plan:
         """The rebalance decided on `night`'s close: `passers` (the members passing the
         universe stage; `closes` their total-return window, a column each) less the
         factor-pending names, scored and ranked, and the target list (`rotation.select`), a
         held factor-pending name kept without a rank. Under the market filter with the gate off
-        the target is empty. `industry` is a name's industry on the trade date (the cap's)."""
+        the target is empty. `industry` is a name's industry on the trade date (the cap's);
+        `hold_only` the passers below the liquidity floor's entry tier (never bought)."""
         return rotation.plan(
             night, passers, closes, self.rules, self.holdings,
             pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
+            hold_only=hold_only,
         )  # fmt: skip
 
     # --- the session -----------------------------------------------------------------------
@@ -358,8 +381,16 @@ class RotationBook:
                 order.qty, price,
             )  # fmt: skip
 
-    def rebalance(self, day: date, plan: Plan, capital: Decimal, market: Market) -> None:
-        """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring)."""
+    def rebalance(
+        self,
+        day: date,
+        plan: Plan,
+        capital: Decimal,
+        market: Market,
+        weights: Mapping[str, Decimal] | None = None,
+    ) -> None:
+        """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring); with
+        `weights` (`inverse_beta`) each target sized on its own share of it."""
         rank = {name: n for n, (name, _) in enumerate(plan.ranking, start=1)}
         self.ranks = rank
         score = {
@@ -368,9 +399,14 @@ class RotationBook:
         }
         orders = rotation.orders(
             plan, {name: h.qty for name, h in self.holdings.items()}, market.opens, capital,
-            self.rules,
+            self.rules, weights,
         )  # fmt: skip
         each = (capital / self.rules.top_n).quantize(Decimal("0.01"))
+        own = (
+            {}
+            if weights is None
+            else {n: (capital * w).quantize(Decimal("0.01")) for n, w in weights.items()}
+        )
         for name in plan.target:
             if name in self.holdings:
                 self.holdings[name].exit = None  # back in the target: a pending sale is off
@@ -378,7 +414,7 @@ class RotationBook:
         def row(name: str, action: str, why: str | None, qty: int, price: Decimal | None) -> None:
             self._row(
                 day, plan.night, name, market.symbol(name), action, why,
-                rank.get(name), score.get(name), qty, price, each,
+                rank.get(name), score.get(name), qty, price, own.get(name, each),
             )  # fmt: skip
 
         buys: list[rotation.Order] = []
@@ -428,12 +464,15 @@ class RotationBook:
                 row(order.instrument_id, order.action, blocked, 0, None)
             else:
                 priced.append((order, price))
-        total = sum((self.fills.outlay(o.qty, p, day) for o, p in priced), _ZERO)
+        extra = {o.instrument_id: self._impact(o.instrument_id, o.qty, p, day) for o, p in priced}
+        total = sum(
+            (self.fills.outlay(o.qty, p, day, extra[o.instrument_id]) for o, p in priced), _ZERO
+        )
         share = rotation.buy_share(total, market.cash())
         for order, price in priced:
             name = order.instrument_id
             qty = int((order.qty * share).to_integral_value(ROUND_FLOOR))
-            qty = min(qty, self.fills.affordable(market.cash(), price, day))
+            qty = min(qty, self.fills.affordable(market.cash(), price, day, extra[name]))
             if qty <= 0:
                 row(name, order.action, CASH, 0, price)
                 continue
@@ -442,7 +481,9 @@ class RotationBook:
                 holding = _Holding(name, day, rank.get(name), score.get(name), price, price)
                 self.holdings[name] = holding
                 self.signals.append(market.entry(name, qty, price, rank.get(name), score.get(name)))
-            self._buy(holding, qty, price, day)
+            # the impact of the shares bought (the cash may have cut them): at most the planned
+            # order's, so the outlay still fits what `affordable` found
+            self._buy(holding, qty, price, day, self._impact(name, qty, price, day))
             row(name, order.action, None if qty == order.qty else CASH, qty, price)
 
     def credit(self, day: date, quote: Callable[[str], Quote]) -> Decimal:
@@ -494,7 +535,7 @@ class RotationBook:
         if holding is None:
             return
         qty = holding.qty
-        self._sell(holding, qty, price, day, reason, None, None)
+        self._sell(holding, qty, price, day, reason, None, None, market=False)
         self._row(day, None, name, symbol(name), "sell", reason, None, None, qty, price)
 
     def finish(self, day: date, mark: Callable[[str, Decimal], Decimal]) -> None:
@@ -503,18 +544,38 @@ class RotationBook:
             holding = self.holdings[name]
             price = mark(name, holding.avg)
             holding.low = min(holding.low, price)
-            self._sell(holding, holding.qty, price, day, END_OF_PERIOD, None, None)
+            self._sell(holding, holding.qty, price, day, END_OF_PERIOD, None, None, market=False)
 
     # --- fills and trades ------------------------------------------------------------------
 
     def _proceeds(self, name: str, qty: int, *, price: Decimal, day: date) -> Decimal:
         """What selling `qty` of `name` at `price` would net, as `_sell` fills it."""
         sold_today = (day, name) in self._sold
-        filled, fees = self.fills.fill("sell", qty, price, day, sold_today=sold_today)
+        extra = self._impact(name, qty, price, day)
+        filled, fees = self.fills.fill(
+            "sell", qty, price, day, sold_today=sold_today, extra_bps=extra
+        )
         return filled * qty - fees
 
-    def _buy(self, holding: _Holding, qty: int, price: Decimal, day: date) -> None:
-        filled, fees = self.fills.fill("buy", qty, price, day)
+    def _impact(self, name: str, qty: int, price: Decimal, day: date) -> Decimal:
+        """The size-aware impact in bps of an order of `qty` of `name` at `price` (0: off)."""
+        return _ZERO if self.impact is None or qty <= 0 else self.impact(name, qty, price, day)
+
+    def _charged(self, side: str, qty: int, price: Decimal, day: date, extra: Decimal) -> None:
+        """Count a fill's impact: what it cost over the fill at the slippage alone."""
+        if extra <= 0:
+            return
+        plain = self.fills.fill(side, qty, price, day)[0]
+        moved = self.fills.fill(side, qty, price, day, extra_bps=extra)[0]
+        self.impact_cost += abs(moved - plain) * qty
+        self.impact_fills += 1
+        self.impact_max_bps = max(self.impact_max_bps, extra)
+
+    def _buy(
+        self, holding: _Holding, qty: int, price: Decimal, day: date, extra: Decimal = _ZERO
+    ) -> None:
+        filled, fees = self.fills.fill("buy", qty, price, day, extra_bps=extra)
+        self._charged("buy", qty, price, day, extra)
         if not holding.bought:
             holding.first = filled
         holding.qty += qty
@@ -523,7 +584,7 @@ class RotationBook:
         holding.fees += fees
         self.flow -= filled * qty + fees
         self.fill_rows.append(
-            FillRow(day, holding.instrument_id, "entry", "buy", qty, filled, fees)
+            FillRow(day, holding.instrument_id, "entry", "buy", qty, filled, fees, extra)
         )
 
     def _sell(
@@ -535,9 +596,17 @@ class RotationBook:
         reason: str,
         rank: int | None,
         score: Decimal | None,
+        *,
+        market: bool = True,
     ) -> None:
+        """Sell `qty` of `holding` at `price`; a `market` order (not a sale at a close or the
+        period's mark) pays the size-aware impact."""
         key = (day, holding.instrument_id)
-        filled, fees = self.fills.fill("sell", qty, price, day, sold_today=key in self._sold)
+        extra = self._impact(holding.instrument_id, qty, price, day) if market else _ZERO
+        filled, fees = self.fills.fill(
+            "sell", qty, price, day, sold_today=key in self._sold, extra_bps=extra
+        )
+        self._charged("sell", qty, price, day, extra)
         self._sold.add(key)
         holding.qty -= qty
         holding.proceeds += filled * qty
@@ -546,7 +615,7 @@ class RotationBook:
         holding.legs.append(LegRow(day, qty, filled, fees, reason))
         purpose = "exit" if holding.qty == 0 else "trim"
         self.fill_rows.append(
-            FillRow(day, holding.instrument_id, purpose, "sell", qty, filled, fees)
+            FillRow(day, holding.instrument_id, purpose, "sell", qty, filled, fees, extra)
         )
         if holding.qty == 0:
             self._close(holding, day, reason, rank, score)

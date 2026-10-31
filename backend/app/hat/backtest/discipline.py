@@ -61,8 +61,8 @@ def knobs_of(
 ) -> dict[str, str]:
     """A run's knobs by name (`set:<path>`, `policy_set:<path>`, `policy`, a convention's name),
     each value as one text; a path set twice keeps its last value, as the run applies them.
-    `volume_pace` and `overlap` are knobs only off their defaults, so a base recorded before
-    they existed compares alike."""
+    `volume_pace`, `overlap` and `impact_bps` are knobs only off their defaults, so a base recorded
+    before they existed compares alike."""
     o = conventions.overrides
     out: dict[str, str] = {f"set:{path}": _text(value) for path, value in o.sets}
     out |= {f"policy_set:{path}": _text(value) for path, value in o.policy_sets}
@@ -88,6 +88,8 @@ def knobs_of(
         named["volume_pace"] = conventions.volume_pace
     if conventions.overlap:  # likewise only when set
         named["overlap"] = conventions.overlap
+    if conventions.impact_bps is not None:  # likewise only when set
+        named["impact_bps"] = conventions.impact_bps
     if o.playbooks is not None:  # a knob only when set, so a run before it compares alike
         named["playbooks"] = sorted(o.playbooks)
     return out | {name: _text(value) for name, value in named.items()}

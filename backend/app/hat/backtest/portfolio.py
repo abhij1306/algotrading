@@ -80,6 +80,7 @@ _CONVENTIONS = {
     "entry_bars": "entry_bars",
     "volume_pace": "volume_pace",
     "overlap": "overlap",  # a boolean (`RunConventions.overlap`)
+    "impact_bps": "impact_bps",  # a number (`RunConventions.impact_bps`)
 }
 
 
@@ -185,7 +186,13 @@ def parse_portfolio(
         raise BacktestError(BAD)
     fields: dict[str, Any] = {
         _CONVENTIONS[k]: (
-            _count(v) if k == "suspension_sessions" else v if k == "overlap" else str(v)
+            _count(v)
+            if k == "suspension_sessions"
+            else v
+            if k == "overlap"
+            else _decimal(v)
+            if k == "impact_bps"
+            else str(v)
         )
         for k, v in given.items()
     }

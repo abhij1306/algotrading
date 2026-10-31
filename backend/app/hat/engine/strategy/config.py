@@ -524,6 +524,53 @@ class ScaleDown(Model):
     keep_fraction: float = Field(gt=0, lt=1)
 
 
+class Liquidity(Model):
+    """A rotation's relative liquidity floor (`engine.rotation.liquidity_tiers`): each decision
+    night the day's universe members with a bar that night are ordered by the median traded
+    value of their last `days` bars; a name may be bought only in the top `entry_pct` percent of
+    them, and is ranked (so a holding is kept while it ranks within the buffer) in the top
+    `hold_pct` percent, at least `entry_pct`: a holding is not sold on a liquidity dip between
+    the two. It applies to the names passing the universe stage, so a rupee floor there
+    (`min_turnover`) still sells a holding under it: replace that floor by disabling it."""
+
+    entry_pct: float = Field(gt=0, le=100)
+    hold_pct: float = Field(gt=0, le=100)
+    days: int = Field(default=20, ge=5, le=252)
+
+    @model_validator(mode="after")
+    def _check(self) -> Liquidity:
+        if self.hold_pct < self.entry_pct:
+            raise ValueError("hold_pct_below_entry_pct")
+        return self
+
+
+class InverseBeta(Model):
+    """A rotation's position weights by inverse beta (`engine.rotation.betas`,
+    `target_weights`): each target's beta to the NIFTY 500 TRI over the `sessions` daily returns
+    ending on the decision close, at least `floor`; the weights are 1 / beta, scaled so the
+    targets take the share of the capital equal weights would (all of it with `top_n`
+    targets)."""
+
+    sessions: int = Field(default=252, ge=60, le=504)
+    floor: float = Field(default=0.5, gt=0, le=2)
+
+
+# The fewest sessions a period of each cadence has (holidays included): the tranches' offsets
+# must fit inside it, so every tranche trades once a period.
+MIN_PERIOD_SESSIONS = {"month_end": 15, "fortnight": 6, "weekly": 3}
+
+
+class Tranches(Model):
+    """A rotation's staggered rebalance (`engine.rotation.tranche_due`): the book is `count`
+    equal sub-books, each its own holdings on its share of the capital; tranche k decides on the
+    close `k` x `offset_sessions` sessions after its period's rebalance close (tranche 0 on that
+    close) and trades at the next 09:20. Backtest only: live refuses such a config
+    (`rotation_live.TRANCHES_NOT_LIVE`)."""
+
+    count: int = Field(ge=2, le=8)
+    offset_sessions: int = Field(ge=1, le=20)
+
+
 class Rotation(Model):
     """A cross-sectional momentum rotation (`engine.rotation`). On the close of each `rebalance`
     session (the last of its month, of its half month or of its week) every member that passes
@@ -541,8 +588,14 @@ class Rotation(Model):
     targets per industry (`engine.rotation.select`), the classification the risk policy's industry
     cap reads, point in time; `unknown_industry` says how a name without one counts under it
     (`free`, the default: never capped; `bucket`: every unknown name one industry);
-    `scale_down` (unset: off) is the mid-period scale-down (`ScaleDown`). All three are left out
-    of the canonical form at their defaults, so stored configs keep their hash."""
+    `scale_down` (unset: off) is the mid-period scale-down (`ScaleDown`). `liquidity` (unset:
+    off) is the relative liquidity floor (`Liquidity`); `riskadj_skip` ends both of `riskadj`'s
+    returns `skip_sessions` before the decision close (its volatility still ends on it);
+    `inverse_beta` (unset: equal weights) weights the targets by 1 / beta (`InverseBeta`);
+    `tranches` (unset: one book) staggers the rebalance (`Tranches`); `refuse_near_limit` refuses
+    a buy at or within one tick of the day's upper price band and holds a sale at or within one
+    tick of its lower one (`engine.rotation.near_limit`). All of these are left out of the
+    canonical form at their defaults, so stored configs keep their hash."""
 
     rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
     score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
@@ -561,9 +614,24 @@ class Rotation(Model):
         default="free", exclude_if=lambda v: v == "free"
     )
     scale_down: ScaleDown | None = Field(default=None, exclude_if=lambda v: v is None)
+    liquidity: Liquidity | None = Field(default=None, exclude_if=lambda v: v is None)
+    riskadj_skip: bool = Field(default=False, exclude_if=lambda v: not v)
+    inverse_beta: InverseBeta | None = Field(default=None, exclude_if=lambda v: v is None)
+    tranches: Tranches | None = Field(default=None, exclude_if=lambda v: v is None)
+    refuse_near_limit: bool = Field(default=False, exclude_if=lambda v: not v)
 
     @model_validator(mode="after")
     def _check(self) -> Rotation:
+        if self.riskadj_skip and (
+            self.score != "riskadj" or self.skip_sessions >= self.short_sessions
+        ):
+            raise ValueError("riskadj_skip_needs_riskadj_and_short_above_skip")
+        if self.tranches is not None:
+            if self.scale_down is not None:
+                raise ValueError("tranches_with_scale_down")
+            reach = (self.tranches.count - 1) * self.tranches.offset_sessions
+            if reach >= MIN_PERIOD_SESSIONS[self.rebalance]:
+                raise ValueError("tranches_beyond_period")
         if self.scale_down is not None and not self.reweight:
             # without reweight a held name keeps its size: the restore would never come
             raise ValueError("scale_down_needs_reweight")
