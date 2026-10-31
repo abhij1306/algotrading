@@ -2,10 +2,13 @@
 traded value kept, on the real code with in-memory zips and fake fetchers (no network)."""
 
 import dataclasses
+import io
 import tempfile
+import zipfile
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from hat_bhav_support import bar, bhav_rows, render_old, render_udiff
 from hypothesis import assume, example, given
 from hypothesis import strategies as st
@@ -23,6 +26,7 @@ from app.hat.data.bhavcopy import (
     archive_url,
     parse_bhavcopy,
     to_bar_rows,
+    traded_isins,
     weekdays,
 )
 from app.hat.data.pacing import Pacer
@@ -154,3 +158,30 @@ def test_traded_value_kept(day: date, rows: st.DataObject) -> None:
 def test_old_date_two_digit_year() -> None:
     """The 13-JUL-2020 file writes "13-Jul-20"; it is the same day as "13-JUL-2020"."""
     assert _old_date("13-Jul-20") == _old_date("13-JUL-2020") == date(2020, 7, 13)
+
+
+def _csv_zip(text: str) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr("bhav.csv", text)
+    return buffer.getvalue()
+
+
+def test_traded_isins_reads_every_series_of_either_format() -> None:
+    old = _csv_zip(
+        "SYMBOL,SERIES,OPEN,HIGH,LOW,CLOSE,LAST,PREVCLOSE,TOTTRDQTY,TOTTRDVAL,TIMESTAMP,"
+        "TOTALTRADES,ISIN,\n"
+        "KOVAI,BE,170,171.5,158,158.95,158,165.65,1437,233751.8,28-FEB-2013,48,INE177F01017,\n"
+        "KRITIIND,EQ,5.5,5.5,5.5,5.5,5.5,5.25,200,1100,28-FEB-2013,1,INE479D01038,\n"
+        "SOMEBOND,N1,100,100,100,100,100,100,1,100,28-FEB-2013,1,INE002A07015,\n"
+        "BROKEN,EQ,1,1,1,1,1,1,1,1,28-FEB-2013,1,,\n"
+    )
+    assert traded_isins(old) == {"INE177F01017", "INE479D01038", "INE002A07015"}
+    udiff = _csv_zip(
+        "TradDt,BizDt,Sgmt,Src,FinInstrmTp,FinInstrmId,ISIN,TckrSymb,SctySrs,ClsPric\n"
+        "2024-10-01,2024-10-01,CM,NSE,STK,6417,INE479D01038,KRITI,EQ,237.78\n"
+        "2024-10-01,2024-10-01,CM,NSE,STK,2885,ine002a01018,RELIANCE,EQ,2929.65\n"
+    )
+    assert traded_isins(udiff) == {"INE479D01038", "INE002A01018"}
+    with pytest.raises(BhavcopyError):
+        traded_isins(_csv_zip("SYMBOL,SERIES\nKRITI,EQ\n"))

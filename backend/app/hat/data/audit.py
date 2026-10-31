@@ -9,7 +9,11 @@ The checks (each a pure function of plain inputs; `gather` reads them):
 - `calendar`: the store's sessions in the window against the NSE trading calendar: a stored day
   that is not a session, or a session the store has no bars for, fails.
 - `missing_sessions`: each member's sessions without a bar while it is a member and listed (from
-  its first to its last bar), gap counts and the longest gap per symbol.
+  its first to its last bar), split by NSE's CM bhavcopy of the day under `HAT_DATA_ROOT/raw/`:
+  missing when the file has a row for one of the chain's ISINs (the store lacks a bar NSE has),
+  or when the day's raw file is absent or unreadable (counted as missing and listed); a no-trade
+  day (suspended, or no deal) when it has none. Gap counts and the longest gap per symbol over
+  the missing days; the no-trade days are reported per member in the summary and never fail.
 - `survivorship`: the point-in-time universe on sample dates (each year's first session and the
   window's first) holds members that later left the index or delisted, and each such member has
   bars on its member days. A window of a year or more whose samples hold no leaver fails: that
@@ -68,7 +72,7 @@ import sys
 import uuid
 from bisect import bisect_left, bisect_right
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
@@ -82,6 +86,7 @@ from sqlalchemy.orm import Session
 from ..models import HatCorporateAction, HatInstrument, HatMarket, HatTradingCalendar
 from . import golden
 from .bars_store import BarStore
+from .bhavcopy import BhavcopyError, archive_name, traded_isins
 from .chains import stored_adjustment
 from .features import ABOVE_MARGIN, compute_features
 from .industry_history import unknown_member_days
@@ -122,12 +127,13 @@ __all__ = [
     "check_unique_keys",
     "check_verify",
     "gather",
+    "split_gaps",
     "industry_cap_refused",
     "read_cached",
     "run_counts",
 ]
 
-AUDIT_VERSION = "4"  # a change to a check or a threshold changes it, so no stale audit is read
+AUDIT_VERSION = "5"  # a change to a check or a threshold changes it, so no stale audit is read
 PASS, WARN, FAIL, SKIPPED = "pass", "warn", "fail", "skipped"
 _RANK = {PASS: 0, SKIPPED: 0, WARN: 1, FAIL: 2}
 # Findings listed per check; the counts cover them all.
@@ -248,6 +254,35 @@ def _longest_run(missing: Sequence[date], sessions: Sequence[date]) -> int:
     return best
 
 
+@dataclass(frozen=True)
+class Gaps:
+    """A member's sessions without a bar, split by NSE's bhavcopy of each day (`split_gaps`)."""
+
+    missing: list[date]  # NSE printed a row for the chain: the store lacks a bar it has
+    no_trade: list[date]  # NSE printed none (suspended, or no deal): no bar to have
+    raw_absent: list[date]  # no readable raw file: counted as missing, never passed
+
+
+def split_gaps(
+    days: Iterable[date], isins: Collection[str], traded: Mapping[date, frozenset[str]]
+) -> Gaps:
+    """`days` (a member's sessions without a bar) by the ISINs NSE printed each day (`traded`,
+    a day absent when its raw file is): a day whose file holds one of the chain's `isins` is
+    missing, a day whose file holds none is a no-trade day, and a day with no file is missing
+    and named as such, since nothing shows NSE had no trade."""
+    missing, no_trade, raw_absent = [], [], []
+    for day in days:
+        printed = traded.get(day)
+        if printed is None:
+            raw_absent.append(day)
+            missing.append(day)
+        elif printed.isdisjoint(isins):
+            no_trade.append(day)
+        else:
+            missing.append(day)
+    return Gaps(missing, no_trade, raw_absent)
+
+
 def check_missing_sessions(
     sessions: Sequence[date],
     spans: Mapping[str, Sequence[tuple[date, date | None]]],
@@ -255,36 +290,63 @@ def check_missing_sessions(
     names: Mapping[str, str],
     start: date,
     end: date,
+    *,
+    isins: Mapping[str, Collection[str]],
+    traded: Mapping[date, frozenset[str]],
 ) -> dict[str, Any]:
     """Each member's sessions in `start..end` without a bar while it is a member (`spans`, its
-    [from, to) intervals) and listed (from its first to its last bar, `bar_days` sorted):
-    per symbol the gap count and the longest gap. A member missing more than `MISSING_WARN_PCT`
-    of its sessions warns; the universe missing more than `MISSING_FAIL_PCT` fails."""
+    [from, to) intervals) and listed (from its first to its last bar, `bar_days` sorted), split
+    by NSE's bhavcopy of the day (`split_gaps`, the chain's `isins`, `traded`): missing when NSE
+    printed a row for the chain (or the day's raw file is absent), a no-trade day when it printed
+    none. Per symbol the missing count and the longest gap; a member missing more than
+    `MISSING_WARN_PCT` of its traded member sessions (those that are no no-trade day) warns; the
+    universe missing more than `MISSING_FAIL_PCT` of its traded member sessions fails. No-trade
+    days are reported in the summary (per member, and the worst), never a finding."""
     sessions = sorted(d for d in sessions if start <= d <= end)
-    total = gaps = 0
+    total = gaps = idle = 0
     rows = []
+    idle_rows = []
+    absent: set[date] = set()
     for instrument_id, member_spans in sorted(spans.items()):
         days = bar_days.get(instrument_id, ())
         if not days or not sessions:
             continue  # never listed in the window: `survivorship` reads it
         wanted = _member_days(sessions, member_spans, days[0], days[-1])
         held = set(days)
-        missing = [d for d in wanted if d not in held]
-        total += len(wanted)
-        gaps += len(missing)
-        if missing:
+        split = split_gaps(
+            (d for d in wanted if d not in held), isins.get(instrument_id, ()), traded
+        )
+        symbol = names.get(instrument_id, instrument_id)
+        traded_sessions = len(wanted) - len(split.no_trade)
+        total += traded_sessions
+        gaps += len(split.missing)
+        idle += len(split.no_trade)
+        absent.update(split.raw_absent)
+        if split.missing:
             rows.append(
                 {
                     "instrument_id": instrument_id,
-                    "symbol": names.get(instrument_id, instrument_id),
+                    "symbol": symbol,
+                    "member_sessions": traded_sessions,
+                    "missing": len(split.missing),
+                    "missing_pct": round(100 * len(split.missing) / traded_sessions, 2),
+                    "longest_gap": _longest_run(split.missing, sessions),
+                    "first_missing": _iso(split.missing[0]),
+                }
+            )
+        if split.no_trade:
+            idle_rows.append(
+                {
+                    "instrument_id": instrument_id,
+                    "symbol": symbol,
                     "member_sessions": len(wanted),
-                    "missing": len(missing),
-                    "missing_pct": round(100 * len(missing) / len(wanted), 2),
-                    "longest_gap": _longest_run(missing, sessions),
-                    "first_missing": _iso(missing[0]),
+                    "no_trade": len(split.no_trade),
+                    "no_trade_pct": round(100 * len(split.no_trade) / len(wanted), 2),
+                    "longest_no_trade": _longest_run(split.no_trade, sessions),
                 }
             )
     rows.sort(key=lambda r: (-r["missing_pct"], r["symbol"]))
+    idle_rows.sort(key=lambda r: (-r["no_trade"], r["symbol"]))
     findings = []
     heavy = [r for r in rows if r["missing_pct"] > MISSING_WARN_PCT]
     if heavy:
@@ -298,6 +360,11 @@ def check_missing_sessions(
         "missing_pct": round(share, 4),
         "symbols_with_gaps": len(rows),
         "worst": rows[:MAX_LISTED],
+        "raw_files_absent": [_iso(d) for d in sorted(absent)],
+        "no_trade": idle,
+        "no_trade_symbols": len(idle_rows),
+        "no_trade_by_member": {r["instrument_id"]: r["no_trade"] for r in idle_rows},
+        "no_trade_worst": idle_rows[:MAX_LISTED],
     }
     return check_result("missing_sessions", summary, findings)
 
@@ -1201,6 +1268,33 @@ def _demergers(
     return out
 
 
+def _traded(store: DataStore, days: Iterable[date]) -> dict[date, frozenset[str]]:
+    """The ISINs NSE's bhavcopy printed on each of `days` (`bhavcopy.traded_isins`), read from
+    the raw file the history and the nightly ingest keep; a day whose file is absent or
+    unreadable is left out, which `split_gaps` counts as missing."""
+    out = {}
+    for day in days:
+        try:
+            out[day] = traded_isins(store.raw_path(archive_name(day)).read_bytes())
+        except (BhavcopyError, OSError):
+            continue
+    return out
+
+
+def _chain_isins(
+    session: Session, lineage: Mapping[str, str], chains: Collection[str]
+) -> dict[str, frozenset[str]]:
+    """Each chain's ISINs: its current instrument's and every linked older one's (`lineage`)."""
+    wanted = set(chains)
+    out: dict[str, set[str]] = defaultdict(set)
+    for instrument_id, isin in session.execute(select(HatInstrument.id, HatInstrument.isin)):
+        key = str(instrument_id)
+        chain = lineage.get(key, key)
+        if chain in wanted and isin:
+            out[chain].add(isin)
+    return {chain: frozenset(found) for chain, found in out.items()}
+
+
 def _history(market: MarketData) -> dict[str, list[tuple[date, str]]]:
     """The run's industry classifications per chain; one plain name is in force throughout."""
     out = {}
@@ -1275,7 +1369,16 @@ def gather(
     ]
     checks = [
         check_calendar(sessions, trading_days(session, start, end), start, end),
-        check_missing_sessions(sessions, spans, bar_days, names, start, end),
+        check_missing_sessions(
+            sessions,
+            spans,
+            bar_days,
+            names,
+            start,
+            end,
+            isins=_chain_isins(session, adjustment.lineage, spans),
+            traded=_traded(store, in_window),
+        ),
         check_survivorship(sessions, spans, bar_days, market.last_traded, names, start, end),
         check_corporate_actions(series, sessions, market.skipped, names),
         check_result(
