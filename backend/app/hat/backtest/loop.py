@@ -2010,16 +2010,26 @@ class _Run:
             skip_reason=plan.skip,
             criteria=plan.filters,
         )
-        # a backtest signal has no evidence of its own: its label is low, `backtest`
-        outcome = entries.open_entry(
-            self.session,
-            request,
-            # a 5-minute entry is live's LIMIT at its price: never filled above it
-            fills=self.spec.fills.within(
-                self._free_cash() + credit, plan.price if plan.basis == BASIS_5M else None
-            ),
-            confidence=BACKTEST_CONFIDENCE,
-        )
+        try:
+            # a backtest signal has no evidence of its own: its label is low, `backtest`
+            outcome = entries.open_entry(
+                self.session,
+                request,
+                # a 5-minute entry is live's LIMIT at its price: never filled above it
+                fills=self.spec.fills.within(
+                    self._free_cash() + credit, plan.price if plan.basis == BASIS_5M else None
+                ),
+                confidence=BACKTEST_CONFIDENCE,
+            )
+        except positions.TradeError as refused:
+            if refused.code != entries.NOT_IN_UNIVERSE:
+                raise
+            # Scanned on the night's members, the stock left the universe by its entry day:
+            # no entry (HAT-PORT-023) and, as live, no signal, so the setup's window stays open.
+            self._skip(entries.NOT_IN_UNIVERSE)
+            if record is not None:
+                record.failed(entries.NOT_IN_UNIVERSE, ep_log.FILLED)
+            return
         signal = self.session.get(HatSignal, outcome.signal_id)
         if signal is None or outcome.duplicate:
             return

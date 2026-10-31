@@ -589,7 +589,10 @@ class TriggerService:
     def write(self, trigger: Trigger, stale: bool) -> entries.EntryOutcome | None:
         """Write one trigger's signal and commit, then tell the monitor: a stored signal (a new
         one or the existing one) closes the key for the day; a failure is logged, leaves
-        nothing and releases the key, so the next final bar evaluates it again."""
+        nothing and releases the key, so the next final bar evaluates it again. An instrument
+        that left the bot's universe by the trade date is skipped (HAT-PORT-023): `open_entry`
+        refuses it before any write, and its key is closed for the day, as membership does not
+        change within one."""
         key = trigger.candidate.key
         try:
             with self._session_factory() as session:
@@ -598,7 +601,11 @@ class TriggerService:
                     session, trigger, base, feed_stale=stale, route=self._route
                 )
                 session.commit()
-        except Exception:
+        except Exception as failed:
+            if isinstance(failed, positions.TradeError) and failed.code == entries.NOT_IN_UNIVERSE:
+                logger.info("trigger skipped: %s", entries.NOT_IN_UNIVERSE)
+                self.monitor.confirm(key)
+                return None
             logger.exception("writing a trigger failed")
             self.monitor.release(key)
             return None

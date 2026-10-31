@@ -74,6 +74,7 @@ __all__ = [
     "ENTRY_SKIP_REASONS",
     "EntryOutcome",
     "EntryRequest",
+    "NOT_IN_UNIVERSE",
     "TokenIssuer",
     "entry_confidence",
     "open_entry",
@@ -102,6 +103,9 @@ ENTRY_SKIP_REASONS = frozenset(
     }
     | {t.code for t in REGISTRY.values() if t.stage == "entry_filter"}
 )
+# The refusal of an entry for an instrument outside the bot's universe on its trade date
+# (HAT-PORT-023): `open_entry` raises it before any write, and each caller skips the entry.
+NOT_IN_UNIVERSE = "not_in_universe"
 _ZERO = Decimal(0)
 SIGNAL_TRIGGERED = journal.SIGNAL_TRIGGERED
 
@@ -168,7 +172,7 @@ def _entry_policy(session: Session, bot: Bot, request: EntryRequest) -> PolicyVe
     """The policy version a new entry is decided under, after the rules that refuse it outright."""
     if request.instrument_id not in bot_universe_members(session, bot, request.trade_date):
         # Leaving the universe stops new entries (HAT-PORT-023); an open position is untouched.
-        raise TradeError("not_in_universe")
+        raise TradeError(NOT_IN_UNIVERSE)
     if bot.live_version_id is None:
         raise TradeError("no_live_version")
     versions: Sequence[PolicyVersion] = request.context.policy_versions or []
