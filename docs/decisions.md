@@ -178,11 +178,15 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   timing, chosen on the level trigger (`entry_timing`; the default `intraday_break` is unchanged):
   - **`stop_order` (E1)**, for the setups (VCP, cheat, cup, primary base, power play): a buy
     stop-limit resting 09:20 to 15:05, triggered by the first trade above the level (level + one
-    tick), its LIMIT the max-chase price over the level (down to the tick, at most the upper
-    band). `max_chase` judges the triggering trade's price, live and in the backtest. Live fires
-    it on the tick feed (`TriggerMonitor.on_tick`), so the signal, `evaluate_signal` and the
-    caps run at the trigger as for every entry, and sends that LIMIT
-    (`snapshot.limit_price_of`). The stop is HAT's, not a resting broker order. A broker SL
+    tick). `max_chase` judges the triggering trade's price, live and in the backtest. Live fires
+    it on the tick feed (`TriggerMonitor.on_tick`; a late print inside a bar already final fires
+    nothing), so the signal, `evaluate_signal` and the caps run at the trigger as for every
+    entry. The position is sized at that trade's price, so the order's LIMIT is at most 0.5% over
+    it (`trigger.ENTRY_BAND_PCT`, `stop_limit`; also within the max chase and the upper band) and
+    a placement or a Take whose live price is above that LIMIT is refused (`price_past_limit`).
+    A fill thus risks at most 0.5% of the price more per share than sized (with a 4% stop, 1.125x
+    the trade's risk budget) and needs at most 0.5% more cash; re-sizing at placement was not
+    chosen, as it would move the quantity away from the decision the risk check made. The stop is HAT's, not a resting broker order. A broker SL
     order would block cash for every watchlist row at once, take its risk decision before the
     trigger, and be refused by the exchange whenever the price is already above its trigger at
     09:20. On 5-minute bars the backtest buys at the 09:15 close when it is above the level (the
@@ -197,6 +201,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     session at its first trade from 09:20 (the previous session's watchlist row; `max_chase` on
     that price). It replaces `daily_close` for any rule that needs the close; the backtest buys
     at the 09:15 close, else the open moved to 09:20, with the whole day's low after the fill.
+  - Neither takes `volume_pace` (`tick_entry_no_volume_pace`): live counts a bar's volume up to
+    the trade, the 5-minute replay cannot tell how much of a bar came before it. A failed break
+    (`break_failed`: an unfilled entry cancelled, a placement or Take refused) counts only a bar
+    that started after the trigger, so a trade-fired entry at 09:20 is never refused for the
+    09:15 bar's close.
   - An open above the level is a gap over, whatever the fill: the backtest's low-of-day stop
     skips it without 5-minute bars (`gap_over_no_intraday`) and any other stop sees the day's
     whole low after the fill.

@@ -33,8 +33,9 @@ Rules:
   entry orders"): a stop order on the first trade above the level in the trigger window, a
   next-session entry on the first trade in it after a previous close above the level. Its other
   trigger criteria read the day volume of the final bars so far. The entry is that trade's price
-  and its order a LIMIT at the max-chase price (`EntryPlan.limit`, `chase_limit`): a buy
-  stop-limit, which `max_chase` checks at the trade's price. `on_bar` never fires one.
+  and its order a LIMIT a small band over it, at most the max-chase price (`EntryPlan.limit`,
+  `stop_limit`): a buy stop-limit, which `max_chase` checks at the trade's price. `on_bar` never
+  fires one.
 - At the trigger the initial stop is computed with the instrument's real tick (HAT-EXEC-053),
   then the entry filters run in their configured order; `max_chase` always runs, with the
   playbook's last configured percentage, even when the config deleted or disabled it
@@ -120,6 +121,7 @@ __all__ = [
     "chase_limit",
     "entry_limit",
     "first_above",
+    "stop_limit",
     "entry_stop",
     "entry_filter_instances",
     "evaluate_entry_filters",
@@ -147,6 +149,10 @@ AVG_VOLUME_DAYS = 50
 VOLUME_PACE = "volume_pace"
 PACE_LOW = REASON_LOW_PACE  # `volume_pace` failed: too little volume for the time of day
 _HUNDRED = Decimal(100)
+# How far over the triggering trade a stop order's LIMIT may reach (percent of that price): its
+# fill, sized at that price, costs at most this much more per share, and a live price past the
+# LIMIT refuses the placement (`router`, decisions.md "Setup entry orders").
+ENTRY_BAND_PCT = Decimal("0.5")
 
 
 class BarView(Protocol):
@@ -308,7 +314,7 @@ class EntryPlan:
     locked_upper_circuit: bool | None
     skip: str | None
     filters: tuple[CriterionOutcome, ...]
-    # the order's LIMIT when it is not `entry`: a stop order's max-chase price (`chase_limit`)
+    # the order's LIMIT when it is not `entry`: a stop order's (`stop_limit`)
     limit: Decimal | None = None
 
 
@@ -487,6 +493,16 @@ def chase_limit(level: Decimal, pct: Decimal, tick: Decimal | None) -> Decimal:
     return raw if tick is None or tick <= 0 else floor_to_tick(raw, tick)
 
 
+def stop_limit(entry: Decimal, chase: Decimal, tick: Decimal | None) -> Decimal:
+    """A stop order's LIMIT: the triggering trade's price `entry` plus `ENTRY_BAND_PCT` (down to
+    the tick), at most the max-chase price `chase`, never below `entry`. The position is sized
+    at `entry`, so a fill at the LIMIT risks at most the band more per share."""
+    band = entry * (_HUNDRED + ENTRY_BAND_PCT) / _HUNDRED
+    if tick is not None and tick > 0:
+        band = floor_to_tick(band, tick)
+    return max(entry, min(band, chase))
+
+
 def chase_pct(playbook: Playbook, configured_pct: Decimal | None, strategy_key: str) -> Decimal:
     """The max-chase percentage a trigger is checked at (`entry_filter_instances`): the least
     of the enabled `max_chase` filters', else the forced one's."""
@@ -529,12 +545,12 @@ def plan_entry(
     tick = candidate.daily.tick
     limit = None
     if candidate.playbook.on_ticks:
-        # a trade's price: the order is a LIMIT at the max-chase price, a buy stop-limit
+        # a trade's price: the order is a LIMIT a band over it within the chase, a stop-limit
         entry = price if tick is None or tick <= 0 else ceil_to_tick(price, tick)
         pct = chase_pct(
             candidate.playbook, candidate.configured_max_chase_pct, candidate.strategy_key
         )
-        limit = max(entry, chase_limit(level, pct, tick))
+        limit = stop_limit(entry, chase_limit(level, pct, tick), tick)
         upper = upper_circuit_price(candidate.daily)
         if upper is not None and entry <= upper < limit:
             limit = upper  # the exchange refuses a buy above the band
@@ -690,6 +706,8 @@ class TriggerMonitor:
         self._by_symbol: dict[str, dict[tuple[uuid.UUID, str, uuid.UUID, date], Candidate]] = {}
         self._fired: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
         self._pending: set[tuple[uuid.UUID, str, uuid.UUID, date]] = set()
+        # per symbol, the end of its latest final bar: a trade before it is a late print
+        self._final_until: dict[str, datetime] = {}
         self._lock = threading.Lock()
 
     def add(self, candidate: Candidate) -> None:
@@ -779,9 +797,13 @@ class TriggerMonitor:
     def on_tick(self, tick: Tick) -> list[Trigger]:
         """Evaluate every unfired candidate of the trade's symbol that fires on a trade
         (`Playbook.on_ticks`) at the trade's exchange time; return the triggers fired. The day
-        low of a stop plan is the final bars' so far."""
+        low of a stop plan is the final bars' so far. A late print, timed inside a bar already
+        final (`on_bar`), fires nothing: its price is no longer the market's."""
         day = tick.at.astimezone(IST).date()
         if not in_window(tick.at, self._view.session_start(day), self._view.session_end(day)):
+            return []
+        until = self._final_until.get(tick.symbol)
+        if until is not None and tick.at < until:
             return []
         fired: list[Trigger] = []
         for key, candidate in sorted(
@@ -806,6 +828,9 @@ class TriggerMonitor:
         """Evaluate every unfired candidate of the bar's symbol; return the triggers fired. A
         candidate that fires on a trade (`on_tick`) is not evaluated here."""
         day = bar.start.astimezone(IST).date()
+        end = bar.start + BAR_WIDTH
+        if end > self._final_until.get(bar.symbol, end - BAR_WIDTH):
+            self._final_until[bar.symbol] = end
         if not in_window(bar.final_at, self._view.session_start(day), self._view.session_end(day)):
             return []
         fired: list[Trigger] = []

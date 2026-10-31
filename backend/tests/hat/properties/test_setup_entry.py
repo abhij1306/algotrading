@@ -28,12 +28,16 @@ from app.hat.engine.criteria.live import PriceBreaksLevelParams, price_breaks_le
 from app.hat.engine.fill_0920 import gap_over_fill
 from app.hat.engine.strategy.config import Playbook
 from app.hat.engine.trigger import (
+    ENTRY_BAND_PCT,
     DailyInputs,
     TriggerMonitor,
     chase_limit,
     daily_context,
     first_above,
+    stop_limit,
 )
+from app.hat.execution.entry_timeout import break_failed
+from app.hat.execution.router import past_limit
 from app.hat.time import IST
 
 D = Decimal
@@ -68,6 +72,60 @@ def test_chase_limit(level: D, pct: D, tick: D) -> None:
     assert limit % tick == 0
     assert limit * 100 <= level * (100 + pct)
     assert (limit + tick) * 100 > level * (100 + pct)
+
+
+@given(PRICE, st.integers(0, 1000), TICKS)
+@example(D(100), 20, D("0.05"))  # the chase binds below the band
+def test_stop_limit(entry: D, chase_bp: int, tick: D) -> None:
+    """A stop order's LIMIT is at least the triggering trade's price, at most that price plus
+    `ENTRY_BAND_PCT` and at most the max-chase price (above the trade), on the grid when it is
+    not the trade's price. So a fill, sized at the trade's price, costs at most the band more per
+    share. Harm: a late placement fills up to the chase with the risk and cash sized below it."""
+    entry = entry - entry % tick  # a traded price is on the grid
+    if entry <= 0:
+        return
+    chase = entry * (10_000 + chase_bp) / 10_000 // tick * tick  # on the grid, as `chase_limit`
+    limit = stop_limit(entry, chase, tick)
+    assert entry <= limit <= max(entry, chase)
+    assert limit * 100 <= entry * (100 + ENTRY_BAND_PCT)
+    assert limit % tick == 0
+    assert limit == max(entry, min(chase, entry * (100 + ENTRY_BAND_PCT) / 100) // tick * tick)
+
+
+def test_past_limit() -> None:
+    """A stop order whose live price is above its LIMIT is refused at placement and at a Take;
+    another entry (no LIMIT of its own) or an unknown price is not judged here. Harm: a late
+    Take places an order that fills above the size it was given, or never fills."""
+    assert past_limit(D("100.60"), D("100.55"))
+    assert not past_limit(D("100.55"), D("100.55"))
+    assert not past_limit(D(200), None)
+    assert not past_limit(None, D("100.55"))
+
+
+@pytest.mark.parametrize(
+    ("triggered", "closes", "failed"),
+    [
+        # a trade at 09:20:00: the 09:15 bar (final 09:20:02) is in progress, never counts
+        ((9, 20, 0), [((9, 20, 2), "99")], False),
+        ((9, 20, 0), [((9, 20, 2), "99"), ((9, 25, 2), "99")], True),  # the 09:20 bar does
+        # a trade at 09:22: the 09:20 bar it fell in never counts; the 09:25 bar does
+        ((9, 22, 0), [((9, 25, 2), "99")], False),
+        ((9, 22, 0), [((9, 30, 2), "99")], True),
+        # a 5-minute trigger (the 09:20 bar's final instant): its own bar never, the next does
+        ((9, 25, 2), [((9, 25, 2), "99")], False),
+        ((9, 25, 2), [((9, 30, 2), "99")], True),
+        ((9, 25, 2), [((9, 30, 2), "100")], False),  # a close at the level holds
+    ],
+)
+def test_break_failed_counts_bars_after_the_trigger(
+    triggered: tuple[int, int, int], closes: list, failed: bool
+) -> None:
+    """Only a bar that started after the trigger fails the break: a trade-fired entry at 09:20
+    is not refused for the 09:15 bar's close, which the backtest never reads. Harm: live refuses
+    or cancels entries the backtest buys."""
+    at = support.ist(DAY, *triggered)
+    seen = [(support.ist(DAY, *t), D(c)) for t, c in closes]
+    assert break_failed(D(100), at, seen) is failed
 
 
 @given(PRICE, PRICE, PRICE, TICKS)
@@ -204,14 +262,14 @@ def test_stop_order_fires_on_the_first_trade_above_the_level() -> None:
     assert monitor.on_tick(_tick(9, 21, 0, "100")) == []  # at the level, not above it
     bar = Bar("AAA", support.ist(DAY, 9, 20), D(100), D(101), D(99), D("100.50"), 10)
     assert [t.candidate.key for t in monitor.on_bar(bar)] == [bar_break.key]
-    (fired,) = monitor.on_tick(_tick(9, 22, 0, "100.05"))
+    (fired,) = monitor.on_tick(_tick(9, 25, 0, "100.05"))
     assert fired.candidate.key == stop.key
-    assert fired.at == support.ist(DAY, 9, 22)
+    assert fired.at == support.ist(DAY, 9, 25)
     assert fired.plan.entry == D("100.05")
-    assert fired.plan.limit == D(102)  # 2% over the level, on the grid
+    assert fired.plan.limit == D("100.55")  # 0.5% over the trade, on the grid, within the chase
     assert fired.plan.skip is None
     monitor.confirm(stop.key)
-    assert monitor.on_tick(_tick(9, 23, 0, "100.10")) == []  # once a day
+    assert monitor.on_tick(_tick(9, 26, 0, "100.10")) == []  # once a day
 
 
 def test_next_session_fires_on_the_first_trade_of_the_window() -> None:
@@ -302,3 +360,31 @@ def test_full_day_volume_fails_the_audit() -> None:
     assert failed["status"] == "fail"
     assert "lookahead_full_day_volume" in [f["code"] for f in failed["findings"]]
     assert run_audit.check_lookahead({"ep_estimate_volume": 1})["status"] == "warn"
+
+
+def test_late_print_fires_nothing() -> None:
+    """A trade timed inside a bar already final is a late print: it fires no stop order, a
+    trade in the next bar does. Harm: an entry at a price the market left minutes ago."""
+    monitor = TriggerMonitor(BarBuilder())
+    stop = support.candidate(_book("stop_order"), pivot=D(100))
+    monitor.add(stop)
+    monitor.on_bar(Bar("AAA", support.ist(DAY, 9, 20), D(99), D("99.50"), D(98), D(99), 10))
+    assert monitor.on_tick(_tick(9, 24, 59, "101")) == []
+    (fired,) = monitor.on_tick(_tick(9, 25, 0, "101"))
+    assert fired.candidate.key == stop.key
+
+
+def test_tick_entry_refuses_volume_pace() -> None:
+    """A stop order or a next-session entry takes no `volume_pace`: live counts a bar's volume
+    up to the trade, the replay cannot. Harm: live and the backtest judge the volume apart."""
+    for timing in ("stop_order", "next_session"):
+        with pytest.raises(ValidationError, match="tick_entry_no_volume_pace"):
+            support.playbook(
+                trigger=[
+                    {
+                        "type": "price_breaks_level",
+                        "params": {"level": "pivot", "entry_timing": timing},
+                    },
+                    {"type": "volume_pace", "params": {"vs_avg50": 1.5}},
+                ]
+            )

@@ -119,7 +119,7 @@ class EntryRequest:
     `skip_reason` (one of `ENTRY_SKIP_REASONS`) records a trigger whose stop or entry filters
     already failed: the signal is stored Rejected with that reason and no risk check runs.
     `criteria` is each trigger and entry-filter result, kept on `signal.triggered`, and
-    `limit_price` a stop order's LIMIT (its max-chase price, `trigger.chase_limit`) when it is
+    `limit_price` a stop order's LIMIT (`trigger.stop_limit`) when it is
     not the entry price, kept there too for the order (`snapshot.limit_price_of`)."""
 
     bot_id: uuid.UUID

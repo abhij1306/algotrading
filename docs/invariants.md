@@ -50,8 +50,9 @@ touching orders: `.claude/skills/trading-safety/SKILL.md`.
    session without 5-minute bars refuses an enabled `volume_pace` (`volume_pace_no_intraday`);
    the opt-in `volume_pace: full_day` convention reads the full day's volume and fails the run
    audit (`lookahead_full_day_volume`). A `stop_order` or `next_session` level fires on a trade
-   (`TriggerMonitor.on_tick`), live and in the replay, and its order is a LIMIT at the
-   max-chase price (decisions.md "Setup entry orders").
+   (`TriggerMonitor.on_tick`), live and in the replay, and its order is a LIMIT at most
+   0.5% over the trade, refused at placement when the price is past it (decisions.md "Setup
+   entry orders").
    A backtest session with stored 5-minute bars is decided by the live `TriggerMonitor` replayed
    on them (`backtest/intraday.replay`: the opening range, the close confirmation, `volume_pace`,
    `gap_up`, `early_volume`, the entry LIMIT, the low-of-day stop from the bars up to the trigger

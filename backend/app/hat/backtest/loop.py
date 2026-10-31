@@ -445,7 +445,7 @@ class _EntryPlan:
     # the highest price after the entry (None: the day's high, the daily estimate's path)
     high: Decimal | None = None
     basis: str = BASIS_DAILY  # what decided it: the session's 5-minute bars or the daily bar
-    # a 5-minute stop order's LIMIT, its max-chase price (None: the LIMIT is `price`)
+    # a 5-minute stop order's LIMIT (`trigger.stop_limit`; None: the LIMIT is `price`)
     limit: Decimal | None = None
 
 
@@ -2161,14 +2161,13 @@ class _Run:
         playbook = self.config.playbook(row.playbook)
         if playbook.next_session:
             prev_close = self.view.prev_close(str(row.instrument_id), day)
-            if prev_close is None:
-                return SKIP_BAD_INPUT
-            if prev_close <= level:
-                return None
+            if prev_close is None or prev_close <= level:
+                return None  # live's trigger has no previous close above the level: no break
             return fill_0920.estimated_0920(bar.open, "buy", low=bar.low, high=bar.high)
         if playbook.on_ticks:
             tick = None
-            if bar.open <= level:
+            # the tick matters only to a break from below; read it only then
+            if bar.open <= level < bar.high:
                 tick = self.view.tick(str(row.instrument_id), day)
                 if tick is None:
                     return SKIP_BAD_INPUT
@@ -2327,8 +2326,8 @@ class _Run:
             outcome = entries.open_entry(
                 self.session,
                 request,
-                # a 5-minute entry is live's LIMIT (at its price, or a stop order's max-chase
-                # price): never filled above it
+                # a 5-minute entry is live's LIMIT (at its price, or a stop order's band over
+                # it): never filled above it
                 fills=self.spec.fills.within(
                     self._free_cash() + credit,
                     (plan.limit or plan.price) if plan.basis == BASIS_5M else None,

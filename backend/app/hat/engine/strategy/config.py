@@ -40,6 +40,7 @@ from ..criteria.live import (
 
 PRICE_BREAKS_LEVEL = "price_breaks_level"
 GAP_UP = "gap_up"
+VOLUME_PACE = "volume_pace"
 
 DEFAULT_THRESHOLD = 0.6
 DEFAULT_PLAYBOOK = "default"
@@ -713,6 +714,14 @@ class Playbook(Model):
             and (self.preopen or LEVEL_OPENING_RANGE in level_names(found.level))
         ):
             raise ValueError("tick_entry_needs_setup_level")
+        # Live counts the volume of a bar still in progress up to the trade; the 5-minute replay
+        # cannot know how much of a bar came before its trade, so the two could not agree.
+        if (
+            found is not None
+            and found.entry_timing in TICK_TIMINGS
+            and any(i.enabled and i.type == VOLUME_PACE for i in self.trigger)
+        ):
+            raise ValueError("tick_entry_no_volume_pace")
         # Every level a trigger names is one its setup exposes or the opening range (HAT-BOT-071),
         # else the playbook could never trigger.
         exposed = {LEVEL_OPENING_RANGE, *self.setup_levels}

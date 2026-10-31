@@ -36,7 +36,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..data.bars import Bar
+from ..data.bars import BAR_FINAL_LAG, BAR_WIDTH, Bar
 from ..data.instrument_names import instrument_symbols
 from ..engine import lifecycle
 from ..models import HatOrder, HatSignal
@@ -62,9 +62,15 @@ WORKING = "placed"  # at the broker with nothing filled (a part fill is `partial
 def break_failed(
     level: Decimal, triggered_at: datetime, closes: Iterable[tuple[datetime, Decimal]]
 ) -> bool:
-    """A final bar after the trigger bar (final instant after `triggered_at`) closed below
-    `level`: the break failed. `closes` are the (final instant, close) pairs seen so far."""
-    return any(triggered_at < at and close < level for at, close in closes)
+    """A final bar that started after the trigger closed below `level`: the break failed.
+    `closes` are the (final instant, close) pairs seen so far, a bar's start its final instant
+    less its width and the hand-over lag. A bar counts when it starts no earlier than the
+    trigger less that lag: after a 5-minute trigger (its instant the trigger bar's final one)
+    the next bar, never the trigger bar; after a trigger on a trade (`stop_order`,
+    `next_session`, its instant the trade's) only a bar that began after the trade, so the bar
+    in progress at it (at 09:20:00 the 09:15 bar, final at 09:20:02) never counts."""
+    since = triggered_at - BAR_FINAL_LAG
+    return any(at - BAR_WIDTH - BAR_FINAL_LAG >= since and close < level for at, close in closes)
 
 
 def cancel_reason(
@@ -76,8 +82,8 @@ def cancel_reason(
     now: datetime,
     timeout: timedelta,
 ) -> str | None:
-    """Why an unfilled entry is cancelled at `now`, or None while it may rest: a final bar after
-    the trigger bar (final instant after `triggered_at`) closed below `level`, or `timeout` has
+    """Why an unfilled entry is cancelled at `now`, or None while it may rest: a final bar that
+    started after the trigger closed below `level` (`break_failed`), or `timeout` has
     passed since `placed_at`. `closes` are the (final instant, close) pairs seen so far."""
     if break_failed(level, triggered_at, closes):
         return BREAK_FAILED
