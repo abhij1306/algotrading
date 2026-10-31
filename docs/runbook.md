@@ -240,7 +240,7 @@ steps that read it are skipped.
 | --- | --- | --- |
 | `calendar` | `calendar.refresh`: NSE's holiday list into `hat_trading_calendar` | |
 | `bars` | `history_cli --resume`: the bhavcopy days into `bars_daily_raw`, the index archive | |
-| `listing` | `listing.refresh`: the stocks of the instrument master from NSE's equity list (`EQUITY_L.csv`): an ISIN the bars registered is activated and named, renames and series moves are taken, a stock the list dropped is delisted; funds and rights entitlements are left to `reference.weekly` | bars |
+| `listing` | `listing.refresh`: the stocks of the instrument master from NSE's equity list (`EQUITY_L.csv`): an ISIN the bars registered is activated and named, renames and series moves are taken, a stock the list dropped is delisted, the Fyers symbols follow; funds and rights entitlements are left to `reference.weekly` | bars |
 | `ingest` | `ingest.nightly` per session on the stored bars: index levels, market breadth, NIFTY 500 TRI, `ingest.completed` | bars |
 | `quality` | `quality.gate` per session | ingest |
 | `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`) | ingest |
@@ -286,7 +286,9 @@ run, `journalctl --user -u hat-data-update` the summary lines.
 Recover: read the failed step's `detail` and log, fix the cause, then run that step with
 `--only` (or wait for the next run). A failing `quality` keeps `features` back, as it does the
 live chain; a `membership` build that refuses an unresolved symbol needs an `overrides.json` or
-`symbol_alias.json` entry.
+`symbol_alias.json` entry. A job runs once per session, so `--only listing` does not repeat a
+listing already taken; `$ADMIN refresh-fyers-symbols` rewrites the Fyers symbols of the active
+stocks at any time, as `reference.weekly` does (no download).
 
 ### Data record
 
@@ -325,12 +327,16 @@ from the NSE Indices change notices (`index_name,isin,symbol_at_the_time,from_da
 source_notice`; `to_date` is the first session no longer a member, empty for a member on
 `as_of`) by `scripts/data/nifty500_membership.py` in a working directory outside the repo:
 `fetch` (notices and today's list), `text`, `parse`, `reference` (hat_live and the daily bars,
-read-only), `build --as-of <list date> --start 2011-06-22 --strict-from 2014-01-22 --anchor <list>...`, the
-anchors being the archived full lists (`raw/wayback/*_cnx500.csv`: 2010-01-02, 2014-01-22,
-2014-07-09, 2015-03-25). The build undoes the notices back from today's list and resets to each
+read-only), `build --as-of <list date>`: by default from 2011-06-22, anchored on every archived
+full list `raw/wayback/*_cnx500.csv` (2010-01-02, 2014-01-22, 2014-07-09, 2015-03-25) and strict
+from 2014-01-22 (`--start`, `--anchor`, `--strict-from`), as the daily update runs it. The build undoes the notices back from today's list and resets to each
 archived list at its day, recording every name a list or notice does not fit in
 `nifty500-membership-build.json`; it refuses any from `--strict-from` on. Its docstring has the
-hand-kept `overrides.json` and `symbol_alias.json`. Write the coverage report beside the CSV. Load
+hand-kept `overrides.json` and `symbol_alias.json`. A demerger's dummy member (`DUMMY...`, NSE's
+dummy ISIN) is aliased `PSEUDO:<dummy ISIN>` and left out; once NSE's listing circular gives the
+resulting company's ISIN, make the alias the list `["PSEUDO:<dummy ISIN>", "ISIN:<its ISIN>"]`
+so the build follows the list from the dummy to the company, and add the exclusion notice
+(which names indices, not sections) to `overrides.json`. Write the coverage report beside the CSV. Load
 it from `<HAT_DATA_ROOT>/admin/`:
 
 ```bash

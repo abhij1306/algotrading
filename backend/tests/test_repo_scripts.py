@@ -352,6 +352,40 @@ def test_n500__resolve_and_key() -> None:
     assert ref.symbol_on("new", date(2021, 1, 1), "X") == "ABCNEW"
 
 
+def test_n500__a_dummy_alias_follows_the_list_to_the_listed_company() -> None:
+    """A demerger's dummy and the company listed in its place are one member: the dummy while
+    today's list holds it, the company once the list names it (no instrument yet, or one), and
+    the company after it left the index."""
+    ref = _reference()
+    ref.alias["DUMMYX"] = ["PSEUDO:DUM9", "ISIN:INE9"]
+    day = date(2026, 9, 7)
+    ref.on_list = frozenset({"DUM9"})
+    assert ref.resolve("DUMMYX", day, "in") == "PSEUDO:DUM9"
+    ref.on_list = frozenset({"INE9"})
+    assert ref.resolve("DUMMYX", day, "in") == "PSEUDO:INE9"
+    ref.isin["co"] = "INE9"
+    ref.__post_init__()
+    assert ref.resolve("DUMMYX", day, "in") == "co"
+    ref.on_list = frozenset()
+    assert ref.resolve("DUMMYX", day, "in") == "co"
+    assert n500.alias_target(["PSEUDO:DUM8", "ISIN:INE8"], ref) == "PSEUDO:DUM8"
+    assert ref.resolve("ALIASED", day, "in") == "other"  # a plain alias is unchanged
+
+
+def test_n500__the_build_is_anchored_on_every_archived_list_by_default(tmp_path: Path) -> None:
+    wayback = tmp_path / "raw" / "wayback"
+    wayback.mkdir(parents=True)
+    for name in ("20140122091641_cnx500.csv", "20100102131654_cnx500.csv", "x_niftyindices.csv"):
+        (wayback / name).write_text("")
+    assert [p.name for p in n500.default_anchors(tmp_path)] == [
+        "20100102131654_cnx500.csv",
+        "20140122091641_cnx500.csv",
+    ]
+    args = n500.parse_args(["--work", str(tmp_path), "build", "--as-of", "2026-10-30"])
+    assert (args.start, args.strict_from) == (date(2011, 6, 22), date(2014, 1, 22))
+    assert n500.default_anchors(tmp_path / "none") == []
+
+
 def test_n500__split_by_isin_at_lineage_dates() -> None:
     ref = _reference()
     assert n500.split_by_isin(ref, "new", date(2016, 1, 1), None) == [

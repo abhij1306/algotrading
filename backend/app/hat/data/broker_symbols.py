@@ -19,7 +19,7 @@ from ..models import HatBrokerSymbol, HatInstrument
 from ..time import utc_now
 from .instruments import ReferenceDataError
 from .kite_symbols import KiteListing, kite_symbol, plausible_refresh
-from .symbols import SymbolMaster
+from .symbols import SymbolMaster, symbol_master
 
 logger = logging.getLogger(__name__)
 
@@ -135,6 +135,12 @@ def refresh_fyers_symbols(
         taken.add(symbol)
         wanted[instrument.id] = (symbol, None)
     return _replace_broker_rows(session, BROKER_FYERS, wanted, report)
+
+
+def refresh_hat_fyers_symbols(session: Session, market_id: uuid.UUID) -> BrokerSymbolReport:
+    """`refresh_fyers_symbols` with HAT's symbol master: what `reference.weekly` writes, at any
+    time and without a download (`admin refresh-fyers-symbols`)."""
+    return refresh_fyers_symbols(session, symbol_master, market_id)
 
 
 def refresh_kite_symbols(
