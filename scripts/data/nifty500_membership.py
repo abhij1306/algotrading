@@ -26,15 +26,19 @@ The steps, each writing under `--work` (or `NIFTY500_DIR`), a directory outside 
 - `build`: resolves each notice symbol to an instrument (symbol history and bar spans, the
   nearest within 400 days of the effective day), keyed by the end of its ISIN lineage chain,
   undoes the changes from today's list, splits each interval per ISIN at the lineage dates and
-  writes `nifty500-membership.csv` (`index_membership.COLUMNS`). It refuses to write when a
-  symbol does not resolve or a change does not fit the list.
+  writes `nifty500-membership.csv` (`index_membership.COLUMNS`). By default the history runs
+  from 2011-06-22, reset to each archived full list under `raw/wayback/` on its day, and the
+  build refuses to write when a symbol does not resolve or a change does not fit a list from
+  2014-01-22 on (`--start`, `--anchor`, `--strict-from` override them).
 
 Two hand-kept inputs in `--work` correct what the parser cannot read, each entry taken from the
 notices: `overrides.json` (per notice file: `date` for an effective date the parser missed,
 `skip`, `changes` replacing its parsed sections, `drop` / `drop_from` for revised notices; and
 `_extra`, changes from notices not on the press page) and `symbol_alias.json` (a notice symbol ->
 another symbol, `ISIN:<isin>` or `PSEUDO:<isin>` for a member HAT has no instrument for, which
-the CSV leaves out). Write the coverage report beside the CSV; runbook "Index membership".
+the CSV leaves out; or a list of these, of which the build takes `alias_target`'s pick, so a
+demerger's dummy and the company listed in its place are one member). Write the coverage report
+beside the CSV; runbook "Index membership".
 """
 
 from __future__ import annotations
@@ -85,6 +89,11 @@ SKIP_TITLES = (
 )
 RESOLVE_DAYS = 400
 OPEN_END = date(2100, 1, 1)
+# The build's history: from HAT's first bar day, anchored on the archived full lists, refusing
+# any misfit from the first anchor the notices fully explain (runbook "Index membership")
+START = date(2011, 6, 22)
+STRICT_FROM = date(2014, 1, 22)
+ANCHOR_GLOB = "raw/wayback/*_cnx500.csv"
 
 MONTHS = "January|February|March|April|May|June|July|August|September|October|November|December"
 DATE_RE = re.compile(
@@ -234,6 +243,25 @@ def notice_events(
 # instruments
 
 
+def alias_target(candidates: Sequence[str], ref: Reference) -> str | None:
+    """The alias a candidate list stands for: the first `ISIN:` or `PSEUDO:` candidate whose
+    ISIN is on today's list, else the first `ISIN:` candidate HAT has an instrument for, else
+    the first candidate; None for an empty list (the symbol stays unresolved). A demerger's
+    dummy (`PSEUDO:<dummy ISIN>`) and the company that lists in its place (`ISIN:<its ISIN>`)
+    are one index slot, so every notice of either resolves to one key: the dummy while today's
+    list holds it, the company from the day the list names it, and after it leaves the index
+    (its rows then start at the dummy's inclusion; it has no bar before its listing, so no
+    universe can pick it earlier)."""
+    isin = {c: c.split(":", 1)[1] for c in candidates if c.startswith(("ISIN:", "PSEUDO:"))}
+    for c in candidates:
+        if isin.get(c) in ref.on_list:
+            return c
+    for c in candidates:
+        if c.startswith("ISIN:") and isin[c] in ref.by_isin:
+            return c
+    return candidates[0] if candidates else None
+
+
 @dataclass
 class Reference:
     """The instruments a notice symbol can resolve to, from hat_live and the bar spans."""
@@ -242,9 +270,10 @@ class Reference:
     lineage: list[tuple[str, str, str]]  # linked (old id, new id, effective day)
     spans: dict[str, list[tuple[date, date, str]]]  # symbol -> (first, last, instrument id)
     history: dict[str, list[tuple[date, date | None, str]]]  # instrument id -> symbol spans
-    alias: dict[str, str] = field(default_factory=dict)
+    alias: dict[str, str | list[str]] = field(default_factory=dict)
     listed: dict[str, list[tuple[date, str]]] = field(default_factory=dict)  # symbol -> (day, ISIN)
     first_bar: date | None = None  # HAT's first bar day, from the bar spans alone
+    on_list: frozenset[str] = frozenset()  # the ISINs on today's list
 
     def __post_init__(self) -> None:
         self.by_isin = {v: k for k, v in self.isin.items()}
@@ -270,9 +299,15 @@ class Reference:
         (of the first bar day, for a day before HAT's bars begin);
         failing that, the ISIN the nearest archived list (`listed`) gives the symbol, as its
         instrument or `PSEUDO:<isin>` (a stock that left before HAT's bars begin)."""
-        symbol = self.alias.get(symbol, symbol)
+        target = self.alias.get(symbol, symbol)
+        picked = target if isinstance(target, str) else alias_target(target, self)
+        if picked is None:
+            return None
+        symbol = picked
         if symbol.startswith("ISIN:"):
-            return self.by_isin.get(symbol[5:])
+            isin = symbol[5:]
+            # a member of today's list HAT holds no instrument for yet keys as current_list does
+            return self.by_isin.get(isin) or (f"PSEUDO:{isin}" if isin in self.on_list else None)
         if symbol.startswith("PSEUDO:"):
             return symbol
         ref = day - timedelta(days=1) if side == "out" else day
@@ -346,7 +381,11 @@ def load_reference(work: Path) -> Reference:
         spans[symbol].append((first, last or OPEN_END, iid))
         history[iid].append((first, last, symbol))
     alias_file = work / "symbol_alias.json"
+    listed_now = work / "raw" / LIST_SOURCE
     return Reference(
+        on_list=frozenset(r[ISIN_CODE] for r in read_list(listed_now))
+        if listed_now.exists()
+        else frozenset(),
         isin={r[0]: r[1] for r in raw["instruments"]},
         lineage=[(o, n, e) for o, n, e, status, _ in raw["lineage"] if status == "linked"],
         spans=dict(spans),
@@ -498,6 +537,12 @@ def list_day(path: Path) -> date:
     if not m:
         raise ValueError(f"no date in {path.name}")
     return date(int(m[1]), int(m[2]), int(m[3]))
+
+
+def default_anchors(work: Path) -> list[Path]:
+    """The archived full lists the build is anchored on when none is named: every
+    `ANCHOR_GLOB` under `work`, oldest first."""
+    return sorted(work.glob(ANCHOR_GLOB), key=list_day)
 
 
 def list_members(rows: Iterable[Mapping[str, str]], ref: Reference, day: date) -> dict[str, str]:
@@ -700,19 +745,21 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         sub.add_parser(name)
     b = sub.add_parser("build")
     b.add_argument("--as-of", type=date.fromisoformat, required=True, help="today's list's day")
-    b.add_argument("--start", type=date.fromisoformat, default=date(2016, 1, 1))
+    b.add_argument("--start", type=date.fromisoformat, default=START)
     b.add_argument("--out", type=Path, help="default: <work>/nifty500-membership.csv")
     b.add_argument(
         "--anchor",
         type=Path,
         action="append",
         default=[],
-        help="an archived full list under --work (YYYYMMDD... or YYYY-MM-DD... name), repeatable",
+        help="an archived full list under --work (YYYYMMDD... or YYYY-MM-DD... name), "
+        f"repeatable (default: every {ANCHOR_GLOB} under --work)",
     )
     b.add_argument(
         "--strict-from",
         type=date.fromisoformat,
-        help="refuse any conflict or unresolved symbol from this day on (default: --start)",
+        default=STRICT_FROM,
+        help="refuse any conflict or unresolved symbol from this day on",
     )
     args = p.parse_args(argv)
     if args.work is None:
@@ -734,12 +781,21 @@ def main(argv: Sequence[str] | None = None) -> int:
         case "reference":
             cmd_reference(work)
         case "build":
+            anchors = args.anchor or default_anchors(work)
+            # an anchor after --as-of is never reached by the undo, so it anchors nothing
+            reached = [a for a in anchors if list_day(a) <= args.as_of]
+            if not reached and args.start < date(2016, 1, 1):
+                print(
+                    f"REFUSED: no archived list ({ANCHOR_GLOB}) under {work} for a history "
+                    f"from {args.start}"
+                )
+                return 1
             return cmd_build(
                 work,
                 args.start,
                 args.as_of,
                 args.out or work / "nifty500-membership.csv",
-                args.anchor,
+                anchors,
                 args.strict_from,
             )
     return 0

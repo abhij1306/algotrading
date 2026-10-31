@@ -36,7 +36,7 @@ from .reference import (
     parse_industry_csv,
     parse_price_band_csv,
 )
-from .symbols import SymbolMaster
+from .symbols import SymbolMaster, symbol_master
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +133,11 @@ LISTING_REFRESH = "listing.refresh"
 
 
 def listing_refresh(
-    *, equity_list: TextSource, session_factory: SessionFactory, today: date
+    *,
+    equity_list: TextSource,
+    session_factory: SessionFactory,
+    today: date,
+    master: SymbolMaster = symbol_master,
 ) -> Callable[[], JobResult]:
     """Daily, in the data update: the stocks of the instrument master in line with NSE's equity
     list (`EQUITY_L.csv`) alone, so an ISIN the bars step registered (inactive, no name, face
@@ -142,7 +146,9 @@ def listing_refresh(
     only: every active instrument that is not a stock (`isin.ordinary_equity`: ETFs and other
     funds, rights entitlements) is kept as listed (`still_listed`), never delisted here;
     `reference.weekly` owns the rest. The shrink guard (`reference_listing_shrunk`) refuses a
-    list that lost half the master."""
+    list that lost half the master. The Fyers symbols follow in the same transaction
+    (`broker_symbols.refresh_fyers_symbols`, no download), so a rename or series move taken here
+    never leaves an order routed to the old symbol until the next `reference.weekly`."""
 
     def body() -> JobResult:
         csv_rows = parse_equity_list_csv(_read(equity_list, "reference_csv_unavailable"))
@@ -165,16 +171,20 @@ def listing_refresh(
             report = instruments.upsert_instruments(
                 session, market_id, build.securities, today=today, still_listed=others
             )
+            brokers = broker_symbols.refresh_fyers_symbols(session, master, market_id)
             session.commit()
         logger.info(
-            "listing refresh: %s created, %s updated (%s reactivated, %s renamed), %s delisted",
+            "listing refresh: %s created, %s updated (%s reactivated, %s renamed), %s delisted;"
+            " fyers symbols %s written, %s removed",
             report.created,
             report.updated,
             report.reactivated,
             report.renamed,
             report.delisted,
+            brokers.written,
+            brokers.removed,
         )
-        return JobResult(rows=report.created + report.updated + report.delisted)
+        return JobResult(rows=report.created + report.updated + report.delisted + brokers.written)
 
     return body
 

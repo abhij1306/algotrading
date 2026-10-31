@@ -22,6 +22,8 @@ Commands, in first-deploy order:
     onboard-account --account-ref REF [--broker B]
                                               capability check of the broker account (HAT-BRK-092);
                                               only the active broker's (`HAT_BROKER`, the default)
+    refresh-fyers-symbols                     the fyers broker symbols of the active stocks as
+                                              the weekly refresh writes them (no download)
     refresh-kite-symbols [--dump CSV]         the zerodha broker symbols from NSE's latest
                                               bhavcopy and Kite's instrument dump (downloaded, or
                                               the dump CSV given), as the weekly refresh does
@@ -114,7 +116,7 @@ from sqlalchemy.orm import Session
 
 from .clock import SYSTEM_CLOCK, Clock
 from .daily.books import read_books, report_doc
-from .data.broker_symbols import refresh_kite_symbols
+from .data.broker_symbols import refresh_hat_fyers_symbols, refresh_kite_symbols
 from .data.ca_corrections import apply_list, parse_list
 from .data.calendar import session_calendar
 from .data.corporate_actions import ACTION_TYPES, Correction, correct_action
@@ -172,6 +174,7 @@ class AdminError(HatError):
 # membership, corporate actions): the only ones given its writer (`db_session_scope`).
 DATA_COMMANDS = frozenset(
     {
+        "refresh-fyers-symbols",
         "refresh-kite-symbols",
         "publish-universe",
         "load-index-membership",
@@ -234,6 +237,7 @@ def _parser() -> argparse.ArgumentParser:
     onboard = commands.add_parser("onboard-account")
     onboard.add_argument("--account-ref", required=True)
     onboard.add_argument("--broker")
+    commands.add_parser("refresh-fyers-symbols")
     kite = commands.add_parser("refresh-kite-symbols")
     kite.add_argument("--dump")
     commands.add_parser("seed-strategies")
@@ -504,6 +508,9 @@ def _setup(
         return {"risk_policy_version": row.version, "id": str(row.id)}
     if command == "onboard-account":
         return _onboard(session, args, deps)
+    if command == "refresh-fyers-symbols":
+        report = refresh_hat_fyers_symbols(session, market_id_of(session))
+        return {"written": report.written, "removed": report.removed, "skipped": report.skipped}
     if command == "refresh-kite-symbols":
         return _refresh_kite(session, args, deps, now)
     if command == "seed-strategies":
