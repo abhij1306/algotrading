@@ -48,7 +48,7 @@ import sys
 import time
 import urllib.request
 from collections import defaultdict
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -473,6 +473,9 @@ def cmd_reference(work: Path) -> None:
     print({k: len(v) for k, v in out.items()}, "bar spans from", HAT_DATA_ROOT)
 
 
+ISIN_CODE = "ISIN Code"
+
+
 def read_list(path: Path) -> list[dict[str, str]]:
     """The rows of an NSE constituent list (`Company Name`, `Industry`, `Symbol`, `ISIN Code`);
     the old lists' title lines above the header are skipped."""
@@ -481,7 +484,7 @@ def read_list(path: Path) -> list[dict[str, str]]:
     return [
         {k.strip(): (v or "").strip() for k, v in r.items() if k}
         for r in csv.DictReader(lines[head:])
-        if (r.get("ISIN Code") or "").strip()
+        if (r.get(ISIN_CODE) or "").strip()
     ]
 
 
@@ -499,7 +502,7 @@ def list_members(rows: Iterable[Mapping[str, str]], ref: Reference, day: date) -
     instrument around `day`, else `PSEUDO:<isin>`."""
     out = {}
     for r in rows:
-        isin, symbol = r["ISIN Code"], r["Symbol"]
+        isin, symbol = r[ISIN_CODE], r["Symbol"]
         iid = ref.by_isin.get(isin)
         if iid is None:
             found = ref.resolve(symbol, day, "in")
@@ -512,7 +515,7 @@ def current_list(path: Path, ref: Reference) -> dict[str, str]:
     """Today's members, key -> symbol; an ISIN without an instrument becomes `PSEUDO:<isin>`."""
     out = {}
     for r in read_list(path):
-        isin = r["ISIN Code"]
+        isin = r[ISIN_CODE]
         out[ref.key(ref.by_isin.get(isin) or f"PSEUDO:{isin}")] = r["Symbol"]
     return out
 
@@ -553,6 +556,65 @@ def conflict_rows(
     return sorted(rows, key=lambda r: (r["day"], r["source"], r["side"], r["symbol"]))
 
 
+def notice_changes(
+    events: Iterable[tuple[date, str, Iterable[str], Iterable[str]]],
+    ref: Reference,
+    change: Callable[..., Any],
+) -> tuple[list[Any], list[dict[str, str]]]:
+    """Each notice event as a `change` (index_membership.Change) of instrument keys, and each
+    symbol no instrument resolves."""
+    changes, unresolved = [], []
+    for day, notice, excluded, included in events:
+        sides: dict[str, dict[str, str]] = {"in": {}, "out": {}}
+        for side, symbols in (("in", included), ("out", excluded)):
+            for symbol in symbols:
+                iid = ref.resolve(symbol, day, side)
+                if iid is None:
+                    unresolved.append(
+                        {"day": day.isoformat(), "notice": notice, "side": side, "symbol": symbol}
+                    )
+                else:
+                    sides[side][ref.key(iid)] = symbol
+        for key in sides["in"].keys() & sides["out"].keys():
+            del sides["in"][key], sides["out"][key]
+        changes.append(change(day, sides["in"], sides["out"], notice))
+    return changes, unresolved
+
+
+def membership_rows(
+    members: Iterable[Any], ref: Reference, index: str
+) -> tuple[list[tuple[str, ...]], list[str]]:
+    """The CSV rows of `members` (one per ISIN run), and the members left out for want of an
+    instrument."""
+    rows, pseudo = [], []
+    for m in members:
+        key = str(m.key)
+        if key.startswith("PSEUDO:"):
+            pseudo.append(f"{m.symbol} {m.effective_from}..{m.effective_to or ''}")
+            continue
+        for iid, a, b in split_by_isin(ref, key, m.effective_from, m.effective_to):
+            rows.append(
+                (
+                    index,
+                    ref.isin[iid],
+                    ref.symbol_on(iid, a, m.symbol),
+                    a.isoformat(),
+                    b.isoformat() if b else "",
+                    m.source,
+                )
+            )
+    rows.sort(key=lambda r: (r[3], r[1]))
+    return rows, pseudo
+
+
+def inside(root: Path, path: Path) -> Path:
+    """`path` resolved, refused unless it is under `root`."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(root.resolve()):
+        raise SystemExit(f"{path} is not under {root}")
+    return resolved
+
+
 def cmd_build(
     work: Path,
     start: date,
@@ -571,31 +633,20 @@ def cmd_build(
 
     strict_from = strict_from or start
     ref = load_reference(work)
-    lists = sorted((list_day(p), p.name, read_list(p)) for p in anchor_files)
+    paths = [inside(work, p) for p in anchor_files]
+    lists = sorted((list_day(p), p.name, read_list(p)) for p in paths)
     for day, _, rows in lists:
         for r in rows:
-            ref.listed.setdefault(r["Symbol"], []).append((day, r["ISIN Code"]))
+            ref.listed.setdefault(r["Symbol"], []).append((day, r[ISIN_CODE]))
     # the undo runs back to the oldest list, to check it, and the history is cut at `start`
     cover = min([start, *(day - timedelta(days=1) for day, _, _ in lists)])
     overrides_file = work / "overrides.json"
     overrides = json.loads(overrides_file.read_text()) if overrides_file.exists() else {}
     parsed = json.loads((work / "changes_parsed.json").read_text())
     current = current_list(work / "raw" / LIST_SOURCE, ref)
-    changes, unresolved = [], []
-    for day, notice, excluded, included in notice_events(parsed, overrides, cover, as_of):
-        sides: dict[str, dict[str, str]] = {"in": {}, "out": {}}
-        for side, symbols in (("in", included), ("out", excluded)):
-            for symbol in symbols:
-                iid = ref.resolve(symbol, day, side)
-                if iid is None:
-                    unresolved.append(
-                        {"day": day.isoformat(), "notice": notice, "side": side, "symbol": symbol}
-                    )
-                else:
-                    sides[side][ref.key(iid)] = symbol
-        for key in sides["in"].keys() & sides["out"].keys():
-            del sides["in"][key], sides["out"][key]
-        changes.append(Change(day, sides["in"], sides["out"], notice))
+    changes, unresolved = notice_changes(
+        notice_events(parsed, overrides, cover, as_of), ref, Change
+    )
     anchors = {day: (list_members(rows, ref, day), name) for day, name, rows in lists}
     found: list[tuple[Any, Any]] = []
     members = undo_changes(current, as_of, changes, cover, LIST_SOURCE, found, anchors)
@@ -618,24 +669,7 @@ def cmd_build(
         for c in strict:
             print("  ", *c.values())
         return 1
-    rows, pseudo = [], []
-    for m in clip(members, start, LIST_SOURCE):
-        key = str(m.key)
-        if key.startswith("PSEUDO:"):
-            pseudo.append(f"{m.symbol} {m.effective_from}..{m.effective_to or ''}")
-            continue
-        for iid, a, b in split_by_isin(ref, key, m.effective_from, m.effective_to):
-            rows.append(
-                (
-                    NIFTY_500,
-                    ref.isin[iid],
-                    ref.symbol_on(iid, a, m.symbol),
-                    a.isoformat(),
-                    b.isoformat() if b else "",
-                    m.source,
-                )
-            )
-    rows.sort(key=lambda r: (r[3], r[1]))
+    rows, pseudo = membership_rows(clip(members, start, LIST_SOURCE), ref, NIFTY_500)
     with out.open("w", newline="") as fh:
         w = csv.writer(fh)
         w.writerow(COLUMNS)
@@ -670,7 +704,7 @@ def parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         type=Path,
         action="append",
         default=[],
-        help="an archived full list (YYYYMMDD... or YYYY-MM-DD... file name), repeatable",
+        help="an archived full list under --work (YYYYMMDD... or YYYY-MM-DD... name), repeatable",
     )
     b.add_argument(
         "--strict-from",

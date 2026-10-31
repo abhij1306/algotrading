@@ -111,59 +111,82 @@ def undo_changes(
     way, never loaded silently."""
     if anchors and conflicts is None:
         raise ValueError("anchors need a conflicts list")
-    found = conflicts if conflicts is not None else []
-    members = dict(current)
-    ends: dict[Hashable, tuple[date | None, str]] = dict.fromkeys(members, (None, current_source))
-    out: list[Member] = []
-    pending = sorted((anchors or {}).items(), reverse=True)
-
-    def undo(change: Change) -> None:
-        misfit = (
-            (change.added.keys() & change.removed.keys())
-            | {k for k in change.added if k not in members}
-            | {k for k in change.removed if k in members}
-        )
-        if misfit:
-            if conflicts is None:
-                raise IndexMembershipError("membership_undo_conflict")
-            conflicts.extend((change, k) for k in sorted(misfit, key=str))
-        for key in change.added.keys() - misfit:
-            end, end_source = ends.pop(key)
-            out.append(_member(key, members.pop(key), change.day, end, change.source, end_source))
-        for key in change.removed.keys() - misfit:
-            members[key] = change.removed[key]
-            ends[key] = (change.day, change.source)
-
-    def reset(day: date, listed: Mapping[Hashable, str], source: str) -> None:
-        implied = Change(
-            day,
-            {k: s for k, s in members.items() if k not in listed},
-            {k: s for k, s in listed.items() if k not in members},
-            source,
-        )
-        if implied.added or implied.removed:
-            found.extend((implied, k) for k in sorted([*implied.added, *implied.removed], key=str))
-            undo(implied)
-
+    state = _Undo(current, current_source, conflicts)
+    pending = sorted(
+        ((d, a) for d, a in (anchors or {}).items() if start < d <= as_of), reverse=True
+    )
     for change in sorted(changes, key=lambda c: c.day, reverse=True):
         if not start < change.day <= as_of:
             raise IndexMembershipError("membership_change_outside_cover")
         while pending and pending[0][0] > change.day:
             day, (listed, source) = pending.pop(0)
-            if start < day <= as_of:
-                reset(day, listed, source)
-        undo(change)
+            state.reset(day, listed, source)
+        state.undo(change)
     for day, (listed, source) in pending:
-        if start < day <= as_of:
-            reset(day, listed, source)
-    for key, symbol in members.items():
-        end, end_source = ends[key]
+        state.reset(day, listed, source)
+    out = state.out
+    for key, symbol in state.members.items():
+        end, end_source = state.ends[key]
         out.append(
             _member(key, symbol, start, end, "", end_source)
             if end
             else Member(key, symbol, start, None, current_source)
         )
     return sorted(out, key=lambda m: (m.effective_from, str(m.key)))
+
+
+class _Undo:
+    """The members while `undo_changes` walks back: who is in, when each one's interval ends,
+    and the intervals closed so far."""
+
+    def __init__(
+        self,
+        current: Mapping[Hashable, str],
+        current_source: str,
+        conflicts: list[tuple[Change, Hashable]] | None,
+    ) -> None:
+        self.members = dict(current)
+        self.ends: dict[Hashable, tuple[date | None, str]] = dict.fromkeys(
+            self.members, (None, current_source)
+        )
+        self.out: list[Member] = []
+        self.conflicts = conflicts
+
+    def undo(self, change: Change) -> None:
+        members = self.members
+        misfit = (
+            (change.added.keys() & change.removed.keys())
+            | {k for k in change.added if k not in members}
+            | {k for k in change.removed if k in members}
+        )
+        if misfit:
+            if self.conflicts is None:
+                raise IndexMembershipError("membership_undo_conflict")
+            self.conflicts.extend((change, k) for k in sorted(misfit, key=str))
+        for key in change.added.keys() - misfit:
+            end, end_source = self.ends.pop(key)
+            self.out.append(
+                _member(key, members.pop(key), change.day, end, change.source, end_source)
+            )
+        for key in change.removed.keys() - misfit:
+            members[key] = change.removed[key]
+            self.ends[key] = (change.day, change.source)
+
+    def reset(self, day: date, listed: Mapping[Hashable, str], source: str) -> None:
+        """Make the members `listed`, recording each difference as a conflict of the implied
+        change on `day`."""
+        implied = Change(
+            day,
+            {k: s for k, s in self.members.items() if k not in listed},
+            {k: s for k, s in listed.items() if k not in self.members},
+            source,
+        )
+        if implied.added or implied.removed:
+            if self.conflicts is not None:  # always given with anchors
+                self.conflicts.extend(
+                    (implied, k) for k in sorted([*implied.added, *implied.removed], key=str)
+                )
+            self.undo(implied)
 
 
 def _member(
