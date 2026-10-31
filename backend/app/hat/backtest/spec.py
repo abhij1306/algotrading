@@ -40,6 +40,8 @@ from .fills import (
     FILL_PATH,
     GAP_THROUGH_RULE,
     PENETRATION,
+    STOP_SLIPPAGE,
+    STOP_SLIPPAGE_MEASURED,
     SUSPENSION_BAND_PCT,
     SUSPENSION_SESSIONS,
     TOUCH,
@@ -65,6 +67,7 @@ __all__ = [
     "INITIAL_EQUITY",
     "KNOWN_GAPS",
     "LEVEL_BREAK_ESTIMATED",
+    "NEXT_SESSION_ESTIMATED",
     "LOWER_CIRCUIT_RULE",
     "OVERLAP_FUNDING",
     "OVERLAP_FUNDING_ESTIMATED",
@@ -73,6 +76,7 @@ __all__ = [
     "REGIME_MULT_ONE",
     "REGIME_MULT_POLICY",
     "REGIME_MULT_RULES",
+    "STOP_ORDER_ESTIMATED",
     "RESEARCH_SLEEVE_WEIGHT",
     "TOUCH_GAP",
     "VOLUME_PACE_ESTIMATED",
@@ -129,8 +133,15 @@ KNOWN_GAPS = (
 LEVEL_BREAK_ESTIMATED = "trigger_is_level_break_only"
 # an enabled `volume_pace` judged on the full day's volume against vs_avg50 x the mean of the 50
 # sessions through the previous one: a look-ahead, as the day's volume is unknown at the trigger
-# (the daily estimate always; a 5-minute session too under `volume_pace: full_day`)
+# (a 5-minute session under `volume_pace: full_day`; the daily estimate refuses the rule,
+# `volume_pace_no_intraday`, and the run audit fails the look-ahead)
 VOLUME_PACE_ESTIMATED = "volume_pace_on_full_day_volume"
+# a stop order (`entry_timing: stop_order`) on a session without 5-minute bars, filled at its
+# trigger plus the calibrated stop slippage (`fills.stop_order_fill`, `STOP_SLIPPAGE`)
+STOP_ORDER_ESTIMATED = "stop_order_fill_estimated"
+# a next-session entry (`entry_timing: next_session`) without 5-minute bars, at the open moved
+# to 09:20 (`fill_0920.estimated_0920`), its stop seeing the whole day's low after the fill
+NEXT_SESSION_ESTIMATED = "next_session_fills_0920_estimate"
 ENTRY_DAY_LOW_ESTIMATED = "entry_day_low_estimated"  # the pre-break low is the adr20 estimate
 # a daily-estimate gap over the level fills at the open moved to 09:20 (`fill_0920`): live's
 # first trade comes after the trigger window opens
@@ -148,6 +159,8 @@ ANALYST_BEAT_NOT_EVALUATED = "analyst_beat_not_evaluated"
 ESTIMATE_GAPS = (
     LEVEL_BREAK_ESTIMATED,
     VOLUME_PACE_ESTIMATED,
+    STOP_ORDER_ESTIMATED,
+    NEXT_SESSION_ESTIMATED,
     ENTRY_DAY_LOW_ESTIMATED,
     GAP_OVER_ESTIMATED,
     EP_TRIGGER_ESTIMATED,
@@ -228,6 +241,9 @@ ROTATION_GAPS = ("rotation_fills_0920_estimated_without_5m", "rotation_sized_on_
 # measured on the data, by a run that estimates a price at 09:20 with it: a rotation's fills, or
 # a daily-estimate entry that gapped over its level (`GAP_OVER_ESTIMATED`).
 PROVISIONAL_0920 = "fill_0920_estimate_provisional"
+# Reported while the stop slippage (`fills.STOP_SLIPPAGE`) is not refitted on the 5-minute years,
+# by a run that estimated a stop order's fill with it (`STOP_ORDER_ESTIMATED`).
+PROVISIONAL_STOP_SLIPPAGE = "stop_slippage_provisional"
 OVERLAY_GAPS = (
     "tax_rules_current_for_all_years",
     "tax_paid_at_fy_end",
@@ -535,7 +551,8 @@ class RunSpec:
         """The conventions block recorded in the run's metrics, which `config_digest` hashes;
         the co-sleeves and the overlay only when the run has them, and the 09:20 estimate
         (`fill_0920.OPEN_TO_0920`, its values and whether they are measured) always: a change
-        of it moves every rotation fill and gap-over entry."""
+        of it moves every rotation fill and gap-over entry; and the stop slippage
+        (`fills.STOP_SLIPPAGE`) a daily-estimate stop order fills with, when it has one."""
         out = self.conventions.record(
             self.fills, (self.start, self.end), sleeve_weight(self), self.regime_table
         )
@@ -549,6 +566,14 @@ class RunSpec:
             "sell": str(OPEN_TO_0920.sell),
             "measured": OPEN_TO_0920_MEASURED,
         }
+        # the premium a daily-estimate stop order fills at over its trigger (E1), in the runs
+        # that have one, so no other run's digest moves
+        configs = (self.config, *(c.config for c in self.co_sleeves))
+        if any(p.on_ticks and not p.next_session for c in configs for p in c.playbooks):
+            out["stop_slippage"] = {
+                "fraction": str(STOP_SLIPPAGE),
+                "measured": STOP_SLIPPAGE_MEASURED,
+            }
         return out
 
 
@@ -590,7 +615,8 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
     """The run's known gaps (HAT-BT-070): `KNOWN_GAPS`, the `ESTIMATE_GAPS` it `estimated` (all
     of them when not known yet: a run that did not finish may have any), the touch fill
     under `touch`, an overlap run's (`OVERLAP_GAPS`, `OVERLAP_FUNDING_ESTIMATED`) and
-    `PROVISIONAL_0920` while its 09:20 estimate is unmeasured."""
+    `PROVISIONAL_0920` while its 09:20 estimate is unmeasured, and `PROVISIONAL_STOP_SLIPPAGE`
+    while the stop slippage it estimated a stop order with is."""
     found = set(ESTIMATE_GAPS if estimated is None else estimated)
     return [
         # a portfolio run's account caps bind across its sleeves, as live
@@ -609,6 +635,11 @@ def known_gaps(spec: RunSpec, estimated: Iterable[str] | None = None) -> list[st
         *(code for code in ESTIMATE_GAPS if code in found),
         *([TOUCH_GAP] if spec.conventions.entry_fill_rule == TOUCH else []),
         *([PROVISIONAL_0920] if provisional_0920(spec, found) else []),
+        *(
+            [PROVISIONAL_STOP_SLIPPAGE]
+            if not STOP_SLIPPAGE_MEASURED and STOP_ORDER_ESTIMATED in found
+            else []
+        ),
     ]
 
 
@@ -617,7 +648,7 @@ def provisional_0920(spec: RunSpec, found: Collection[str]) -> bool:
     a rotation run, or one whose estimates include a gap-over entry."""
     if OPEN_TO_0920_MEASURED:
         return False
-    return _rotates(spec) or GAP_OVER_ESTIMATED in found
+    return _rotates(spec) or bool({GAP_OVER_ESTIMATED, NEXT_SESSION_ESTIMATED} & set(found))
 
 
 def _rotates(spec: RunSpec) -> bool:

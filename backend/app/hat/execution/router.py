@@ -109,6 +109,7 @@ __all__ = [
     "ALERT_ORDER_UNCONFIRMED",
     "MAX_ENTRY_REJECTIONS",
     "PRICE_AT_OR_BELOW_STOP",
+    "PRICE_PAST_LIMIT",
     "ExecutionRouter",
     "PlacementCheck",
     "placement_refusal",
@@ -127,6 +128,9 @@ ALERT_ORDER_UNCONFIRMED = "order.unconfirmed"
 SESSION_NOT_LIVE = "broker_session_not_live"  # HAT-OPS-023
 SIGNAL_EXPIRED = "signal_expired"  # a Triggered entry of an earlier session (HAT-OPS-003)
 PRICE_AT_OR_BELOW_STOP = "price_at_or_below_stop"  # the live price is through the entry's stop
+# a stop order's live price is above its LIMIT (`trigger.stop_limit`): a fill would cost more
+# than the band its size allows for
+PRICE_PAST_LIMIT = "price_past_limit"
 _OPEN_STATUSES = ("pending", "unconfirmed", "placed", "partially_filled", "filled")
 _ROUTABLE = (lifecycle.TRIGGERED, lifecycle.AWAITING_APPROVAL)
 
@@ -178,6 +182,21 @@ def placement_refusal(
     ):
         return BREAK_FAILED
     return None
+
+
+def past_limit(ltp: Decimal | None, limit: Decimal | None) -> bool:
+    """Whether a stop order's live price is above its LIMIT (False for any other entry, or
+    without a price, which `placement_refusal` refuses on its own)."""
+    return ltp is not None and limit is not None and ltp > limit
+
+
+def _limit_refusal(session: Session, signal: HatSignal | None, check: PlacementCheck) -> str | None:
+    """`PRICE_PAST_LIMIT` when the signal is a stop order (its `signal.triggered` holds a
+    `limit_price`) whose live price is above that LIMIT: placed after its trigger (a Take, a
+    retry), it would fill above the band its size allows for, or rest unfilled."""
+    if signal is None or not past_limit(check.ltp, snapshot.stop_limit_of(session, signal)):
+        return None
+    return PRICE_PAST_LIMIT
 
 
 def _taken(session: Session, signal_id: uuid.UUID) -> bool:
@@ -339,7 +358,9 @@ class ExecutionRouter:
             locked_upper_circuit=locked_upper_circuit,
             now=now,
             chat_id=chat_id,
-            refusal=placement_refusal(check, now, signal),
+            refusal=(
+                placement_refusal(check, now, signal) or _limit_refusal(session, signal, check)
+            ),
         )
         if decision.place:
             self._place_committed(session, signal_id, now, check)
@@ -508,6 +529,7 @@ class ExecutionRouter:
     ) -> str | None:
         return (
             placement_refusal(check, now, signal)
+            or _limit_refusal(session, signal, check)
             or _kill_refusal(session, signal.bot_id)
             or _mode_refusal(session, signal, now, check.calendar)
             or _gtt_refusal(session, account_id, self._broker)
@@ -576,7 +598,8 @@ class ExecutionRouter:
     def _entry_request(
         self, session: Session, signal: HatSignal, account_id: uuid.UUID
     ) -> OrderRequest:
-        price = snapshot.entry_price_of(session, signal)
+        # a stop order's LIMIT is a band over its trigger (a buy stop-limit that has triggered)
+        price = snapshot.limit_price_of(session, signal)
         return OrderRequest(
             bot_id=signal.bot_id,
             signal_id=signal.id,

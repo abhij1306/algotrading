@@ -226,6 +226,8 @@ class Intraday:
             for key in _signal_keys(session, day):
                 monitor.mark_fired(key)
             planned = _planned_symbols(session, day)
+            # a next-session entry's row is the previous session's: watched as today's rows are
+            planned |= {c.instrument_id: c.symbol for c in candidates if c.playbook.next_session}
             inputs = load_inputs(session, day)
             inputs = replace(inputs, watchlist=inputs.watchlist | frozenset(planned.values()))
             self._prices.track_session(session, _day_instruments(session, day) | set(planned))

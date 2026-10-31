@@ -159,18 +159,56 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   held rule. Without it a held name was republished on its stale pivot (refused as
   `add_to_loser`) and re-entered on it after the exit. No parameter.
 - **Entry timing and volume (owner 2026-10-25).** A level trigger enters on the intraday break
-  (`entry_timing: intraday_break`, live's 5-minute trigger) or, as a backtest variant, at the daily
+  (`entry_timing: intraday_break`, live's 5-minute trigger), on a stop order or the next session
+  ("Setup entry orders") or, as a backtest variant, at the daily
   close above the level (`daily_close`), filled at the official close as the close-phase exits are.
   A breakout volume test (`volume_vs_avg`) exists only at the close, where the day's volume is
   known; an intraday break refuses it rather than read the full day's volume. Live does not trade
   `daily_close` (the trigger fails closed): a known gap that names the playbook and blocks its
   promotion (`GAP_PLAYBOOKS`).
-- **`volume_pace` in the backtest (owner 2026-10-27, S1 book decision 7).** A 5-minute session
-  replays live's pace. The daily estimate judges an enabled `volume_pace` on the full day's volume
-  >= `vs_avg50` x the 50-session mean through the previous session (skips `volume_pace_low`,
-  `volume_pace_missing`); `--volume-pace full_day` applies that rule to the 5-minute sessions
-  too. Both read volume live does not know at the trigger: the known gap
-  `volume_pace_on_full_day_volume` names the playbook and blocks its promotion.
+- **`volume_pace` in the backtest (owner 2026-10-27, S1 book decision 7; changed 2026-10-31).**
+  A 5-minute session replays live's pace. A session without 5-minute bars refuses an enabled
+  `volume_pace` (skip `volume_pace_no_intraday`, which ends the setup's window): judging it on
+  the full day's volume, as it did until 2026-10-31, was a look-ahead worth +0.2 to +0.4R per
+  trade in 2016-2021, and a breakout on high volume judged honestly did worse, not better.
+  `--volume-pace full_day` still applies the full-day rule to the 5-minute sessions, as a
+  comparison: the known gap `volume_pace_on_full_day_volume` names the playbook, and the run
+  audit fails (`lookahead_full_day_volume`).
+- **Setup entry orders (owner 2026-10-31).** The backtest and live trade one order per entry
+  timing, chosen on the level trigger (`entry_timing`; the default `intraday_break` is unchanged):
+  - **`stop_order` (E1)**, for the setups (VCP, cheat, cup, primary base, power play): a buy
+    stop-limit resting 09:20 to 15:05, triggered by the first trade above the level (level + one
+    tick). `max_chase` judges the triggering trade's price, live and in the backtest. Live fires
+    it on the tick feed (`TriggerMonitor.on_tick`; a late print inside a bar already final fires
+    nothing), so the signal, `evaluate_signal` and the caps run at the trigger as for every
+    entry. The position is sized at that trade's price, so the order's LIMIT is at most 0.5% over
+    it (`trigger.ENTRY_BAND_PCT`, `stop_limit`; also within the max chase and the upper band) and
+    a placement or a Take whose live price is above that LIMIT is refused (`price_past_limit`).
+    A fill thus risks at most 0.5% of the price more per share than sized (with a 4% stop, 1.125x
+    the trade's risk budget) and needs at most 0.5% more cash; re-sizing at placement was not
+    chosen, as it would move the quantity away from the decision the risk check made. The stop is HAT's, not a resting broker order. A broker SL
+    order would block cash for every watchlist row at once, take its risk decision before the
+    trigger, and be refused by the exchange whenever the price is already above its trigger at
+    09:20. On 5-minute bars the backtest buys at the 09:15 close when it is above the level (the
+    price at 09:20), else at the trigger or the open of a later bar above it. Without them a
+    session opening above the level buys at the open moved to 09:20, and one breaking it
+    intraday at the trigger plus the stop slippage (`fills.STOP_SLIPPAGE`, 0.12%). That
+    premium is the mean fill over the trigger on 2021-10-26..2021-12-31: it includes the breaks
+    between 09:15 and 09:20, which buy at the 09:20 price (23% of breaks, on average 0.53% over
+    the trigger). It is provisional (`stop_slippage_provisional`) until refitted on the
+    5-minute years.
+  - **`next_session` (E2)**: decided on a session's close above the level, bought on the next
+    session at its first trade from 09:20 (the previous session's watchlist row; `max_chase` on
+    that price). It replaces `daily_close` for any rule that needs the close; the backtest buys
+    at the 09:15 close, else the open moved to 09:20, with the whole day's low after the fill.
+  - Neither takes `volume_pace` (`tick_entry_no_volume_pace`): live counts a bar's volume up to
+    the trade, the 5-minute replay cannot tell how much of a bar came before it. A failed break
+    (`break_failed`: an unfilled entry cancelled, a placement or Take refused) counts only a bar
+    that started after the trigger, so a trade-fired entry at 09:20 is never refused for the
+    09:15 bar's close.
+  - An open above the level is a gap over, whatever the fill: the backtest's low-of-day stop
+    skips it without 5-minute bars (`gap_over_no_intraday`) and any other stop sees the day's
+    whole low after the fill.
 - **RS slot order (owner 2026-10-27, S1 book).** `slot_order: rs` gives a capped day's surplus
   triggers the open slots by the signal night's `rs_weighted`, highest first. A promotion run may
   use it as well as `time`: no invariant ties evidence to the trigger-time order, and it is the
@@ -757,7 +795,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 Regime v2 (HMM/GMM), fundamentals beyond quarterly revenue, profit and EPS, screener universes, US markets, a Kotak
 adapter, Kite market data, multi-user; PDF summaries on cards and a chat
 MCP server (advisory only); a CLI to re-run one job for a past trade date; a weekly timeframe;
-live trading of `entry_timing: daily_close`. Results data: ingest NSE's Annual and Others results
+live trading of `entry_timing: daily_close`. Setup entry orders: the strategy versions that move
+the setup playbooks to `stop_order` (the seeds keep `intraday_break`), the refit of
+`STOP_SLIPPAGE` on the 5-minute years, and a shadow-day replay of live's stop-order fills against
+the 5-minute bars. Results data: ingest NSE's Annual and Others results
 listings (a few year-end quarters are filed only there, excepted in D5 meanwhile); one row per
 NSE sha in `results_events` (filings stored under an older ISIN of the same company before the
 chain rule); no secondary rows after a company's last traded day. ETF data verification: D2 and

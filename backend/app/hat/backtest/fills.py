@@ -38,6 +38,8 @@ __all__ = [
     "FILL_PATH",
     "GAP_THROUGH_RULE",
     "PENETRATION",
+    "STOP_SLIPPAGE",
+    "STOP_SLIPPAGE_MEASURED",
     "SUSPENSION_BAND_PCT",
     "SUSPENSION_SESSIONS",
     "TOUCH",
@@ -57,6 +59,14 @@ ENTRY_FILL_RULES = (PENETRATION, TOUCH)
 AMBIGUOUS_OPTIMISTIC = "optimistic"  # the default: a raised stop holds unless the close is below
 AMBIGUOUS_PESSIMISTIC = "pessimistic"  # a raised stop the day's low reached fills at its price
 AMBIGUOUS_RULES = (AMBIGUOUS_OPTIMISTIC, AMBIGUOUS_PESSIMISTIC)
+# The mean fill of a resting buy stop over its trigger on a session that did not open above the
+# level, as a fraction of it: +0.12 pp on the 1,142 breaks of a 20-day high in the 5-minute bars
+# of 2021-10-26..2021-12-31 (a break between 09:15 and 09:20 buys at the 09:20 price, +0.53 pp
+# on average, 23% of the breaks). Fitted on 46 sessions only: provisional until refitted on the
+# 5-minute years (`STOP_SLIPPAGE_MEASURED`; until then runs that use it report
+# `stop_slippage_provisional`). `fillrules.stop_order_fill` applies it.
+STOP_SLIPPAGE = Decimal("0.0012")
+STOP_SLIPPAGE_MEASURED = False
 SUSPENSION_SESSIONS = 5  # bar-less sessions a position is carried at its last close
 SUSPENSION_BAND_PCT = Decimal(5)  # the markdown per further bar-less session
 _HUNDRED = Decimal(100)

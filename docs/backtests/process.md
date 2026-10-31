@@ -207,7 +207,7 @@ whose audit warns or fails):
 | `concentration` | top-5 share disagrees | top 5 trades > 50% of net P&L; CAGR not positive without them |
 | `equity_jumps` | a > 5% session move with no position held (one opened and closed that session counts) | a move beyond 20% of the value held |
 | `ledger` | the ledger reconciliation failed (`result-standard.md`, Accuracy checks), or `equity.csv` does not add up: equity != cash + position value, the last equity is not `final_equity`, or something is held after the period end | |
-| `lookahead` | | `lookahead_hindsight`: a decision made on a read past the as-of clock, with the counts by reason (`result-standard.md`, As of) |
+| `lookahead` | `lookahead_full_day_volume`: a volume rule judged on the full day's volume (`volume_pace: full_day`) | `lookahead_hindsight`: a decision made on a read past the as-of clock, with the counts by reason (`result-standard.md`, As of) |
 | `refusals` | `refusals.csv` counts differ from `run.json` | |
 | `trials` | no `dsr_n_trials` | no DSR |
 | `data` | no data audit | the data audit warned (naming its checks and the owner's explanation, if any) |
@@ -311,7 +311,7 @@ line flag sets the same for one run or every variant.
 | Playbooks kept (the others off) | `playbooks: [episodic_pivot]` | `--playbooks episodic_pivot` |
 | Setup criteria and params, mode, weight, on/off, add | `set: ['playbooks[default].setup.criteria[vcp].params.contractions=[3,6]']`, `...criteria[vcp].enabled=false`, `...setup.threshold=0.7` | `--set` |
 | Universe filters | `set: ['universe[min_turnover].params.inr_cr=20']` | `--set` |
-| Trigger and entry timing, breakout volume | `set: ['playbooks[default].trigger[price_breaks_level].params.entry_timing=daily_close']`, `...params.volume_vs_avg=1.5` | `--set` |
+| Trigger and entry timing (`intraday_break`, `stop_order`, `next_session`, `daily_close`; decisions.md "Setup entry orders"), breakout volume (`daily_close` only) | `set: ['playbooks[default].trigger[price_breaks_level].params.entry_timing=stop_order']`, `...params.volume_vs_avg=1.5` | `--set` |
 | Entry filters | `set: ['playbooks[default].entry_filters[max_chase].params.pct=2']`, `...[adtr_filter].params.max_multiple=1` (a very wide chase, e.g. 100, is off) | `--set` |
 | Initial stop and its cap | `set: ['playbooks[default].stop={"rule": "atr_multiple", "days": 14, "multiple": 2, "max_pct": 8}']`, `...stop.max_pct=10` | `--set` |
 | Exits (partial, breakeven, step trail, SMA/EMA close, swing low, ATR trail, time stop, early failure, max hold) | `set: ['exits[step_trail].step_r=1.5', 'exits[time_stop].enabled=false', 'exits[+]={"rule": "early_failure", "days": 5}']` | `--set` |
@@ -337,7 +337,7 @@ line flag sets the same for one run or every variant.
 | Entry fill rule, ambiguous days, suspension markdown | `entry_fill: touch`, `ambiguous: pessimistic`, `suspension_sessions: 3` | `--entry-fill`, `--ambiguous`, `--suspension-sessions` |
 | Start capital | `start_capital: 2500000` | `--start-capital` |
 | Entries on the daily estimate only (a comparison, never evidence) | `entry_bars: daily` | `--entry-bars` |
-| `volume_pace` on the full day's volume on 5-minute sessions too (the daily estimate always uses it; a look-ahead, known gap `volume_pace_on_full_day_volume`) | `volume_pace: full_day` | `--volume-pace` |
+| `volume_pace` on the full day's volume on 5-minute sessions (the daily estimate refuses the rule; a look-ahead, known gap `volume_pace_on_full_day_volume`, and the run audit fails) | `volume_pace: full_day` | `--volume-pace` |
 | A rotation that funds the setup sleeves beside it (rotation weight kept, setup weights summing to at most 1 on top; `result-standard.md` v1.6) | the portfolio file's `conventions: {overlap: true}` only | none |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
 | Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook) | `--universe`, `--from`, `--to` |
