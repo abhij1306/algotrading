@@ -27,7 +27,8 @@ from app.hat.data.fundamentals.research import (
     screener_shares,
     worst,
 )
-from app.hat.data.results.fetch import history_documents, mark_failed
+from app.hat.data.results.answers import check_cache, failed, kind_of
+from app.hat.data.results.fetch import history_documents
 from app.hat.data.results.nse import (
     FAILED,
     LISTING_ANNUAL,
@@ -35,7 +36,6 @@ from app.hat.data.results.nse import (
     Client,
     Filing,
     NseUnavailableError,
-    failed,
     parse_announcements,
 )
 from app.hat.data.results.raw import RawCache
@@ -245,12 +245,25 @@ def test_outage_page_is_never_cached_and_stops_the_run(tmp_path: Path) -> None:
     assert cache.entry(ARCHIVE) is not None
 
 
-def test_mark_failed_requeues_cached_outage_pages(tmp_path: Path) -> None:
+def test_check_cache_marks_what_is_not_the_document(tmp_path: Path) -> None:
     cache = RawCache(tmp_path)
+    page = "https://www.screener.in/company/X/"
     cache.put(ARCHIVE, 200, OUTAGE)
     cache.put(ARCHIVE + "?ok", 200, b"<td class='tablehead'>Q</td>")
-    assert mark_failed(cache) == {"nsearchives.nseindia.com": 1}
+    cache.put(ARCHIVE + "?gone", 404, b"not found")
+    cache.put(page, 200, b"<html>Just a moment</html>")
+    got = check_cache(cache)
+    assert got == {
+        "html": {"not_document": 1, "good": 1, "http_404": 1},
+        "secondary_page": {"not_document": 1},
+    }
     entry = cache.entry(ARCHIVE)
     assert entry is not None
     assert entry.status == 0
-    assert mark_failed(RawCache(tmp_path)) == {}
+    assert check_cache(RawCache(tmp_path))["html"]["failed_before"] == 1
+    assert (
+        kind_of("https://www.nseindia.com/api/corporate-announcements?x=1")
+        == "api:corporate-announcements"
+    )
+    assert failed("https://www.nseindia.com/api/corporate-announcements?x=1", 200, b"<html>")
+    assert failed("https://nsearchives.nseindia.com/corporate/A.pdf", 200, b"<html>")

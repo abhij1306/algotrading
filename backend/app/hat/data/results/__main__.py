@@ -4,7 +4,7 @@
     python -m app.hat.data.results fetch-secondary [--symbols A,B]
     python -m app.hat.data.results parse [--from ...] [--to ...] [--symbols A,B]
     python -m app.hat.data.results derive
-    python -m app.hat.data.results mark-failed
+    python -m app.hat.data.results check-cache [--dry-run]
 
 `fetch` downloads NSE's listings, announcements and XBRL documents into
 `$HAT_DATA_ROOT/raw/nse-results/` at about one request a second (`fetch.py`); `fetch-secondary`
@@ -16,8 +16,9 @@ stopped and rerun. `--offline` makes `fetch` read the cache only. `--interval S`
 between requests (default 1 s, `HISTORY_INTERVAL` with `--history`). `--shard K/N` splits the
 members between N runs, each paced on its own; run one at a time when NSE is slow. A run that
 meets NSE's maintenance page `OUTAGE_LIMIT` times in a row stops (exit 2): rerun it later.
-`mark-failed` marks the cached answers that are not what was asked for (`nse.failed`), so the
-next `fetch` asks again.
+`check-cache` checks every raw results cache (`raw/*/manifest.jsonl`): it counts each URL's latest
+answer per kind and class and marks the 200 answers that are not what their URL promises
+(`answers.py`), so readers skip them and the next fetch asks again (`--dry-run` only counts).
 
 `fetch --history` is the fundamentals backfill (`fetch.py`, docs/fundamentals.md): period ends
 from `HISTORY_FROM` (unless `--from`), the NIFTY 500 members of any day from `HISTORY_SINCE`
@@ -59,13 +60,14 @@ REPORT_DIR = Path("results")  # under the data root: the parse step's filing log
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(prog="python -m app.hat.data.results", description=__doc__)
-    p.add_argument("step", choices=["fetch", "fetch-secondary", "parse", "derive", "mark-failed"])
+    p.add_argument("step", choices=["fetch", "fetch-secondary", "parse", "derive", "check-cache"])
     p.add_argument("--from", dest="start", type=date.fromisoformat, default=None)
     p.add_argument("--to", dest="end", type=date.fromisoformat, default=None)
     p.add_argument("--symbols", default="", help="comma-separated symbols (default: all)")
     p.add_argument("--offline", action="store_true", help="fetch: read the cache only")
     p.add_argument("--no-announcements", action="store_true", help="fetch: skip the days")
     p.add_argument("--shard", default="", help="K/N: every Nth member from the Kth (0-based)")
+    p.add_argument("--dry-run", action="store_true", help="check-cache: count, mark nothing")
     p.add_argument("--interval", type=float, default=None, help="fetch: seconds per request")
     p.add_argument("--history", action="store_true", help="fetch(-secondary): the backfill")
     p.add_argument("--universe", choices=UNIVERSES, default=UNIVERSE_NIFTY500)
@@ -84,10 +86,12 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
     from .raw import RawCache
 
-    if args.step == "mark-failed":
-        from .fetch import mark_failed
+    if args.step == "check-cache":
+        from .answers import check_cache
 
-        _out(mark_failed(RawCache(settings.data_root / NSE_RAW)))
+        for manifest in sorted((settings.data_root / "raw").glob("*/manifest.jsonl")):
+            counts = check_cache(RawCache(manifest.parent), mark=not args.dry_run)
+            _out({manifest.parent.name: counts})
         return
 
     today = trade_date_of(utc_now())
@@ -96,10 +100,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     start = args.start or (HISTORY_FROM if history else FIRST_PERIOD_END)
     root = settings.data_root
     since = HISTORY_SINCE if history else UNIVERSE_SINCE
+    from .nse import NseUnavailableError
+
     covered = shard(_covered(settings, today, args.symbols, args.universe, since), args.shard)
     if args.step == "fetch":
         from .fetch import fetch_nse
-        from .nse import DEFAULT_INTERVAL_SECONDS, Client, NseUnavailableError
+        from .nse import DEFAULT_INTERVAL_SECONDS, Client
 
         interval = args.interval or (HISTORY_INTERVAL if history else DEFAULT_INTERVAL_SECONDS)
         client = Client(RawCache(root / NSE_RAW), offline=args.offline, interval=interval)
@@ -122,7 +128,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         from .secondary import fetch_secondary
 
         nse = RawCache(root / NSE_RAW)
-        _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered, args.basis, nse))
+        try:
+            _out(fetch_secondary(RawCache(root / SECONDARY_RAW), covered, args.basis, nse))
+        except NseUnavailableError as exc:  # the shared client's outage stop
+            logging.getLogger(__name__).error("stopped: source unavailable (%s); rerun later", exc)
+            raise SystemExit(2) from exc
     else:
         from .ingest import parse
 
