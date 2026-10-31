@@ -10,6 +10,8 @@ from decimal import Decimal
 
 import pytest
 
+from app.hat import events
+from app.hat.engine import rotation_live
 from app.hat.engine.rotation import (
     TRIM,
     UNKNOWN_INDUSTRY,
@@ -217,3 +219,10 @@ def test_unknown_industry_is_left_out_at_its_default_and_needs_a_cap() -> None:
     with pytest.raises(ConfigError) as refused:
         parse_config({**raw, "rotation": {**raw["rotation"], "unknown_industry": "bucket"}})
     assert refused.value.codes == {"unknown_industry_without_cap"}
+
+
+def test_every_event_the_rotation_records_is_registered() -> None:
+    # `events.record` refuses an unregistered type, which would abort the nightly scan
+    names = {v for k, v in vars(rotation_live).items() if k.startswith("EVENT_")}
+    assert names >= {"rotation.planned", "rotation.rebalanced", "rotation.scale_down"}
+    assert names <= events.EVENT_TYPES

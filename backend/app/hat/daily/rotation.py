@@ -31,6 +31,7 @@ from sqlalchemy.orm import Session
 from ..clock import Clock
 from ..configs.records import Bot
 from ..configs.unit import configs_of
+from ..engine.botlock import lock_bot
 from ..engine.rotation_live import (
     Planned,
     Rebalanced,
@@ -138,6 +139,9 @@ class Rotations:
     def _one(self, bot_id: uuid.UUID, day: date) -> int:
         now = utc_now(self._clock)
         with self._session_factory() as session:
+            # the bot's lock before the ran-today check: a second worker waits here and then
+            # sees the first one's `rotation.rebalanced`, so a trim never compounds
+            lock_bot(session, bot_id)
             bot = configs_of(session).get(Bot, bot_id)
             if bot is None or rebalanced_on(session, bot_id, day):
                 return 0

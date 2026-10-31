@@ -115,6 +115,7 @@ EVENT_SCALE_DOWN = "rotation.scale_down"  # a mid-period trim planned for the ne
 ROTATION_CONFIDENCE = "rotation_unscored"
 NO_PRICE = "no_price"
 NO_EQUITY = "no_equity"
+ALREADY_RAN = "already_ran"  # the trade date's job already ran: a second worker trims nothing
 VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
@@ -637,8 +638,12 @@ def scale_down(
     trade date (`rotation.scale_down_trims`), the backtest's `RotationBook.scale_down`; a
     holding whose sale is `waiting` is left to it. Until `wait_until` a holding with no tick or
     a stale one raises `RotationUnpricedError` before anything is written; after it, and for a
-    name outside the day's band, the trim is not made and not carried over."""
+    name outside the day's band, the trim is not made and not carried over. Idempotent: under
+    the bot's lock, a trade date whose job already ran (`rebalanced_on`) trims nothing again."""
     lock_bot(session, bot_id)
+    if rebalanced_on(session, bot_id, trim.trade_date):
+        done.skipped = ALREADY_RAN
+        return
     bot = configs_of(session).get(Bot, bot_id)
     config = None if bot is None else rotation_config(session, bot)
     if bot is None or config is None or config.rotation is None:
