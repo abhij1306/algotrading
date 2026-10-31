@@ -90,7 +90,8 @@ class ScanInputs:
     `as_of` (None where it has none; `regime_gate.breadth_above`). `held` are the instruments
     the bot has an open position in (any state) and `used_pivots` the (instrument, pivot date) of
     every setup a position of the bot was opened on (`setup_taken`). `benchmark` holds the NIFTY
-    500's `(date, close)` up to `as_of` and `memo` a run's cache across its nights
+    500's `(date, close)` up to `as_of`, `benchmark_tri` its total-return index's (a rotation's
+    `inverse_beta` reads it live) and `memo` a run's cache across its nights
     (`EvalContext`). `windows` are the bot's setup windows (`SetupWindow`) whose pivot is in the
     bars, `triggered` the (playbook, instrument, pivot date) of every windowed setup a row of
     which triggered (entered, skipped or declined), and `sessions_ahead` the trading sessions
@@ -107,6 +108,7 @@ class ScanInputs:
     held: Collection[str] = frozenset()
     used_pivots: Collection[tuple[str, date]] = frozenset()
     benchmark: Sequence[tuple[date, float]] = ()
+    benchmark_tri: Sequence[tuple[date, float]] = ()
     memo: MutableMapping[Any, Any] | None = None
     windows: Sequence[SetupWindow] = ()
     triggered: Collection[tuple[str, str, date]] = frozenset()

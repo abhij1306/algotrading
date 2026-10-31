@@ -171,14 +171,16 @@ from decimal import Decimal
 from fractions import Fraction
 from typing import Any
 
+import numpy as np
 import polars as pl
 from sqlalchemy import select
 
 from ..configs.records import Bot
 from ..configs.unit import configs_of
-from ..costs import BacktestFills, CostModel
+from ..costs import BacktestFills, CostModel, impact_bps
 from ..data.bars import Bar as DataBar
 from ..data.identity import series_as_of
+from ..data.index_history import NIFTY_500_TRI
 from ..data.preopen import meets_gap
 from ..engine import (
     entries,
@@ -229,6 +231,7 @@ from .data import (
 from .fillrules import (
     SKIP_PACE_LOW,
     SKIP_PACE_MISSING,
+    band_limits,
     breakout_volume_ok,
     close_lower_locked,
     first_trigger,
@@ -305,6 +308,7 @@ from .spec import (
     ENTRY_DAY_LOW_ESTIMATED,
     EP_TRIGGER_ESTIMATED,
     GAP_OVER_ESTIMATED,
+    IMPACT_DAYS,
     LEVEL_BREAK_ESTIMATED,
     OVERLAP_FUNDING_ESTIMATED,
     REGIME_MULT_ONE,
@@ -657,18 +661,39 @@ class _Run:
         # each rotation strategy's book (`rotation`), by leg: it trades outside the ledger
         # the account's (day, instrument) sales so far: one DP charge per scrip per sell day
         self.dp_sold: set[tuple[date, str]] = set()
+        # keyed (leg, tranche): a rotation with `tranches` runs one book per tranche
         self.books = {
-            n: RotationBook(
+            (n, k): RotationBook(
                 leg.config,
                 versions[n],
                 spec.policy.version_id,
                 spec.fills,
                 leg.prefix,
                 self.dp_sold,
+                tranche=k,
+                impact=None if spec.conventions.impact_bps is None else self._impact_bps,
             )
             for n, leg in enumerate(self.legs)
             if leg.config.rotation is not None
+            for k in range(
+                1 if leg.config.rotation.tranches is None else leg.config.rotation.tranches.count
+            )
         }
+        # each session's distance from its cadence's last rebalance close (`tranches`)
+        self.since_close = {
+            leg.config.rotation.rebalance: rotation.sessions_since_close(
+                self.days, leg.config.rotation.rebalance
+            )
+            for leg in self.legs
+            if leg.config.rotation is not None and leg.config.rotation.tranches is not None
+        }
+        # the NIFTY 500 TRI by session index (`inverse_beta`), NaN without a close
+        tri = dict(data.index_closes.get(NIFTY_500_TRI, ()))
+        self.tri = np.array([float(tri[d]) if d in tri else np.nan for d in self.days])
+        # the names' median traded values through the last night read (`impact_bps`)
+        self._median_values: dict[date, dict[str, float]] = {}
+        # the orders `refuse_near_limit` refused, as (side, name, day)
+        self.near_limit: set[tuple[str, str, date]] = set()
         self.tr_closes = TrCloses(data.bars, self.days) if self.books else None
         # an overlap run's rotation book, which funds the setup entries, and per setup position
         # it funded the share of its entry cost the sales covered; its funding sales by what
@@ -975,7 +1000,7 @@ class _Run:
 
     def _rotate(self, day: date, prev: date | None) -> None:
         """Each rotation book's open (`_rotate_book`), in leg order."""
-        for n, book in self.books.items():
+        for (n, _), book in self.books.items():
             self._rotate_book(self.legs[n], book, day, prev)
 
     def _rotate_book(self, leg: _Leg, book: RotationBook, day: date, prev: date | None) -> None:
@@ -996,19 +1021,22 @@ class _Run:
         pending = [n for n, h in book.holdings.items() if h.exit is not None]
         if pending:
             self._prefetch_first(pending, day)
-        book.sell_pending(day, lambda i: self._quote(i, day, "sell"), self._symbol(day))
         rules = leg.config.rotation
+        limit = rules is not None and rules.refuse_near_limit
+        book.sell_pending(
+            day, lambda i: self._quote(i, day, "sell", near_limit=limit), self._symbol(day)
+        )
         if prev is None or rules is None:
             self._count_fills(book, day)
             return
-        if not rotation.is_rebalance(prev, day, rules.rebalance):
+        if not self._rebalances(rules, book, prev, day):
             if rules.scale_down is not None and not book.scaled and self._scale_down(rules, prev):
                 self._prefetch_first(list(book.holdings), day)
                 book.scale_down(
                     day,
                     prev,
                     rotation.capital_share(rules, True),
-                    lambda i: self._quote(i, day, "sell"),
+                    lambda i: self._quote(i, day, "sell", near_limit=limit),
                     self._symbol(day),
                 )
             self._count_fills(book, day)
@@ -1037,8 +1065,8 @@ class _Run:
                 if (bar := self.view.bar(name, day)) is not None
                 and (price := self._sizing_price(name, day, bar)) is not None
             },
-            sell=lambda i: self._quote(i, day, "sell"),
-            buy=lambda i: self._quote(i, day, "buy"),
+            sell=lambda i: self._quote(i, day, "sell", near_limit=limit),
+            buy=lambda i: self._quote(i, day, "buy", near_limit=limit),
             cash=cash,
             symbol=self._symbol(day),
             entry=lambda i, qty, price, _rank, score: self._rotation_signal(
@@ -1051,10 +1079,61 @@ class _Run:
         if book is self.funder:  # less what its sales still fund (`overlap_capital`)
             capital = overlap_capital(allocation.final_weight, equity, self._funded_open(day))
         share = rotation.capital_share(rules, fires)  # the scale-down's fraction when it fires
-        book.rebalance(day, plan, capital * share, market)
+        if rules.tranches is not None:  # each tranche's book its share of the sleeve
+            share /= rules.tranches.count
+        weights = None
+        if rules.inverse_beta is not None:
+            weights = rotation.target_weights(
+                plan.target, self._betas(plan.target, prev, rules), rules.top_n
+            )
+        book.rebalance(day, plan, capital * share, market, weights)
         self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
+
+    def _rebalances(self, rules: Rotation, book: RotationBook, prev: date, day: date) -> bool:
+        """Whether `book` rebalances on `prev`'s close for `day`: its period's rebalance close
+        (`rotation.is_rebalance`), or with `tranches` its tranche's close of the period
+        (`rotation.tranche_due`)."""
+        if rules.tranches is None:
+            return rotation.is_rebalance(prev, day, rules.rebalance)
+        since = self.since_close[rules.rebalance][self.index[prev]]
+        return rotation.tranche_due(since, rules.tranches) == book.tranche
+
+    def _betas(self, names: Sequence[str], prev: date, rules: Rotation) -> dict[str, Decimal]:
+        """Each of `names`' beta to the NIFTY 500 TRI on the closes through `prev`
+        (`rotation.betas`, `inverse_beta`), to 4 places."""
+        rule = rules.inverse_beta
+        if rule is None or self.tr_closes is None or not names:  # pragma: no cover - callers
+            return {}
+        end = self.index[prev]
+        rows = rule.sessions + 1
+        closes = self.tr_closes.window(names, end, rows)
+        first = end - rows + 1
+        bench = np.full(rows, np.nan)
+        lo = max(first, 0)
+        bench[lo - first :] = self.tri[lo : end + 1]
+        return rotation.betas_by_name(names, rotation.betas(closes, bench, rule))
+
+    def _impact_bps(self, instrument_id: str, qty: int, price: Decimal, day: date) -> Decimal:
+        """The size-aware impact of a rotation order on `day` (`costs.impact_bps` under the
+        run's `impact_bps`): its value over the name's median traded value of the
+        `IMPACT_DAYS` sessions through the close before `day`, known at 09:20."""
+        coef = self.spec.conventions.impact_bps
+        n = self.index[day]
+        if coef is None or n == 0:
+            return _ZERO
+        prev = self.days[n - 1]
+        if prev not in self._median_values:
+            self._median_values = {prev: self._medians(prev, IMPACT_DAYS)}
+        median = self._median_values[prev].get(instrument_id)
+        return impact_bps(coef, price * qty, exact(median, floats=True))
+
+    def _medians(self, prev: date, days: int) -> dict[str, float]:
+        """Every instrument's median traded value of its last `days` bars through `prev`
+        (`rotation.median_traded_values`, the bars the scan reads)."""
+        self.view.as_of(prev)
+        return rotation.median_traded_values(self.view.window(prev), prev, days)
 
     def _scale_down(self, rules: Rotation, prev: date) -> bool:
         """Whether the rotation's scale-down fires on `prev`'s close: its checks on the run's
@@ -1082,6 +1161,15 @@ class _Run:
             memo=leg.scan_memo,
         )
         passers = universe_passers(leg.config, inputs)
+        hold_only: frozenset[str] = frozenset()
+        if rules.liquidity is not None:  # the relative floor's tiers among the day's members
+            values = rotation.median_traded_values(inputs.bars, prev, rules.liquidity.days)
+            members = set(inputs.members)
+            entry, hold = rotation.liquidity_tiers(
+                {n: v for n, v in values.items() if n in members}, rules.liquidity
+            )
+            passers = [p for p in passers if p in hold]
+            hold_only = frozenset(passers) - entry
         self._prefetch_first([*passers, *book.holdings], day)  # their prices at 09:20
         self.view.as_of(prev)  # the total-return closes through `prev`, known at its close
         closes = self.tr_closes.window(passers, self.index[prev], rotation.window_rows(rules))
@@ -1093,11 +1181,16 @@ class _Run:
             closes,
             pending=self.view.pending_on(prev),
             gate_on=gate_on,
-            can_buy=lambda i: self._quote(i, day, "buy")[0] is not None,
+            can_buy=lambda i: self._quote(
+                i, day, "buy", near_limit=rules.refuse_near_limit
+            )[0] is not None,
             industry=lambda i: industry_on(self.data, i, day),
-        )
+            hold_only=hold_only,
+        )  # fmt: skip
 
-    def _quote(self, instrument_id: str, day: date, side: str) -> Quote:
+    def _quote(
+        self, instrument_id: str, day: date, side: str, *, near_limit: bool = False
+    ) -> Quote:
         """The price a rotation order in `instrument_id` fills at on `day` at 09:20
         (`fill_0920.fill_0920`: the 09:15 bar's close where its five-minute session may be read,
         `_first_bar`, else the open moved by the median to 09:20), else None and why not: no
@@ -1105,8 +1198,10 @@ class _Run:
         the whole day), a buy at the upper band (`upper_circuit`: the 09:15 bar's close at its
         high and the band, else the open at the day's high; an unknown circuit state too, live
         fails closed), a buy on the name's demerger exit session or factor-pending day
-        (`demerger_pending`, `factor_pending`). What the price was read from is kept for the
-        run's counts (`_fill_sources`)."""
+        (`demerger_pending`, `factor_pending`), and with `near_limit` (`refuse_near_limit`) an
+        order at or within one tick of the band the session reached (`near_upper_limit`,
+        `near_lower_limit`; `fillrules.band_limits`), counted once per (side, name, day). What
+        the price was read from is kept for the run's counts (`_fill_sources`)."""
         bar = self.view.bar(instrument_id, day)
         if bar is None:
             return None, "no_bar"
@@ -1118,6 +1213,8 @@ class _Run:
         if side == "sell":
             if self._lower_locked_0920(instrument_id, day, bar, first):
                 return None, "lower_circuit"
+            if near_limit and self._near_limit(instrument_id, day, bar, "sell", price):
+                return None, rotation.NEAR_LOWER_LIMIT
             return price, None
         if (instrument_id, day) in self.data.demerger_exits:
             return None, SKIP_DEMERGER_PENDING
@@ -1130,7 +1227,23 @@ class _Run:
         )
         if locked is not False:
             return None, "upper_circuit"
+        if near_limit and self._near_limit(instrument_id, day, bar, "buy", price):
+            return None, rotation.NEAR_UPPER_LIMIT
         return price, None
+
+    def _near_limit(
+        self, instrument_id: str, day: date, bar: Bar, side: str, price: Decimal
+    ) -> bool:
+        """Whether a rotation order at `price` is at or within one tick of the band `day`
+        reached (`rotation.near_limit` on `fillrules.band_limits`); counted when it is."""
+        tick = self.view.tick(instrument_id, day)
+        lower, upper = band_limits(
+            bar.high, bar.low, self.view.prev_close(instrument_id, day), tick
+        )
+        if not rotation.near_limit(side, price, lower, upper, tick):
+            return False
+        self.near_limit.add((side, instrument_id, day))
+        return True
 
     def _sizing_price(self, instrument_id: str, day: date, bar: Bar) -> Decimal:
         """The price a rebalance sizes `instrument_id` on: its buy-side price at 09:20."""
@@ -1175,6 +1288,29 @@ class _Run:
             found = fill_0920.price_0920(day, sessions.get(name, ()))
             self._firsts[name] = None if found is None else found[1]
 
+    def _rotation_metrics(self, metrics: Mapping[str, Any]) -> dict[str, Any]:
+        """The run's rotation counts, as `run.json` `metrics.rotation` holds them: its fills by
+        what their 09:20 price was read from, an overlap run's funding sales by theirs, the
+        orders `refuse_near_limit` refused (by side, once per name and day) and, under the
+        `impact_bps` convention, the impact its fills paid."""
+        out: dict[str, Any] = {
+            "fills_0920": metrics["rotation_fills_0920"],
+            "fills_estimated": metrics["rotation_fills_estimated"],
+            "near_limit_refused": {
+                side: sum(1 for s, _, _ in self.near_limit if s == side) for side in ("buy", "sell")
+            },
+        }
+        if "rotation_funding_fills" in metrics:
+            out["funding_fills"] = dict(metrics["rotation_funding_fills"])
+        if self.spec.conventions.impact_bps is not None:
+            books = list(self.books.values())
+            out["impact"] = {
+                "fills": sum(b.impact_fills for b in books),
+                "cost": str(sum((b.impact_cost for b in books), _ZERO).quantize(Decimal("0.01"))),
+                "max_bps": str(max(b.impact_max_bps for b in books).quantize(Decimal("0.01"))),
+            }
+        return out
+
     def _count_fills(self, book: RotationBook, day: date) -> None:
         """Count the book's fills of `day`'s 09:20 by what their price was read from."""
         for fill in book.fills_on(day):
@@ -1199,14 +1335,14 @@ class _Run:
         open_count, open_risk = self._book()
         return SignalRow(
             trade_date=day,
-            playbook=self.books[self.legs.index(leg)].playbook,
+            playbook=self.books[(self.legs.index(leg), 0)].playbook,
             instrument_id=instrument_id,
             state=lifecycle.OPEN,
             reason=None,
             trigger_price=price,
             stop_price=_ZERO,
             qty=qty,
-            strategy_version_id=self.books[self.legs.index(leg)].version,
+            strategy_version_id=self.books[(self.legs.index(leg), 0)].version,
             risk_policy_version_id=self.spec.policy.version_id,
             entry_price=price,
             scan_date=prev,
@@ -1249,7 +1385,8 @@ class _Run:
         closed locked at the lower band (`funding_sale`), else the 09:20 price (stale
         after 09:20, `OVERLAP_FUNDING_ESTIMATED`). What the price was read from is kept for
         `funding_fills`."""
-        price, blocked = self._quote(instrument_id, day, "sell")
+        limit = self.funder is not None and self.funder.rules.refuse_near_limit
+        price, blocked = self._quote(instrument_id, day, "sell", near_limit=limit)
         if price is None:
             return None, blocked
         key = (instrument_id, day)
@@ -2690,6 +2827,8 @@ class _Run:
                 k: self.funding_fills.get(k, 0)
                 for k in (_FUNDING_BAR, _FUNDING_CLOSE, _FUNDING_AT_0920, _FUNDING_0920)
             }
+        if self.books:
+            metrics["rotation"] = self._rotation_metrics(metrics)
         overlay: dict[str, Any] = {}
         if self.overlay is not None and self.spec.overlay is not None:
             overlay = {

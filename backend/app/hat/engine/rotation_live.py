@@ -31,6 +31,16 @@ first.
   lineage as the backtest's does), and the night records a deeper `depth` for the open's
   subscriptions (`rotation.selection_depth`), so the names the cap skips to are priced too.
 
+The other optional rules: with `liquidity` the night ranks only the passers in the floor's hold
+tier and records those below its entry tier (`hold_only`), which the open never buys; with
+`inverse_beta` the night records each name's beta within the selection's depth (`betas`,
+`rotation.betas` on the NIFTY 500 TRI, `ScanInputs.benchmark_tri`) and the open sizes each
+target on its weight (`rotation.target_weights`); with `refuse_near_limit` the open passes over
+a buy at or within one tick of the day's upper band and holds a sale (or skips a trim) at or
+within one tick of its lower one (`rotation.near_limit` on the stored band, `limits`).
+`tranches` are backtest only: a night under them records nothing and logs
+`TRANCHES_NOT_LIVE`, so such a version never trades live.
+
 Its prices are the live last trade at 09:20 or after, the definition the backtest and the
 replay share (`engine/fill_0920.py`: the last trade before 09:20, the 09:15 bar's close).
 
@@ -74,7 +84,7 @@ from .regime_gate import regime_allows_longs
 from .scan import ScanInputs, universe_passers
 from .shadow import sell_position
 from .snapshot import industry_lookup
-from .strategy.config import Rotation, StrategyConfig, parse_config
+from .strategy.config import InverseBeta, Rotation, StrategyConfig, parse_config
 from .watchlist import bot_universe_members
 
 __all__ = [
@@ -82,6 +92,8 @@ __all__ = [
     "EVENT_REBALANCED",
     "EVENT_SCALE_DOWN",
     "FILLS",
+    "TRANCHES_NOT_LIVE",
+    "Limits",
     "Planned",
     "Lot",
     "Rebalanced",
@@ -92,6 +104,8 @@ __all__ = [
     "planned",
     "planned_instruments",
     "pending_sales",
+    "near_limit_price",
+    "night_betas",
     "night_ranking",
     "priced_targets",
     "rebalance",
@@ -118,6 +132,9 @@ NO_EQUITY = "no_equity"
 ALREADY_RAN = "already_ran"  # the trade date's job already ran: a second worker trims nothing
 VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
+TRANCHES_NOT_LIVE = "rotation_tranches_not_live"  # a staggered rebalance is backtest only
+# a name's (lower band price, upper band price, tick) on the trade date, each None when unknown
+Limits = Callable[[str], tuple[Decimal | None, Decimal | None, Decimal | None]]
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
 # affordable shares the buys are scaled with.
 FILLS = BacktestFills(load_cost_schedule(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS)
@@ -194,6 +211,9 @@ def plan_night(
         return False
     rules: Rotation = config.rotation
     night = inputs.as_of
+    if rules.tranches is not None:  # backtest only: never traded live
+        logger.warning("rotation bot %s: %s", bot_id, TRANCHES_NOT_LIVE)
+        return False
     if not rotation.is_rebalance(night, trade_date, rules.rebalance):
         return _plan_scale_down(session, bot, rules, inputs, trade_date, now)
     if _planned_event(session, bot_id, trade_date) is not None:
@@ -201,7 +221,12 @@ def plan_night(
     night_rank = night_ranking(session, bot, config, inputs, trade_date)
     if night_rank is None:
         return False
-    passers, ranks, gate_on = night_rank
+    passers, ranks, gate_on, hold_only = night_rank
+    depth = rotation.selection_depth(
+        [name for name, _ in ranks],
+        rules,
+        None if rules.max_per_industry is None else industry_lookup(session, trade_date),
+    )
     payload: dict[str, Any] = {
         "trade_date": trade_date.isoformat(),
         "night": night.isoformat(),
@@ -209,13 +234,16 @@ def plan_night(
         "strategy_version_id": str(bot.live_version_id),
         "passers": len(passers),
         # how deep the open's selection may reach: its subscriptions (`planned_instruments`)
-        "depth": rotation.selection_depth(
-            [name for name, _ in ranks],
-            rules,
-            None if rules.max_per_industry is None else industry_lookup(session, trade_date),
-        ),
+        "depth": depth,
         "ranking": [[name, str(_score(value))] for name, value in ranks],
     }
+    if rules.liquidity is not None:  # ranked, kept, never bought
+        payload["hold_only"] = sorted(hold_only)
+    if rules.inverse_beta is not None:  # the names the open's selection may reach
+        names = [name for name, _ in ranks[:depth]]
+        payload["betas"] = {
+            name: str(beta) for name, beta in night_betas(inputs, names, rules.inverse_beta).items()
+        }
     if rules.scale_down is not None:
         payload["scale_down"] = rotation.scale_down_fires(
             rules.scale_down, inputs.regime_closes, inputs.breadth
@@ -304,22 +332,50 @@ def _last_period(
 
 def night_ranking(
     session: Session, bot: Bot, config: StrategyConfig, inputs: ScanInputs, trade_date: date
-) -> tuple[list[str], tuple[tuple[str, float], ...], bool] | None:
-    """(the passers, their ranking, the regime gate) of a rotation `config` on the close of
-    `inputs.as_of` for the rebalance at `trade_date`: the members of `trade_date` (as the
-    backtest's rotation reads them) passing the universe stage that night, scored on their
-    total-return closes (`inputs.bars`). None without a universe or a member."""
+) -> tuple[list[str], tuple[tuple[str, float], ...], bool, frozenset[str]] | None:
+    """(the passers, their ranking, the regime gate, the passers never bought) of a rotation
+    `config` on the close of `inputs.as_of` for the rebalance at `trade_date`: the members of
+    `trade_date` (as the backtest's rotation reads them) passing the universe stage that night,
+    with `liquidity` those in its hold tier (the ones below its entry tier never bought),
+    scored on their total-return closes (`inputs.bars`). None without a universe or a
+    member."""
     rules = config.rotation
     if rules is None:
         return None
     members = bot_universe_members(session, bot, trade_date)
     if not members:
         return None
-    passers = universe_passers(config, replace(inputs, members={str(m) for m in members}))
+    named = {str(m) for m in members}
+    passers = universe_passers(config, replace(inputs, members=named))
+    hold_only: frozenset[str] = frozenset()
+    if rules.liquidity is not None:
+        values = rotation.median_traded_values(inputs.bars, inputs.as_of, rules.liquidity.days)
+        entry, hold = rotation.liquidity_tiers(
+            {n: v for n, v in values.items() if n in named}, rules.liquidity
+        )
+        passers = [p for p in passers if p in hold]
+        hold_only = frozenset(passers) - entry
     closes = closes_window(inputs.bars, passers, inputs.as_of, rotation.window_rows(rules))
     ranks = rotation.ranking(passers, closes, rules)
     gate_on = regime_allows_longs(config.regime, inputs.regime_closes, inputs.breadth)
-    return passers, ranks, gate_on
+    return passers, ranks, gate_on, hold_only
+
+
+def night_betas(inputs: ScanInputs, names: Sequence[str], rule: InverseBeta) -> dict[str, Decimal]:
+    """Each of `names`' beta to the NIFTY 500 TRI (`inputs.benchmark_tri`) over the
+    `rule.sessions` + 1 sessions of `inputs.bars` through the night (`rotation.betas`), to 4
+    places, as the backtest computes it on its sessions."""
+    rows = rule.sessions + 1
+    closes = closes_window(inputs.bars, names, inputs.as_of, rows)
+    upto = inputs.bars.filter(pl.col("date") <= inputs.as_of)
+    sessions = sorted(set(upto["date"].to_list()))[-rows:] if upto.height else []
+    tri = dict(inputs.benchmark_tri)
+    bench = np.full(rows, np.nan)
+    first = rows - len(sessions)
+    for n, day in enumerate(sessions):
+        if day in tri:
+            bench[first + n] = tri[day]
+    return rotation.betas_by_name(names, rotation.betas(closes, bench, rule))
 
 
 def _score(value: float) -> Decimal:
@@ -336,6 +392,8 @@ class Planned:
     ranking: tuple[tuple[str, Decimal], ...]
     strategy_version_id: str | None = None
     scaled: bool = False  # the scale-down fired on the night: the open sizes on its fraction
+    hold_only: frozenset[str] = frozenset()  # `liquidity`: ranked below the entry tier
+    betas: Mapping[str, Decimal] | None = None  # `inverse_beta`: the night's betas
 
 
 def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | None:
@@ -351,6 +409,10 @@ def planned(session: Session, bot_id: uuid.UUID, trade_date: date) -> Planned | 
         ranking=tuple((str(name), Decimal(score)) for name, score in payload["ranking"]),
         strategy_version_id=payload.get("strategy_version_id"),
         scaled=bool(payload.get("scale_down", False)),
+        hold_only=frozenset(str(n) for n in payload.get("hold_only", ())),
+        betas=None
+        if "betas" not in payload
+        else {str(n): require_exact(b, "beta", positive=True) for n, b in payload["betas"].items()},
     )
 
 
@@ -543,11 +605,13 @@ def rebalance(
     context: Callable[[], SignalContext],
     now: datetime,
     wait_until: datetime,
+    limits: Limits | None = None,
 ) -> Rebalanced:
     """Trade the rebalance `night` decided at the open of its trade date (module docstring),
     on paper. `price` is an instrument's (text id) usable live price, or None and the refusal's
     code (`data.live`); `context` the bot's entry context read now (the sleeve's equity at cost
-    and its free cash among it), read again after the sales.
+    and its free cash among it), read again after the sales; `limits` a name's band and tick,
+    which the rules' `refuse_near_limit` reads (`near_limit_price`).
 
     The capital is the book's equity on the live prices (`rotation.book_equity`, the backtest's
     basis: cash plus the holdings marked). Until `wait_until` a name the selection reaches with
@@ -569,6 +633,8 @@ def rebalance(
         done.skipped = VERSION_CHANGED
         return done
     rules = config.rotation
+    if not rules.refuse_near_limit:
+        limits = None
     lots = _lots(session, bot_id)
     held = {name: sum(lot.qty for lot in parts) for name, parts in lots.items()}
     ranking = tuple((name, float(score)) for name, score in night.ranking)
@@ -577,8 +643,9 @@ def rebalance(
         held,
         rules,
         gate_on=night.gate_on,
-        price=price,
+        price=near_limit_price(price, limits, "buy"),
         industry=industry_lookup(session, night.trade_date),
+        hold_only=night.hold_only,
     )
     first = context()
     missing = ["feed", *unpriced] if first.feed_stale is True else list(unpriced)
@@ -587,15 +654,22 @@ def rebalance(
     done.unpriced = missing  # passed over: the backtest's name with no bar
     done.target = target
     chosen = rotation.Plan(night.night, ranking, target, filtered=filtered)
-    prices = {n: p for n in {*target, *held} if (p := quote(n)) is not None}
+    # a holding is priced as it sells (a buy's band check is the selection's and the buys')
+    prices = {
+        n: p for n in {*target, *held} if (p := price(n)[0] if n in held else quote(n)) is not None
+    }
     at_cost = first.equity
     if at_cost is None or at_cost <= 0:
         done.skipped = NO_EQUITY  # no allocation for the night: nothing trades
         return done
     marked = {name: [(lot.qty, lot.entry) for lot in parts] for name, parts in lots.items()}
+    weights = None
+    if rules.inverse_beta is not None:
+        weights = rotation.target_weights(target, night.betas or {}, rules.top_n)
     _, orders = rebalance_orders(
-        chosen, marked, prices, at_cost, rules, share=rotation.capital_share(rules, night.scaled)
-    )
+        chosen, marked, prices, at_cost, rules, share=rotation.capital_share(rules, night.scaled),
+        weights=weights,
+    )  # fmt: skip
     buys: list[rotation.Order] = []
     for order in orders:
         name = order.instrument_id
@@ -608,8 +682,11 @@ def rebalance(
             if order.action == rotation.SELL
             else rotation.TRIMMED
         )
-        if found is None:
-            done.row(name, order.action, NO_PRICE, 0, None)
+        blocked = NO_PRICE if found is None else None
+        if found is not None and limits is not None:  # `refuse_near_limit`: the band read now
+            blocked = near_limit_price(price, limits, "sell")(name)[1]
+        if blocked is not None:
+            done.row(name, order.action, blocked, 0, None)
             if order.action == rotation.SELL:  # a trim is not carried over: the next plan's
                 done.waiting[name] = reason
             continue
@@ -619,8 +696,36 @@ def rebalance(
     for name in target:
         if name in held and name not in traded:
             done.row(name, "hold", None, 0, prices.get(name))
+    buy_price = near_limit_price(price, limits, "buy")
+    for order in list(buys):  # a top-up at the band is refused as a new name is passed over
+        if limits is not None and (why := buy_price(order.instrument_id)[1]) == NEAR_UPPER:
+            done.row(order.instrument_id, order.action, why, 0, prices.get(order.instrument_id))
+            done.refused[order.instrument_id] = why
+            buys.remove(order)
     _buy_all(session, bot_id, night.trade_date, buys, prices, context(), now, done)
     return done
+
+
+NEAR_UPPER, NEAR_LOWER = rotation.NEAR_UPPER_LIMIT, rotation.NEAR_LOWER_LIMIT
+
+
+def near_limit_price(price: Price, limits: Limits | None, side: str) -> Price:
+    """`price` for an order on `side`, refusing a usable price at or within one tick of the
+    name's band (`rotation.near_limit` on `limits`: a buy `near_upper_limit`, a sale
+    `near_lower_limit`); `price` itself without `limits` (`refuse_near_limit` off)."""
+    if limits is None:
+        return price
+
+    def checked(name: str) -> tuple[Decimal | None, str | None]:
+        found, why = price(name)
+        if found is None:
+            return found, why
+        lower, upper, tick = limits(name)
+        if rotation.near_limit(side, found, lower, upper, tick):
+            return None, NEAR_UPPER if side == "buy" else NEAR_LOWER
+        return found, why
+
+    return checked
 
 
 def scale_down(
@@ -685,12 +790,14 @@ def priced_targets(
     gate_on: bool,
     price: Price,
     industry: Callable[[str], str] | None = None,
+    hold_only: frozenset[str] = frozenset(),
 ) -> tuple[tuple[str, ...], bool, Callable[[str], Decimal | None], list[str]]:
     """(the target list, whether the market filter emptied it, the price of a name, the names
     the selection reached that have no tick yet or a stale one): `rotation.targets` with a
     name buyable when its live price is usable, each price read once. A name outside the day's
     band is passed over; one in `unpriced` was too, and the caller must not trade on the list.
-    `industry` is a name's industry on the trade date (the rules' industry cap reads it)."""
+    `industry` is a name's industry on the trade date (the rules' industry cap reads it);
+    `hold_only` the night's names below the liquidity floor's entry tier (never bought)."""
     quotes: dict[str, tuple[Decimal | None, str | None]] = {}
     unpriced: list[str] = []
 
@@ -706,8 +813,9 @@ def priced_targets(
         return found is not None
 
     target, filtered = rotation.targets(
-        ranking, held, rules, gate_on=gate_on, can_buy=can_buy, industry=industry
-    )
+        ranking, held, rules, gate_on=gate_on, can_buy=can_buy, industry=industry,
+        hold_only=hold_only,
+    )  # fmt: skip
     return target, filtered, quote, unpriced
 
 
@@ -719,15 +827,16 @@ def rebalance_orders(
     rules: Rotation,
     *,
     share: Decimal = Decimal(1),
+    weights: Mapping[str, Decimal] | None = None,
 ) -> tuple[Decimal, list[rotation.Order]]:
     """(the capital, the orders) of a live rebalance: `share` (the scale-down's,
     `rotation.capital_share`) of the book's equity on `prices` (`rotation.book_equity` of
     `at_cost`, the equity with the holdings at cost, and the holdings' `lots` of (shares, entry
-    price)), and the order diff to `chosen`'s target on it. The shadow-day replay sizes live's
-    side with it."""
+    price)), and the order diff to `chosen`'s target on it (with `weights`, `inverse_beta`'s).
+    The shadow-day replay sizes live's side with it."""
     held = {name: sum(qty for qty, _ in parts) for name, parts in lots.items()}
     equity = rotation.book_equity(at_cost, lots, prices) * share
-    return equity, rotation.orders(chosen, held, prices, equity, rules)
+    return equity, rotation.orders(chosen, held, prices, equity, rules, weights)
 
 
 def _buy_all(

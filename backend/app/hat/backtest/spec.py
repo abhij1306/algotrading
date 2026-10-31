@@ -25,7 +25,7 @@ from typing import Any
 
 from app.paths import BARS5M_GAPS
 
-from ..costs import BacktestFills
+from ..costs import MAX_IMPACT_BPS, BacktestFills
 from ..data.bars5m_gaps import gap_spans, read_gaps, spans_digest
 from ..engine.fill_0920 import OPEN_TO_0920, OPEN_TO_0920_MEASURED
 from ..engine.portfolio import regime as regime_v1
@@ -248,6 +248,14 @@ OVERLAP_FUNDING = "rotation_sells_weakest_rank_first"
 OVERLAP_ROTATION_CAPITAL = "weight_x_equity_less_open_funded_at_mark"
 OVERLAP_GAPS = ("overlap_funding_not_live",)
 OVERLAP_FUNDING_ESTIMATED = "overlap_funding_priced_at_0920"
+# A run's size-aware impact on its rotation orders (`RunConventions.impact_bps`, the coefficient
+# c): each 09:20 order of a rotation moves against the trade by c x sqrt(order value / the name's
+# median traded value of the 20 sessions through the decision close) bps besides the slippage,
+# at most `costs.MAX_IMPACT_BPS` (`costs.impact_bps`). Off unless set; recorded as
+# `impact` only then, so other runs keep their digests.
+IMPACT_RULE = "coef_bps_x_sqrt_value_over_median_traded_value_20"
+IMPACT_DAYS = 20
+MAX_IMPACT_COEF_BPS = Decimal(1000)
 # Reported, besides `KNOWN_GAPS`, by a run under the `touch` entry rule (PR 62).
 TOUCH_GAP = "entry_fills_on_touch"  # a high at the level fills; live needs a trade above it
 # A stop on a session pinned at its lower band waits for the next open with a bar not pinned.
@@ -276,12 +284,13 @@ class RunConventions:
     rule (HAT-BT-020), the slot order (HAT-BT-026, PR 63), the ambiguous-day rule (HAT-BT-021)
     and the bar-less sessions before the suspension markdown (PR 64), the sleeve weight (None:
     the policy's base weight), the regime rule the entries are sized under (HAT-BT-014, PR 68),
-    the start capital, the config and policy overrides (`overrides`) and the overlap of a
-    rotation with setup sleeves (`overlap`, `OVERLAP_FUNDING`). Refused at construction
-    (`BacktestError`): an unknown entry fill rule, slot order, ambiguous-day rule or regime rule,
-    a bar-less session count that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, a
-    sleeve weight that is not a Decimal in (0, 1], and a start capital that is not a positive
-    Decimal."""
+    the start capital, the config and policy overrides (`overrides`), the overlap of a
+    rotation with setup sleeves (`overlap`, `OVERLAP_FUNDING`) and the rotation's size-aware
+    impact (`impact_bps`, `IMPACT_RULE`). Refused at construction (`BacktestError`): an unknown
+    entry fill rule, slot order, ambiguous-day rule or regime rule, a bar-less session count
+    that is not a whole number in 0..`MAX_SUSPENSION_SESSIONS`, a sleeve weight that is not a
+    Decimal in (0, 1], a start capital that is not a positive Decimal and an impact coefficient
+    that is not a Decimal in (0, `MAX_IMPACT_COEF_BPS`]."""
 
     entry_fill_rule: str = PENETRATION  # `touch` is the variant
     slot_order: str = SLOT_ORDER_TIME  # `score` and `random:K` are variants
@@ -293,6 +302,7 @@ class RunConventions:
     entry_bars: str = ENTRY_BARS_5M  # `daily` decides every entry on the daily estimate
     volume_pace: str = VOLUME_PACE_LIVE  # `full_day` reads the day's volume on 5-minute days too
     overlap: bool = False  # a rotation funds the setup sleeves beside it (`OVERLAP_FUNDING`)
+    impact_bps: Decimal | None = None  # the rotation's size-aware impact (`IMPACT_RULE`)
     # the run's config and policy overrides (`overrides`), already applied to its spec
     overrides: Overrides = field(default_factory=Overrides, hash=False)
 
@@ -328,6 +338,11 @@ class RunConventions:
             raise BacktestError("backtest_bad_volume_pace")
         if not isinstance(self.overlap, bool):
             raise BacktestError("backtest_bad_overlap")
+        impact = self.impact_bps
+        if impact is not None and not (
+            isinstance(impact, Decimal) and impact.is_finite() and 0 < impact <= MAX_IMPACT_COEF_BPS
+        ):
+            raise BacktestError("backtest_bad_impact")
 
     def check_promotion(self, slippage_bps: Decimal) -> None:
         """Refuse these conventions for a run flagged for promotion: perfect fills (a slippage
@@ -415,6 +430,17 @@ class RunConventions:
                 if self.overlap
                 else {}
             ),
+            **(
+                {}
+                if self.impact_bps is None
+                else {
+                    "impact": {
+                        "rule": IMPACT_RULE,
+                        "coef_bps": format(self.impact_bps.normalize(), "f"),
+                        "max_bps": str(MAX_IMPACT_BPS),
+                    }
+                }
+            ),
         }
 
 
@@ -483,6 +509,9 @@ class RunSpec:
             rotations.count(True) != 1 or not self.co_sleeves or self.overlay is not None
         ):
             raise BacktestError("backtest_bad_overlap")
+        configs = (self.config, *(s.config for s in self.co_sleeves))
+        if overlap and any(c.rotation is not None and c.rotation.tranches for c in configs):
+            raise BacktestError("backtest_overlap_tranches")  # one book funds the setups
         if self.co_sleeves:
             if self.for_promotion:  # evidence is of one sleeve
                 raise BacktestError("backtest_promotion_portfolio")

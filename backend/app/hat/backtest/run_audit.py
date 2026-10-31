@@ -161,11 +161,13 @@ def check_fills(
     trades: Mapping[str, Sequence[Mapping[str, str]]],
     bars: Mapping[tuple[str, date], tuple[Decimal, Decimal]],
     slippage_bps: Decimal,
+    impact_bps: Decimal = Decimal(0),
 ) -> dict[str, Any]:
     """Every entry (once per trade) and every leg's exit inside the day's (low, high) of `bars`,
-    keyed (instrument id, date), widened by the slippage; a fill on a day without a bar is
-    counted (a suspension mark or a delisting fills off the bars)."""
-    slip = slippage_bps / Decimal(10_000)
+    keyed (instrument id, date), widened by the slippage and the largest size-aware impact a
+    rotation fill of the run paid (`impact_bps`, 0 without the convention); a fill on a day
+    without a bar is counted (a suspension mark or a delisting fills off the bars)."""
+    slip = (slippage_bps + impact_bps) / Decimal(10_000)
     outside, no_bar, checked = [], [], 0
 
     def test(
@@ -221,6 +223,7 @@ def check_fills(
         "fills_checked": checked,
         "fills_without_bar": len(no_bar),
         "slippage_bps": str(slippage_bps),
+        **({"impact_max_bps": str(impact_bps)} if impact_bps else {}),
     }
     return _check("fills", summary, findings)
 
@@ -593,17 +596,18 @@ def audit_run(
     explained: Path | None = None,
     ledger: Mapping[str, Any] | None = None,
     hindsight: Mapping[str, int] | None = None,
+    impact_bps: Decimal = Decimal(0),
 ) -> dict[str, Any]:
-    """`audit.json` of a completed run: its `run.json` document, its CSV files by name, the
-    (low, high) of each (instrument id, date) it filled on, on the price basis it fills on, its
-    slippage in bps, its data audit with the owner's explanation of it (`check_data`) and its
-    ledger reconciliation (`check_ledger`) and its hindsight reads (`check_lookahead`). The
-    digest is sha256 of the rest of the document."""
+    """`audit.json` of a completed run: its `run.json` document, its CSV files by name, the (low,
+    high) of each (instrument id, date) it filled on, on the price basis it fills on, its slippage
+    in bps (and the largest size-aware impact a fill paid), its data audit with the owner's
+    explanation of it (`check_data`) and its ledger reconciliation (`check_ledger`) and its
+    hindsight reads (`check_lookahead`). The digest is sha256 of the rest of the document."""
     trades = _trades(_rows(csvs.get("trades")))
     equity = _rows(csvs.get("equity"))
     checks = [
         check_binding(run),
-        check_fills(trades, bars, slippage_bps),
+        check_fills(trades, bars, slippage_bps, impact_bps),
         check_sequence(trades),
         check_pnl(run, trades),
         check_costs(run, trades),

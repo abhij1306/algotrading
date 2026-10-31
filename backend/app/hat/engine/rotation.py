@@ -23,6 +23,13 @@ the point-in-time store it marks mostly names that later left the index, so one 
 and `scale_down` (`scale_down_fires`) trims the book to a fraction mid-period
 (`scale_down_trims`) or sizes a rebalance on that fraction of the capital (`capital_share`).
 
+Five more, off unless set (`strategy.config.Rotation`): the relative liquidity floor
+(`median_traded_values`, `liquidity_tiers`: the names ranked are the hold tier's, a name below
+the entry tier is kept but never bought), the skip of `riskadj`'s last sessions
+(`riskadj_parts`), inverse-beta weights (`betas`, `target_weights`, read by `order_diff`), the
+staggered rebalance (`tranche_due`, `sessions_since_close`) and the refusal of an order at or
+within one tick of its price band (`near_limit`).
+
 Every rotation order trades at 09:20, never at the open: its price is `engine/fill_0920.py`'s.
 """
 
@@ -32,15 +39,16 @@ import math
 from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
-from decimal import ROUND_FLOOR, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import TypeVar
 
 import numpy as np
+import polars as pl
 
 from ..money import require_exact
 from ..risk.decision import ROTATION_PLAYBOOK
 from .regime_gate import RULES
-from .strategy.config import Rotation, ScaleDown
+from .strategy.config import InverseBeta, Liquidity, Rotation, ScaleDown, Tranches
 
 __all__ = [
     "BUY",
@@ -53,14 +61,21 @@ __all__ = [
     "TOP_UP",
     "TRIM",
     "TRIMMED",
+    "NEAR_LOWER_LIMIT",
+    "NEAR_UPPER_LIMIT",
     "UNKNOWN_INDUSTRY",
     "Order",
     "Plan",
+    "betas",
+    "betas_by_name",
     "book_equity",
     "buy_share",
     "capital_share",
     "is_rebalance",
+    "liquidity_tiers",
     "lot_sales",
+    "median_traded_values",
+    "near_limit",
     "order_diff",
     "orders",
     "plan",
@@ -73,7 +88,10 @@ __all__ = [
     "scores",
     "select",
     "selection_depth",
+    "sessions_since_close",
+    "target_weights",
     "targets",
+    "tranche_due",
     "window_rows",
     "zscores",
 ]
@@ -88,6 +106,10 @@ MARKET_FILTER = "rotation_market_filter"  # a sale: the regime gate off on the r
 TRIMMED = "rotation_trim"
 SCALED_DOWN = "rotation_scale_down"  # a trim: the scale-down fired on the close before
 UNKNOWN_INDUSTRY = "unknown"  # a name without a classification in force (never capped)
+NEAR_UPPER_LIMIT = "near_upper_limit"  # a buy refused at or within a tick of the upper band
+NEAR_LOWER_LIMIT = "near_lower_limit"  # a sale held at or within a tick of the lower band
+MIN_BETA_RETURNS = 20  # fewer paired daily returns than this: the name's beta is 1
+BETA_PLACES = Decimal("0.0001")  # a beta's places (`inverse_beta`), as live records it
 _HUNDRED = Decimal(100)
 K = TypeVar("K")  # a lot's key
 
@@ -145,11 +167,14 @@ def _single(closes: np.ndarray, rotation: Rotation) -> np.ndarray:
 
 def riskadj_parts(closes: np.ndarray, rotation: Rotation) -> tuple[np.ndarray, np.ndarray]:
     """(short return / volatility, long return / volatility) per name, NaN where unscored: the
-    returns over `short_sessions` and `long_sessions`, the volatility the annualised sample
-    deviation of the last `vol_sessions` daily log returns."""
+    returns over `short_sessions` and `long_sessions`, ending on the decision close (with
+    `riskadj_skip`, `skip_sessions` before it; the lookbacks still start counted from it), the
+    volatility the annualised sample deviation of the last `vol_sessions` daily log returns,
+    ending on the decision close either way."""
     filled, ok = _prepared(closes, rotation)
     with np.errstate(divide="ignore", invalid="ignore"):
-        last = filled[-1]
+        # `riskadj_skip`: both returns end `skip_sessions` before the decision close (6-1, 12-1)
+        last = filled[-1 - (rotation.skip_sessions if rotation.riskadj_skip else 0)]
         short = last / filled[-1 - rotation.short_sessions] - 1
         long_ = last / filled[-1 - rotation.long_sessions] - 1
         returns = np.diff(np.log(_tail(filled, rotation.vol_sessions + 1)), axis=0)
@@ -315,18 +340,21 @@ def order_diff(
     min_change_pct: Decimal,
     *,
     reweight: bool,
+    weights: Mapping[str, Decimal] | None = None,
 ) -> list[Order]:
     """The orders that take `held` (shares by name) to `target` at `prices`: a sale of every
-    holding not a target, then each target's change to `capital` / `top_n` of value, in whole
-    shares. A change of at most `min_change_pct` percent of that value is skipped; without
-    `reweight` a held target is left as it is. Sales and trims come first, then buys and
-    top-ups in target order. A target without a price gets no order."""
+    holding not a target, then each target's change to `capital` / `top_n` of value (with
+    `weights`, `capital` times its weight), in whole shares. A change of at most
+    `min_change_pct` percent of that value is skipped; without `reweight` a held target is left
+    as it is. Sales and trims come first, then buys and top-ups in target order. A target
+    without a price gets no order."""
     sells = [Order(name, SELL, qty) for name, qty in held.items() if qty > 0 and name not in target]
-    each = capital / top_n if top_n > 0 else Decimal(0)
-    floor = each * min_change_pct / _HUNDRED
+    equal = capital / top_n if top_n > 0 else Decimal(0)
     trims: list[Order] = []
     buys: list[Order] = []
     for name in target:
+        each = equal if weights is None else capital * weights.get(name, Decimal(0))
+        floor = each * min_change_pct / _HUNDRED
         price = prices.get(name)
         if price is None or price <= 0 or each <= 0:
             continue
@@ -373,20 +401,24 @@ def targets(
     gate_on: bool,
     can_buy: Callable[[str], bool],
     industry: Callable[[str], str] | None = None,
+    hold_only: Collection[str] = (),
 ) -> tuple[tuple[str, ...], bool]:
     """(the target list, whether the market filter emptied it): empty under the market filter
     with the gate off, else `select` with the hold buffer and the rules' industry cap (a name's
-    `industry` on the trade date), a held factor-pending name kept without a rank."""
+    `industry` on the trade date), a held factor-pending name kept without a rank. A name in
+    `hold_only` (ranked in the liquidity floor's hold tier, below its entry tier) is never
+    bought."""
     if rules.market_filter and not gate_on:
         return (), True
     if rules.max_per_industry is not None and industry is None:
         raise ValueError("rotation_industry_unknown")  # a capped rule needs the classification
+    buyable = can_buy if not hold_only else (lambda n: n not in hold_only and can_buy(n))
     found = select(
         [name for name, _ in ranked_names],
         held,
         rules.top_n,
         rules.buffer_rank,
-        can_buy,
+        buyable,
         kept=[h for h in held if h in pending],
         max_per_industry=rules.max_per_industry,
         industry=industry,
@@ -406,12 +438,16 @@ def plan(
     gate_on: bool,
     can_buy: Callable[[str], bool],
     industry: Callable[[str], str] | None = None,
+    hold_only: Collection[str] = (),
 ) -> Plan:
-    """The rebalance decided on `night`'s close (`ranking`, then `targets`)."""
+    """The rebalance decided on `night`'s close (`ranking`, then `targets`); `passers` are
+    already cut to the liquidity floor's hold tier when the rules have one, `hold_only` the
+    names of it below the entry tier."""
     ranks = ranking(passers, closes, rules, pending)
     target, filtered = targets(
-        ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry
-    )
+        ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
+        hold_only=hold_only,
+    )  # fmt: skip
     return Plan(night, ranks, target, filtered=filtered)
 
 
@@ -421,8 +457,10 @@ def orders(
     prices: Mapping[str, Decimal],
     capital: Decimal,
     rules: Rotation,
+    weights: Mapping[str, Decimal] | None = None,
 ) -> list[Order]:
-    """`order_diff` of `chosen`'s target under `rules`, on `capital`, the sleeve's."""
+    """`order_diff` of `chosen`'s target under `rules`, on `capital`, the sleeve's; `weights`
+    the targets' (`target_weights`) under `inverse_beta`, else equal."""
     return order_diff(
         chosen.target,
         held,
@@ -431,6 +469,7 @@ def orders(
         rules.top_n,
         require_exact(rules.min_change_pct, "min_change_pct", floats=True),
         reweight=rules.reweight,
+        weights=weights,
     )
 
 
@@ -512,3 +551,132 @@ def lot_sales(qty: int, lots: Sequence[tuple[K, int]]) -> list[tuple[K, int]]:
             out.append((key, take))
             left -= take
     return out
+
+
+# --- the optional rules (`Rotation.liquidity`, `inverse_beta`, `tranches`, `refuse_near_limit`) --
+
+
+def median_traded_values(bars: pl.DataFrame, as_of: date, days: int) -> dict[str, float]:
+    """Each instrument's median traded value over its last `days` bars through `as_of` (the
+    reported traded value, else close x volume, as `min_turnover` reads it), for the instruments
+    with a bar on `as_of` and a value on each of those `days` bars; `bars` the scan's frame
+    (`instrument_id`, `date`, `close`, `volume`, optional `traded_value`)."""
+    if bars.height == 0:
+        return {}
+    value = pl.col("close") * pl.col("volume")
+    if "traded_value" in bars.columns:
+        value = pl.coalesce(pl.col("traded_value"), value)
+    frame = (
+        bars.filter(pl.col("date") <= as_of)
+        .select(pl.col("instrument_id").cast(pl.String), "date", value=value.cast(pl.Float64))
+        .sort("instrument_id", "date")
+        .group_by("instrument_id", maintain_order=True)
+        .agg(pl.col("date").last(), pl.col("value").tail(days))
+    )
+    out: dict[str, float] = {}
+    for name, last_day, values in frame.iter_rows():
+        if last_day != as_of or len(values) < days or any(v is None for v in values):
+            continue
+        out[str(name)] = float(np.median(np.asarray(values, dtype=np.float64)))
+    return out
+
+
+def liquidity_tiers(
+    values: Mapping[str, float], rule: Liquidity
+) -> tuple[frozenset[str], frozenset[str]]:
+    """(the entry tier, the hold tier) of the night's members by their median traded value
+    (`values`, `median_traded_values`): the first `entry_pct` and `hold_pct` percent of them,
+    most liquid first (ties by name), each count rounded up."""
+    order = sorted(values, key=lambda name: (-values[name], name))
+    count = len(order)
+
+    def top(pct: float) -> frozenset[str]:
+        share = require_exact(pct, "pct", floats=True) * count / _HUNDRED
+        return frozenset(order[: int(share.to_integral_value(ROUND_CEILING))])
+
+    return top(rule.entry_pct), top(rule.hold_pct)
+
+
+def betas(closes: np.ndarray, bench: np.ndarray, rule: InverseBeta) -> np.ndarray:
+    """Each column's beta to `bench` over the window (`closes` total-return closes, rows the
+    `rule.sessions` + 1 sessions through the decision close, NaN without a bar; `bench` the
+    NIFTY 500 TRI's closes on the same sessions): the covariance of their daily returns over the
+    variance of the index's, on the sessions both have a return (a return needs a close that
+    session and the one before), at least `rule.floor`; 1 (the market's) with fewer than
+    `MIN_BETA_RETURNS` such returns or an index without variance."""
+    out = np.ones(closes.shape[1])
+    with np.errstate(divide="ignore", invalid="ignore"):
+        market = bench[1:] / bench[:-1] - 1
+        stock = closes[1:] / closes[:-1] - 1
+    for column in range(closes.shape[1]):
+        both = np.isfinite(stock[:, column]) & np.isfinite(market)
+        if both.sum() < MIN_BETA_RETURNS:
+            continue
+        x, y = market[both], stock[both, column]
+        variance = float(np.var(x, ddof=1))
+        if variance > 0:
+            out[column] = float(np.cov(x, y, ddof=1)[0, 1]) / variance
+    return np.maximum(out, rule.floor)
+
+
+def betas_by_name(names: Sequence[str], found: np.ndarray) -> dict[str, Decimal]:
+    """`betas`' values by name, to `BETA_PLACES`: what the weights read, backtest and live."""
+    return {
+        name: require_exact(float(value), "beta", floats=True).quantize(BETA_PLACES)
+        for name, value in zip(names, found, strict=True)
+    }
+
+
+def target_weights(
+    target: Sequence[str], beta: Mapping[str, Decimal], top_n: int
+) -> dict[str, Decimal]:
+    """The targets' weights under `inverse_beta`: each 1 / its `beta` (a name without one has 1),
+    scaled so they sum to len(`target`) / `top_n`, the share of the capital equal weights put
+    into those targets (all of it with `top_n` of them)."""
+    if not target or top_n <= 0:
+        return {}
+    inverse = {name: 1 / beta.get(name, Decimal(1)) for name in target}
+    total = sum(inverse.values(), Decimal(0))
+    scale = Decimal(len(target)) / top_n / total
+    return {name: value * scale for name, value in inverse.items()}
+
+
+def sessions_since_close(days: Sequence[date], cadence: str) -> list[int | None]:
+    """For each session of `days` (consecutive sessions), how many sessions it is after the last
+    rebalance close on or before it (0 on the close itself), None before the first one in
+    `days` (the last session's own close cannot be judged without its next session: it counts
+    on from the one before)."""
+    out: list[int | None] = []
+    since: int | None = None
+    for n, night in enumerate(days):
+        if n + 1 < len(days) and is_rebalance(night, days[n + 1], cadence):
+            since = 0
+        elif since is not None:
+            since += 1
+        out.append(since)
+    return out
+
+
+def tranche_due(since: int | None, rule: Tranches) -> int | None:
+    """The tranche that decides on a close `since` sessions after its period's rebalance close
+    (`sessions_since_close`): tranche k at k x `offset_sessions`, else None."""
+    if since is None or since % rule.offset_sessions:
+        return None
+    k = since // rule.offset_sessions
+    return k if k < rule.count else None
+
+
+def near_limit(
+    side: str,
+    price: Decimal,
+    lower: Decimal | None,
+    upper: Decimal | None,
+    tick: Decimal | None,
+) -> bool:
+    """Whether an order at `price` is at or within one `tick` of the band it trades against: a
+    buy of the `upper` price, a sale of the `lower` one (an unknown band or tick: no)."""
+    if tick is None or tick <= 0:
+        return False
+    if side == "buy":
+        return upper is not None and price >= upper - tick
+    return lower is not None and price <= lower + tick

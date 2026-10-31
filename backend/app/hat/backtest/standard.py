@@ -58,7 +58,7 @@ __all__ = [
     "trade_list_hash",
 ]
 
-FORMAT_VERSION = "1.6"
+FORMAT_VERSION = "1.7"
 TRADING_DAYS = 252
 _PLACES = 4
 _ZERO = Decimal(0)

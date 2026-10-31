@@ -13,7 +13,8 @@ the engine's accounts, and rebuilds:
   scrip per sell day per demat; which one is the engine's order of sales, not the fills');
 - each fill's price against its day's bar. Slippage moves a fill against the trade from a price
   inside the bar, so a buy prints between the low and the high after slippage and a sell between
-  the low after slippage and the high (`slipped`; a LIMIT buy caps at its limit, inside that).
+  the low after slippage and the high (`slipped`; a LIMIT buy caps at its limit, inside that;
+  a rotation fill's size-aware impact, `FillRow.impact_bps`, widens its slippage).
   A sale on a day without a bar (a suspension's or a delisting's exit) prints between the
   suspended mark and the last traded close, each after slippage; a buy without a bar is a
   finding. An overlay fill priced on an estimate (`sleeve_price`) is counted, not checked;
@@ -190,7 +191,7 @@ def mark_of(market: Market, instrument_id: str, day: date) -> Decimal | None:
 def price_range(market: Market, fill: FillRow) -> tuple[Decimal, Decimal] | None:
     """The prices `fill` may print at (the module docstring); None when none is possible (a buy
     on a day without a bar, or an instrument never traded)."""
-    bps = market.slippage_bps(fill.instrument_id)
+    bps = market.slippage_bps(fill.instrument_id) + fill.impact_bps
     found = market.bar(fill.instrument_id, fill.day)
     if found is not None:
         low, high, _ = found

@@ -203,7 +203,9 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     daily estimate instead of the stored 5-minute bars (a comparison run; refused for promotion).
     `--volume-pace full_day` judges an enabled `volume_pace` on the full day's volume on the
     5-minute sessions too, as the daily estimate always does (a look-ahead, recorded as a known
-    gap).
+    gap). `--impact-bps C` charges each rotation order a size-aware impact of C x sqrt(order value
+    / the name's median traded value of 20 sessions) bps beside the slippage (`spec.IMPACT_RULE`;
+    off by default).
     Every run first audits its data (`data.audit`) and refuses to start on a failed audit
     (`backtest_data_audit_failed`); a completed run's folder holds its run audit (`audit.json`).
     `--set` (repeatable), `--risk-pct`, `--max-positions`, `--max-per-industry` and
@@ -253,6 +255,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
     parser.add_argument("--start-capital", type=_capital_arg, default=INITIAL_EQUITY)
     parser.add_argument("--entry-bars", choices=ENTRY_BARS_RULES, default=ENTRY_BARS_5M)
     parser.add_argument("--volume-pace", choices=VOLUME_PACE_RULES, default=VOLUME_PACE_LIVE)
+    parser.add_argument("--impact-bps", type=Decimal, default=None)
     parser.add_argument("--for-promotion", action="store_true")
     parser.add_argument("--set", dest="sets", type=_set_arg, action="append", default=[])
     parser.add_argument("--playbooks", type=_playbooks_arg, default=None)
@@ -298,6 +301,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - needs 
                 start_capital=args.start_capital,
                 entry_bars=args.entry_bars,
                 volume_pace=args.volume_pace,
+                impact_bps=args.impact_bps,
                 overrides=Overrides(
                     sets=tuple(args.sets),
                     playbooks=args.playbooks,

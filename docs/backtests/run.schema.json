@@ -53,7 +53,7 @@
   },
   "properties": {
     "format_version": {
-      "const": "1.6"
+      "const": "1.7"
     },
     "identity": {
       "type": "object",
@@ -496,6 +496,92 @@
         },
         "pbo": {
           "$ref": "#/$defs/num"
+        },
+        "rotation": {
+          "type": "object",
+          "required": [
+            "fills_0920",
+            "fills_estimated",
+            "near_limit_refused"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "fills_0920": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "fills_estimated": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "near_limit_refused": {
+              "type": "object",
+              "required": [
+                "buy",
+                "sell"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "buy": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "sell": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "funding_fills": {
+              "type": "object",
+              "required": [
+                "bar_5m",
+                "close",
+                "at_0920",
+                "stale_0920"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "bar_5m": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "close": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "at_0920": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "stale_0920": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            },
+            "impact": {
+              "type": "object",
+              "required": [
+                "fills",
+                "cost",
+                "max_bps"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "fills": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "cost": {
+                  "type": "string"
+                },
+                "max_bps": {
+                  "type": "string"
+                }
+              }
+            }
+          }
         }
       }
     },
