@@ -421,12 +421,23 @@ python -m app.hat.data.fundamentals report --out <path>.md [--example RELIANCE]
 ```
 
 `extract` reads only the cache and replaces both tables. With `--symbols A,B` it replaces only
-those instruments' rows. `--from`/`--to` limit the NSE period ends (default 2020-03-31 to
-today). The outcome counts go to `<HAT_DATA_ROOT>/fundamentals/extract-outcomes.json`. `derive`
+those instruments' rows. `--from`/`--to` limit the NSE period ends (default 2012-03-31 to
+today; members since 2012-07-01). The outcome counts go to `<HAT_DATA_ROOT>/fundamentals/extract-outcomes.json`. `derive`
 reads the stored filings, the daily closes and the split and bonus factors, and replaces the
 metrics. `report` writes the coverage report (default
 `<HAT_DATA_ROOT>/fundamentals/coverage-<date>.md`). Every step is rerunnable: the same cache
 gives the same rows.
+
+The history from 2012 (docs/fundamentals.md, History and the research panel) is fetched with
+`--history`: `results fetch --history [--shard K/N] [--no-announcements]` takes the members since
+2012-07 and period ends from 2012-03-31, the quarterly and annual HTML pages too (about 55
+documents and a few hundred KB per company; run the shards in parallel, a few hours),
+`results fetch-secondary --history` their secondary pages. Both are incremental: rerun them after
+members are added to the membership history. Then `extract`, `derive` and
+
+```bash
+python -m app.hat.data.fundamentals panel     # research-panel.parquet and research-<date>.md
+```
 
 ### Data verification
 

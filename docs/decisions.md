@@ -662,6 +662,16 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   by then, valuations use the last close known then, and share counts are carried across splits
   and bonuses. Each formula is written once (`docs/fundamentals.md`). The tables are projections
   of the cache, replaced on each run, so no version history is kept beyond the cache's.
+- **Fundamentals history (owner 2026-10-31).** For value and quality research without
+  survivorship bias the store covers every NIFTY 500 point-in-time member from 2012-07, delisted
+  and merged names included. First-published figures come from NSE: the HTML results pages for
+  2012-2017 (`nse_html`, point in time, timed by the results rules) and the XBRL from 2018. BSE
+  results XBRL is approved to fill the 2017-2019 holes, flagged per figure, but not built: BSE's
+  API refuses this host, and fetching it needs another network or a browser session (owner to
+  decide). The rest comes from the secondary source. The research panel may read the secondary
+  source's restated figures from their deadline lag (cash flow and the detailed balance sheet
+  before FY2020 from year end + 183 days), flagged per figure; the store's point-in-time reads
+  keep the fetch-time rule. Shares come from paid-up capital / face value, never EPS.
 
 ## Operations
 
