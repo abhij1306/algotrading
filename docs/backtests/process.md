@@ -182,7 +182,7 @@ whose audit warns or fails):
 | Check | Fails | Warns |
 | --- | --- | --- |
 | `calendar` | a stored day that is no NSE session, or a session with no bars | period ends after the data |
-| `missing_sessions` | members miss > 2% of their member sessions overall | a member misses > 5% |
+| `missing_sessions` | members miss > 2% of their traded member sessions overall: a session is missing when NSE's bhavcopy (`raw/`) has a row for the chain's ISIN and the store no bar, or when the day's raw file is absent (listed as `raw_files_absent`); a day NSE printed no row for is a no-trade day, reported per member (`no_trade_by_member`, `no_trade_worst`) and never missing | a member misses > 5% of its traded member sessions |
 | `survivorship` | a leaver with no bars, or no leaver in a window of a year or more | a leaver with bars on < 95% of its member days |
 | `corporate_actions` | an adjustment factor that is not a positive number | an adjusted move > 20% on an ex-date; an action-shaped raw move (a split or bonus ratio) with no factor |
 | `lookahead` | a stored feature or breadth of D that differs from its recount on bars <= D; a sampled member day with a bar and no feature row | a session whose previous session has no index close or breadth (the gates read D-1) |

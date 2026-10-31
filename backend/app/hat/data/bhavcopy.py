@@ -307,6 +307,20 @@ def parse_bhavcopy(day: date, data: bytes) -> ParsedDay:
     return out
 
 
+def traded_isins(data: bytes) -> frozenset[str]:
+    """Every ISIN with a row in a bhavcopy zip of either format, whatever its series: what NSE
+    printed for the day (a stock with no trade has no row). A file without an `ISIN` column
+    raises `BhavcopyError`."""
+    reader = csv.DictReader(io.StringIO(_csv_text(data)))
+    header = {(h or "").strip(): h for h in (reader.fieldnames or [])}
+    column = header.get("ISIN")
+    if column is None:
+        raise BhavcopyError("bhavcopy_columns")
+    return frozenset(
+        isin for row in reader if ISIN_RE.match(isin := (row.get(column) or "").strip().upper())
+    )
+
+
 UDIFF_ID_COLUMN = "FinInstrmId"  # NSE's numeric id of the instrument (its exchange token)
 
 

@@ -47,7 +47,11 @@ def test_missing_sessions_while_member_and_listed() -> None:
         "a": [d for d in DAYS if d not in (DAYS[4], DAYS[5])],  # a two-session gap
         "b": DAYS[3:5],  # listed from DAYS[3]: DAYS[2] is before its first bar, DAYS[5] missing
     }
-    check = audit.check_missing_sessions(DAYS, spans, bars, {"a": "AAA"}, DAYS[0], DAYS[-1])
+    isins = {"a": {"INE000A01011"}, "b": {"INE000B01011"}}
+    traded = {d: frozenset({"INE000A01011", "INE000B01011"}) for d in DAYS}
+    check = audit.check_missing_sessions(
+        DAYS, spans, bars, {"a": "AAA"}, DAYS[0], DAYS[-1], isins=isins, traded=traded
+    )
     worst = {r["instrument_id"]: r for r in check["summary"]["worst"]}
     assert worst["a"]["missing"] == 2
     assert worst["a"]["longest_gap"] == 2
@@ -56,6 +60,32 @@ def test_missing_sessions_while_member_and_listed() -> None:
     assert check["summary"]["missing"] == 2
     assert check["status"] == audit.FAIL  # 2 of 12 member sessions is above the universe's 2%
     assert _codes(check) == {"member_sessions_missing": 1, "universe_sessions_missing": 1}
+    # NSE printed no row for "a" on its gap days: no-trade days, reported and never missing
+    idle = {d: frozenset({"INE000B01011"}) for d in DAYS}
+    quiet = audit.check_missing_sessions(
+        DAYS, spans, bars, {"a": "AAA"}, DAYS[0], DAYS[-1], isins=isins, traded=idle
+    )
+    assert quiet["status"] == audit.PASS
+    assert quiet["summary"]["missing"] == 0
+    assert quiet["summary"]["member_sessions"] == 10  # 12 member sessions less 2 no-trade days
+    assert quiet["summary"]["no_trade"] == 2
+    assert quiet["summary"]["no_trade_by_member"] == {"a": 2}
+    assert quiet["summary"]["no_trade_worst"][0]["longest_no_trade"] == 2
+
+
+def test_split_gaps_by_what_nse_printed() -> None:
+    chain = {"INE111A01011", "INE111A01029"}  # an old and a new ISIN of one chain
+    traded = {
+        DAYS[0]: frozenset({"INE111A01011"}),  # NSE has the old ISIN's bar: missing
+        DAYS[1]: frozenset({"INE111A01029", "INE999Z01019"}),  # the new ISIN's: missing
+        DAYS[2]: frozenset({"INE999Z01019"}),  # another stock only: no trade
+        DAYS[3]: frozenset(),  # nothing printed for the chain: no trade
+    }  # DAYS[4] has no raw file
+    gaps = audit.split_gaps(DAYS[:5], chain, traded)
+    assert gaps.missing == [DAYS[0], DAYS[1], DAYS[4]]
+    assert gaps.no_trade == [DAYS[2], DAYS[3]]
+    assert gaps.raw_absent == [DAYS[4]]
+    assert audit.split_gaps([], chain, traded) == audit.Gaps([], [], [])
 
 
 def test_survivorship_needs_leavers_with_bars() -> None:
