@@ -371,6 +371,32 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     only those fills' ranges, each by its own impact;
     `run.json` reports `metrics.rotation.impact` (fills, rupees, largest bps).
 
+- **Drawdown experiment options (owner 2026-10-31).** Off unless set, as the options above.
+  - `industry_relative: true`: rank on the score less the median score of the name's industry
+    among the names scored that night (a lone name of its industry scores 0). The industry is the
+    one in force on the trade date, the session after the decision close, as the industry cap
+    reads it: a reclassification effective that day is seen one session early (rare, and the
+    same for both rules), so the book leans less on one hot sector. A name with
+    no industry keeps its raw score: it sits on another scale than the relative ones, so it is
+    biased either way (in the point-in-time store unknowns are mostly later leavers); the run
+    audit's `industries` warning shows how many there are. Live ranks it the same way.
+  - `wide_book: {top_n, checks, when: any_off}`: while the checks (regime rules, e.g.
+    `breadth_above`) fire on a rebalance close, that rebalance holds `top_n` names (more than
+    the rules'), `buffer_rank` raised in proportion (rounded up), each an equal share of the
+    same capital: more, smaller positions, never cash. Decided on the rebalance close only; the
+    next rebalance whose close does not fire returns to the narrow book (its extra names sold
+    like any outside the target). Needs `reweight` (refused `wide_book_needs_reweight`):
+    without it a held name keeps its old weight as the book widens or narrows and cash sits
+    idle. **Backtest only** until live records the decision with its
+    plan: a live night under it records nothing (`rotation_wide_book_not_live`).
+  - Universe cross-check `TOP_TRADED_<N>` (`--universe TOP_TRADED` is 500): a research universe
+    formed from the daily bars only, so delisted names are in it: the `N` ordinary-equity
+    stocks with the highest median EQ traded value over the 126 sessions through the last
+    session of March and of September (a session without an EQ bar counts as zero; a candidate
+    needs an EQ trade, a positive traded value, in the last 5 sessions), each list a member from the next session. Its rule
+    and reform nights are in `config.json` (`data_snapshot.membership`) and run.json
+    (`data.universe`, `data.universe_rule`).
+
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
   backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
   sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that

@@ -188,7 +188,11 @@ history loaded `backtest_no_index_membership`. The cost schedules also start 201
 (ISIN type `01`, `INE...` or `IN9...` for a DVR or partly paid class; no rights entitlement, InvIT,
 REIT, ETF or fund) the instrument table holds, delisted ones included, a
 member throughout: a stock is scanned only on the nights it has bars, and the version's universe
-criteria filter it. A sleeve the policy gives base weight 0 sizes at 0.5 in a research run
+criteria filter it. `--universe TOP_TRADED` (or `TOP_TRADED_<N>`; research only, no stored row)
+is the rule universe of the top 500 (N) of those stocks by median traded value
+(`decisions.md`), formed from the store's bars; it needs a March or September end with 126
+sessions of bars before the run's start (`backtest_top_traded_history_short`). A sleeve the
+policy gives base weight 0 sizes at 0.5 in a research run
 (recorded in the run's conventions); a `--for-promotion` run of it is refused `backtest_no_base_weight`, and takes no
 overrides. A version that enables `volume_pace` or `daily_close` cannot be promoted on a run
 (known gaps). A sweep prints one JSON line per variant as each finishes. The trade ledger's `qty`

@@ -905,7 +905,13 @@ def backtest_side(
             closes = TrCloses(data.bars, view.days).window(
                 passers, view.index[day], rotation.window_rows(rules)
             )
-            ranks = rotation.ranking(passers, closes, rules, pending)
+            ranks = rotation.ranking(
+                passers,
+                closes,
+                rules,
+                pending,
+                industry=lambda n, data=data: industry_on(data, n, trade_date),
+            )
             gate_on = regime_allows_longs(b.config.regime, inputs.regime_closes, inputs.breadth)
             if rotation.is_rebalance(day, trade_date, rules.rebalance):
                 side.rotation[b.id] = rotation_night(

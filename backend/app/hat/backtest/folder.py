@@ -31,7 +31,7 @@ from ..money import exact
 from . import ep_log
 from .ep_log import EP_CANDIDATE_COLUMNS, EP_COLUMNS
 from .overlay import OVERLAY_CSV_HEADER
-from .report import REBALANCE_COLUMNS, BacktestResult, LegRow, SignalRow, TradeRow
+from .report import REBALANCE_COLUMNS, SKIP_COLUMNS, BacktestResult, LegRow, SignalRow, TradeRow
 from .run_files import JSON_DOCS, is_run_id, read_config, read_doc, read_run, run_dir, runs_dir
 from .signal_features import CRORE, SETUP_COLUMNS, STOCK_COLUMNS
 from .spec import BASIS_5M, BacktestError
@@ -78,6 +78,7 @@ __all__ = [
 # `ep_candidates` only in a run with a pre-open playbook (`ep_log`)
 # `overlay` only in a run with the ETF overlay (its columns `overlay.OVERLAY_CSV_HEADER`)
 # `rebalances` only in a run with a rotation strategy (`report.REBALANCE_COLUMNS`)
+# `skips` only in a run with a skipped trigger of a watchlist row (`report.SKIP_COLUMNS`)
 CSV_FILES = (
     "trades",
     "equity",
@@ -87,6 +88,7 @@ CSV_FILES = (
     "ep_candidates",
     "overlay",
     "rebalances",
+    "skips",
 )
 COMPLETE, FAILED, STOPPED = "complete", "failed", "stopped_early"
 ADV_LIMIT_PCT = 5
@@ -656,6 +658,8 @@ def _metrics(
         "pbo": rounded(inputs.pbo, 6),
         "max_position_pct_adv": rounded(max(adv)) if adv else None,
         "trades_over_5pct_adv": sum(1 for p in adv if p > ADV_LIMIT_PCT),
+        # the setup entries priced at the daily open moved to 09:20 (v1.8; 0 before)
+        "entry_fills_0920_estimated": result.metrics.get("entry_fills_0920_estimated", 0),
         # a run with a rotation book: its fill counts, refusals at the band and impact (v1.7)
         **({"rotation": result.metrics["rotation"]} if "rotation" in result.metrics else {}),
     }
@@ -816,6 +820,8 @@ def build(
         csvs["ep_candidates"] = _csv(EP_CANDIDATE_COLUMNS, result.ep_candidates)
     if result.rebalances:
         csvs["rebalances"] = _csv(REBALANCE_COLUMNS, result.rebalances)
+    if result.skip_rows:
+        csvs["skips"] = _csv(SKIP_COLUMNS, result.skip_rows)
     if result.overlay:
         doc["overlay"] = dict(result.overlay)
         csvs["overlay"] = _csv(

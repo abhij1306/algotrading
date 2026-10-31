@@ -42,7 +42,11 @@ bought (`plan`'s `hold_only`); with `inverse_beta` a rebalance sizes each target
 (`rebalance`'s `weights`, each row's `target_value` its own); with `tranches` the loop runs one
 book per tranche (`tranche`), each on its share of the sleeve's capital; with
 `refuse_near_limit` the loop's quotes refuse a buy, and hold a sale, at or within a tick of the
-band (`near_upper_limit`, `near_lower_limit`). Under the run's `impact_bps` convention each fill
+band (`near_upper_limit`, `near_lower_limit`); with `industry_relative` the ranking is on each
+score less its industry's median (`rotation.industry_relative`, the industry on the trade date);
+with `wide_book` a rebalance whose close fires its checks selects and sizes under the wider rules
+(`rotation.widened`: `plan`'s and `rebalance`'s `rules`, each row's `target_value` the smaller
+share). Under the run's `impact_bps` convention each fill
 of a rebalance, a pending sale, a scale-down trim or a funding sale moves against the trade by
 its size-aware impact besides the slippage (`impact`, `costs.impact_bps`); a sale at a
 close (a delisting, a demerger) or the period's end is not a market order and pays none.
@@ -305,15 +309,17 @@ class RotationBook:
         can_buy: Callable[[str], bool],
         industry: Callable[[str], str] | None = None,
         hold_only: frozenset[str] = frozenset(),
+        rules: Rotation | None = None,
     ) -> Plan:
         """The rebalance decided on `night`'s close: `passers` (the members passing the
         universe stage; `closes` their total-return window, a column each) less the
         factor-pending names, scored and ranked, and the target list (`rotation.select`), a
         held factor-pending name kept without a rank. Under the market filter with the gate off
         the target is empty. `industry` is a name's industry on the trade date (the cap's);
-        `hold_only` the passers below the liquidity floor's entry tier (never bought)."""
+        `hold_only` the passers below the liquidity floor's entry tier (never bought); `rules`
+        the rebalance's own (`rotation.widened`), the book's without."""
         return rotation.plan(
-            night, passers, closes, self.rules, self.holdings,
+            night, passers, closes, rules or self.rules, self.holdings,
             pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
             hold_only=hold_only,
         )  # fmt: skip
@@ -388,9 +394,12 @@ class RotationBook:
         capital: Decimal,
         market: Market,
         weights: Mapping[str, Decimal] | None = None,
+        rules: Rotation | None = None,
     ) -> None:
         """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring); with
-        `weights` (`inverse_beta`) each target sized on its own share of it."""
+        `weights` (`inverse_beta`) each target sized on its own share of it; `rules` the
+        rebalance's own (`rotation.widened`: a wide book's `top_n`), the book's without."""
+        rules = rules or self.rules
         rank = {name: n for n, (name, _) in enumerate(plan.ranking, start=1)}
         self.ranks = rank
         score = {
@@ -399,9 +408,9 @@ class RotationBook:
         }
         orders = rotation.orders(
             plan, {name: h.qty for name, h in self.holdings.items()}, market.opens, capital,
-            self.rules, weights,
+            rules, weights,
         )  # fmt: skip
-        each = (capital / self.rules.top_n).quantize(Decimal("0.01"))
+        each = (capital / rules.top_n).quantize(Decimal("0.01"))
         own = (
             {}
             if weights is None

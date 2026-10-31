@@ -30,6 +30,12 @@ the entry tier is kept but never bought), the skip of `riskadj`'s last sessions
 staggered rebalance (`tranche_due`, `sessions_since_close`) and the refusal of an order at or
 within one tick of its price band (`near_limit`).
 
+Two more, off unless set: `industry_relative` ranks each name on its score less the median score
+of its industry among the names scored that night (`industry_relative`, in `ranking`; a name
+whose industry is unknown keeps its raw score, which sits on another scale, so it is a bias of
+its own, `decisions.md`), and `wide_book` widens one rebalance's `top_n` and `buffer_rank` while
+its breadth checks fire on the decision close (`wide_fires`, `widened`).
+
 Every rotation order trades at 09:20, never at the open: its price is `engine/fill_0920.py`'s.
 """
 
@@ -48,7 +54,16 @@ import polars as pl
 from ..money import require_exact
 from ..risk.decision import ROTATION_PLAYBOOK
 from .regime_gate import RULES
-from .strategy.config import InverseBeta, Liquidity, Rotation, ScaleDown, Tranches
+from .strategy.config import (
+    InverseBeta,
+    Liquidity,
+    RegimeRule,
+    Rotation,
+    ScaleDown,
+    Tranches,
+    WideBook,
+    wide_buffer_rank,
+)
 from .trigger import DailyInputs, lower_circuit_price, upper_circuit_price
 
 __all__ = [
@@ -72,6 +87,8 @@ __all__ = [
     "book_equity",
     "buy_share",
     "capital_share",
+    "checks_fire",
+    "industry_relative",
     "is_rebalance",
     "liquidity_tiers",
     "lot_sales",
@@ -93,6 +110,8 @@ __all__ = [
     "target_weights",
     "targets",
     "tranche_due",
+    "wide_fires",
+    "widened",
     "window_rows",
     "zscores",
 ]
@@ -400,14 +419,44 @@ class Plan:
 
 
 def ranking(
-    passers: Sequence[str], closes: np.ndarray, rules: Rotation, pending: Collection[str] = ()
+    passers: Sequence[str],
+    closes: np.ndarray,
+    rules: Rotation,
+    pending: Collection[str] = (),
+    industry: Callable[[str], str] | None = None,
 ) -> tuple[tuple[str, float], ...]:
     """`passers` (the members passing the universe stage on the decision close; `closes` their
-    total-return window, a column each) less the factor-pending names, scored and ranked."""
+    total-return window, a column each) less the factor-pending names, scored and ranked; with
+    the rules' `industry_relative` each score less its `industry`'s median that night
+    (`industry_relative`)."""
     columns = [n for n, name in enumerate(passers) if name not in pending]
     names = [passers[n] for n in columns]
     values = scores(closes[:, columns], rules) if names else np.empty(0)
+    if rules.industry_relative and names:
+        if industry is None:
+            raise ValueError("rotation_industry_unknown")  # the rule needs the classification
+        values = industry_relative(names, values, industry)
     return tuple(ranked(names, values))
+
+
+def industry_relative(
+    names: Sequence[str], values: np.ndarray, industry: Callable[[str], str]
+) -> np.ndarray:
+    """Each name's score (`values`, NaN: not scored) less the median score of the scored names
+    of its `industry` that night, itself included (a lone name of its industry scores 0); a name
+    whose industry is unknown (`UNKNOWN_INDUSTRY`) keeps its raw score, and an unscored one stays
+    NaN."""
+    groups: dict[str, list[float]] = {}
+    keys = [industry(name) for name in names]
+    for key, value in zip(keys, values, strict=True):
+        if key != UNKNOWN_INDUSTRY and math.isfinite(value):
+            groups.setdefault(key, []).append(float(value))
+    medians = {key: float(np.median(found)) for key, found in groups.items()}
+    out = values.astype(np.float64, copy=True)
+    for n, key in enumerate(keys):
+        if key in medians and math.isfinite(out[n]):
+            out[n] -= medians[key]
+    return out
 
 
 def targets(
@@ -460,8 +509,9 @@ def plan(
 ) -> Plan:
     """The rebalance decided on `night`'s close (`ranking`, then `targets`); `passers` are
     already cut to the liquidity floor's hold tier when the rules have one, `hold_only` the
-    names of it below the entry tier."""
-    ranks = ranking(passers, closes, rules, pending)
+    names of it below the entry tier; `industry` (a name's on the trade date) feeds both the
+    industry cap and `industry_relative`."""
+    ranks = ranking(passers, closes, rules, pending, industry)
     target, filtered = targets(
         ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
         hold_only=hold_only,
@@ -493,14 +543,43 @@ def orders(
     )
 
 
+def checks_fire(
+    checks: Sequence[RegimeRule],
+    when: str,
+    closes: Sequence[Decimal],
+    breadth: Sequence[Decimal | None],
+) -> bool:
+    """Whether regime-rule `checks` fire on the last session of the series (`closes` of the
+    strategy's regime index, `breadth`, both oldest first, as the regime gate reads them): one
+    of them off (`when` `any_off`), or every one (`all_off`)."""
+    on = [RULES[type(check)](closes, breadth, check) for check in checks]
+    return not all(on) if when == "any_off" else not any(on)
+
+
 def scale_down_fires(
     rule: ScaleDown, closes: Sequence[Decimal], breadth: Sequence[Decimal | None]
 ) -> bool:
-    """Whether the scale-down fires on the last session of the series (`closes` of the
-    strategy's regime index, `breadth`, both oldest first, as the regime gate reads them): one
-    of its checks off (`any_off`), or every one (`all_off`)."""
-    on = [RULES[type(check)](closes, breadth, check) for check in rule.checks]
-    return not all(on) if rule.when == "any_off" else not any(on)
+    """Whether the scale-down fires on the last session of the series (`checks_fire`)."""
+    return checks_fire(rule.checks, rule.when, closes, breadth)
+
+
+def wide_fires(
+    rule: WideBook, closes: Sequence[Decimal], breadth: Sequence[Decimal | None]
+) -> bool:
+    """Whether the wide book's checks fire on the rebalance close the series end on
+    (`checks_fire`)."""
+    return checks_fire(rule.checks, rule.when, closes, breadth)
+
+
+def widened(rules: Rotation, wide: bool) -> Rotation:
+    """The rules one rebalance decides and sizes under: with `wide_book` set and `wide` (its
+    checks fired on the decision close) its `top_n` and the buffer raised in proportion
+    (`strategy.config.wide_buffer_rank`), else `rules` themselves."""
+    rule = rules.wide_book
+    if rule is None or not wide:
+        return rules
+    buffer = wide_buffer_rank(rules.buffer_rank, rules.top_n, rule.top_n)
+    return rules.model_copy(update={"top_n": rule.top_n, "buffer_rank": buffer})
 
 
 def capital_share(rules: Rotation, fires: bool) -> Decimal:

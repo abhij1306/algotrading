@@ -14,6 +14,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 ENV_FILE = PROJECT_ROOT / ".env"
+# `$Format:%H$` in a checkout; the commit in a tree exported by `git archive` (export-subst)
+ENGINE_COMMIT_FILE = PROJECT_ROOT / "backend" / "ENGINE_COMMIT"
 LOG_DIR = PROJECT_ROOT / "logs"
 
 # The data tree (gitignored); HAT keeps its data under HAT_DATA_ROOT below.

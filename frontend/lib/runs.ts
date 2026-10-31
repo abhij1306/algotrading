@@ -1,5 +1,5 @@
 /**
- * Backtest runs in the Result Standard v1.7 (docs/backtests/result-standard.md): the run.json shape and
+ * Backtest runs in the Result Standard v1.8 (docs/backtests/result-standard.md): the run.json shape and
  * the pure shaping the Backtests pages draw from (deltas, grouping, sorting, CSV parsing and the
  * summaries of the run's CSV files). Units follow the standard: % as 0 to 100, R as a multiple,
  * money in rupees.
@@ -102,16 +102,19 @@ export type Metrics = {
   max_position_pct_adv?: Num;
   symbols_traded: Num;
   trades_over_5pct_adv?: Num;
+  entry_fills_0920_estimated?: number;
   rotation?: RotationCounts;
 };
 
-/** A rotation run's counts (v1.7): fills by price source, refusals at the band, impact paid. */
+/** A rotation run's counts (v1.7): fills by price source, refusals at the band, impact paid,
+ * wide-book rebalances (v1.8). */
 export type RotationCounts = {
   fills_0920: number;
   fills_estimated: number;
   near_limit_refused: { buy: number; sell: number };
   funding_fills?: { bar_5m: number; close: number; at_0920: number; stale_0920: number };
   impact?: { fills: number; cost: string; max_bps: string };
+  wide_rebalances?: number;
 };
 
 export type Binding = {
