@@ -196,7 +196,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
   results are net of what real trading pays.
 - **Dated cost schedule.** A fill is charged under the file of its cost-model version in force on
-  its trade date (`cost_models/cnc-delivery-2/`, from 2016-01-01, the backtest window's start);
+  its trade date (`cost_models/cnc-delivery-2/`, from 2011-06-22, HAT's first bar day);
   a run records the digest of every file in force in its window. The rates, their dates and
   sources: `docs/backtests/costs.md`. Stamp duty before 2020-07-01 was a state levy: HAT charges
   the Maharashtra rate. The DP charge is flat per instrument per sell day: the first sale of an
@@ -429,8 +429,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   not fit is recorded in the build and coverage reports. Every notice from 2010 fits, and the
   2014 and 2015 lists match exactly. The one residual is a missing 2010-2012 swap: 3IINFOTECH is
   a member from the start to 2012-09-28 and is not on the 2010 list, while ZANDUPHARM
-  (ZANDUREALT) is on it and on no later one. A run before 2016 also needs a cost schedule in force
-  (the schedules start 2016-01-01).
+  (ZANDUREALT) is on it and on no later one. The cost schedules start on the same day.
 - **D2's second source is Fyers' daily history** (owner, 2026-10-30: Yahoo is not reliable; it
   refused this host for hours). The price basis' calendar-year price return is compared with
   Fyers' (split- and bonus-adjusted, no dividends) within 2 points, for 2022 to 2025: Fyers

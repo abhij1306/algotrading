@@ -182,8 +182,8 @@ session, through lineage (Index membership). The NIFTY 500 history starts 2011-0
 (decisions.md "NIFTY 500 history from 2011-06-22"): a `--from` before the
 loaded history's first day is refused `backtest_starts_before_membership@<day>`, a `--to`
 after its last day `backtest_ends_after_membership@<day>`, and a universe whose index has no
-history loaded `backtest_no_index_membership`. A run before 2016 also needs a cost schedule in
-force (the schedules start 2016-01-01: `cost_no_schedule`).
+history loaded `backtest_no_index_membership`. The cost schedules also start 2011-06-22
+(`cost_no_schedule` before).
 `--universe NSE_STOCKS` (research only, no stored row) is every NSE-market ordinary equity share
 (ISIN type `01`, `INE...` or `IN9...` for a DVR or partly paid class; no rights entitlement, InvIT,
 REIT, ETF or fund) the instrument table holds, delisted ones included, a

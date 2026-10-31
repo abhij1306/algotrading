@@ -244,10 +244,10 @@ class Reference:
     history: dict[str, list[tuple[date, date | None, str]]]  # instrument id -> symbol spans
     alias: dict[str, str] = field(default_factory=dict)
     listed: dict[str, list[tuple[date, str]]] = field(default_factory=dict)  # symbol -> (day, ISIN)
+    first_bar: date | None = None  # HAT's first bar day, from the bar spans alone
 
     def __post_init__(self) -> None:
         self.by_isin = {v: k for k, v in self.isin.items()}
-        self.first_bar = min((s[0] for spans in self.spans.values() for s in spans), default=None)
         self.successor = {old: new for old, new, _ in self.lineage}
         self.predecessors: dict[str, list[tuple[str, date]]] = defaultdict(list)
         for old, new, eff in self.lineage:
@@ -337,6 +337,8 @@ def load_reference(work: Path) -> Reference:
         work / "ref" / "bar_symbol_span.parquet"
     ).iter_rows():
         spans[symbol].append((first, last, iid))
+    # taken before the symbol history joins `spans`: its intervals may start before any bar
+    first_bar = min((s[0] for found in spans.values() for s in found), default=None)
     history: dict[str, list[tuple[date, date | None, str]]] = defaultdict(list)
     for iid, symbol, valid_from, valid_to in raw["symbol_history"]:
         first = date.fromisoformat(valid_from)
@@ -350,6 +352,7 @@ def load_reference(work: Path) -> Reference:
         spans=dict(spans),
         history=dict(history),
         alias=json.loads(alias_file.read_text()) if alias_file.exists() else {},
+        first_bar=first_bar,
     )
 
 

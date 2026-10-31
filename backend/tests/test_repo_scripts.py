@@ -337,6 +337,7 @@ def _reference() -> object:
         },
         history={"new": [(date(2020, 6, 1), None, "ABCNEW")]},
         alias={"ALIASED": "ISIN:INE3", "DUMMY": "PSEUDO:DUM1"},
+        first_bar=date(2015, 1, 1),
     )
 
 
@@ -378,6 +379,10 @@ def test_n500__resolve_before_the_bars_and_from_archived_lists() -> None:
     assert ref.resolve("GONE", date(2010, 5, 1), "out") == "PSEUDO:INE9"
     assert ref.resolve("ABCX", date(2010, 5, 1), "in") == "other"
     assert ref.resolve("NEVER", date(2010, 5, 1), "in") is None
+    # a symbol-history interval from 1900 is a span, never the first bar: the clamp holds
+    spans = {**ref.spans, "XYZ": [(date(1900, 1, 1), date(2026, 1, 1), "other")]}
+    early = n500.Reference(ref.isin, ref.lineage, spans, ref.history, first_bar=ref.first_bar)
+    assert early.resolve("ABC", date(2012, 1, 1), "in") == "old"
 
 
 def test_n500__archived_lists(tmp_path: Path) -> None:
