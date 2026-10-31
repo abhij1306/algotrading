@@ -46,10 +46,10 @@ from __future__ import annotations
 import uuid
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from functools import partial
-from typing import Any
+from typing import Any, Protocol, TypeVar
 
 import numpy as np
 import polars as pl
@@ -60,6 +60,7 @@ from ..engine.positions import trade_r
 from ..engine.rotation import Plan
 from ..engine.strategy.config import Rotation, StrategyConfig
 from ..money import dividend_credit, require_exact
+from .fillrules import close_lower_locked
 from .report import END_OF_PERIOD, FillRow, LegRow, SignalRow, TradeRow
 
 __all__ = [
@@ -69,7 +70,9 @@ __all__ = [
     "Quote",
     "RotationBook",
     "TrCloses",
+    "bar_ending_at",
     "funding_order",
+    "funding_sale",
     "overlap_capital",
     "shares_to_fund",
 ]
@@ -81,6 +84,14 @@ FUNDING = "rotation_funding"  # a sale paying for a setup entry (an overlap run)
 _ZERO = Decimal(0)
 _PRICE = Decimal("0.0001")
 _SCORE = Decimal("0.000001")
+_FIVE = timedelta(minutes=5)
+B = TypeVar("B", bound="_Started")
+
+
+class _Started(Protocol):
+    @property
+    def start(self) -> datetime: ...
+
 
 # (the price a name can trade at now, else None and why not: `no_bar`, `lower_circuit`, ...)
 Quote = tuple[Decimal | None, str | None]
@@ -166,6 +177,23 @@ def funding_order(held: Iterable[str], ranks: Mapping[str, int]) -> list[str]:
     those without a rank on the last rebalance's close (`ranks`), then the lowest rank (the
     largest number) first; ties by name."""
     return sorted(held, key=lambda name: (name in ranks, -ranks.get(name, 0), name))
+
+
+def bar_ending_at(bars: Iterable[B], when: datetime) -> B | None:
+    """The five-minute bar of `bars` (each with a `start`) that ended in the five minutes up to
+    `when`: the last a sale at `when` may be priced from, never one ending after it."""
+    return next((b for b in bars if b.start + _FIVE <= when < b.start + 2 * _FIVE), None)
+
+
+def funding_sale(
+    close: Decimal, low: Decimal, prev_close: Decimal | None, tick: Decimal | None
+) -> Quote:
+    """A funding sale priced at the close of the bar it reads (a five-minute bar, or the day's
+    at a close entry): blocked `lower_circuit` when that bar closed locked at the lower band
+    (`close_lower_locked`), as a rotation sale at 09:20 is; an unknown state is not locked."""
+    if close_lower_locked(close, low, prev_close, tick) is True:
+        return None, "lower_circuit"
+    return close, None
 
 
 def shares_to_fund(need: Decimal, held: int, proceeds: Callable[[int], Decimal]) -> int:

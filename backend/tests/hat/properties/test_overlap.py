@@ -6,7 +6,7 @@ no run, no database."""
 from __future__ import annotations
 
 import uuid
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -16,7 +16,15 @@ from hat_risk_support import policy_with
 
 from app.hat.backtest.discipline import knobs_of
 from app.hat.backtest.portfolio import parse_portfolio
-from app.hat.backtest.rotation import funding_order, overlap_capital, shares_to_fund
+from app.hat.backtest.rotation import (
+    RotationBook,
+    _Holding,
+    bar_ending_at,
+    funding_order,
+    funding_sale,
+    overlap_capital,
+    shares_to_fund,
+)
 from app.hat.backtest.spec import (
     ENTRY_BARS_DAILY,
     OVERLAP_FUNDING,
@@ -29,7 +37,8 @@ from app.hat.backtest.spec import (
 )
 from app.hat.engine.portfolio.allocator import SleeveInput, allocate
 from app.hat.engine.portfolio.health import Health
-from tests.hat.hat_backtest_support import config, sessions, spec, zero_fills
+from app.hat.engine.strategy.versions import seed_config
+from tests.hat.hat_backtest_support import POLICY, VERSION, config, sessions, spec, zero_fills
 
 D = Decimal
 ROTATION, VCP = "rotation", "vcp"
@@ -167,3 +176,37 @@ def test_a_portfolio_file_turns_overlap_on() -> None:
     assert parse_portfolio(doc, lambda _: policy_with()).conventions.overlap is True
     with pytest.raises(BacktestError, match="backtest_bad_overlap"):
         parse_portfolio({**doc, "conventions": {"overlap": "true"}}, lambda _: policy_with())
+
+
+def test_a_funding_sale_on_a_bar_locked_at_the_lower_band_is_blocked() -> None:
+    prev, tick = D(100), D("0.05")
+    assert funding_sale(D(95), D(95), prev, tick) == (None, "lower_circuit")  # the 5% band
+    assert funding_sale(D("95.5"), D(95), prev, tick) == (D("95.5"), None)  # bounced off it
+    assert funding_sale(D(95), D(95), None, tick) == (D(95), None)  # unknown: not locked
+
+
+def test_the_funding_bar_is_the_one_ending_in_the_five_minutes_up_to_the_entry() -> None:
+    first = datetime(2024, 1, 2, 3, 45, tzinfo=UTC)  # 09:15 IST
+    bars = [SimpleNamespace(start=first + timedelta(minutes=5 * n)) for n in range(4)]
+    assert bar_ending_at(bars, first + timedelta(minutes=10)) is bars[1]
+    assert bar_ending_at(bars, first + timedelta(minutes=14, seconds=59)) is bars[1]
+    assert bar_ending_at(bars, first + timedelta(minutes=4)) is None  # none ended yet
+
+
+def test_fund_skips_a_locked_holding_and_sells_the_next_weakest() -> None:
+    book = RotationBook(seed_config("momentum-rotation"), VERSION, POLICY, zero_fills())
+    day = date(2024, 1, 2)
+    for name in ("a", "b", "c"):
+        book.holdings[name] = _Holding(name, day, None, None, D(100), D(100), qty=100)
+    book.ranks = {"a": 1, "b": 2, "c": 3}  # c the weakest, locked
+
+    def quote(name: str) -> tuple[Decimal | None, str | None]:
+        return (None, "lower_circuit") if name == "c" else (D(100), None)
+
+    assert book.fund(day, D(2_500), quote, str) == D(2_500)
+    assert book.holdings["c"].qty == 100
+    assert book.holdings["b"].qty == 75
+    assert book.holdings["a"].qty == 100
+    assert [(r["instrument_id"], r["action"], r["reason"]) for r in book.rows] == [
+        ("b", "trim", "rotation_funding")
+    ]

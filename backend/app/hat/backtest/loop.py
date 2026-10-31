@@ -283,7 +283,16 @@ from .report import (
     compute_metrics,
     flag_auction_risk,
 )
-from .rotation import Market, Plan, Quote, RotationBook, TrCloses, overlap_capital
+from .rotation import (
+    Market,
+    Plan,
+    Quote,
+    RotationBook,
+    TrCloses,
+    bar_ending_at,
+    funding_sale,
+    overlap_capital,
+)
 from .signal_features import SignalFeatures
 from .slots import order_slots, trigger_rank
 from .spec import (
@@ -1209,7 +1218,8 @@ class _Run:
         """The price an overlap run's funding sale of a rotation holding fills at for a setup
         entry at `at`, never before 09:20: blocked as a rotation sale is (`_quote`), else at a
         close entry the daily close, else the close of the name's 5-minute bar that ended in the
-        five minutes up to then where its session may be read, else the 09:20 price (stale
+        five minutes up to then where its session may be read, each blocked when that bar
+        closed locked at the lower band (`funding_sale`), else the 09:20 price (stale
         after 09:20, `OVERLAP_FUNDING_ESTIMATED`). What the price was read from is kept for
         `funding_fills`."""
         price, blocked = self._quote(instrument_id, day, "sell")
@@ -1217,24 +1227,18 @@ class _Run:
             return None, blocked
         key = (instrument_id, day)
         bar = self.view.bar(instrument_id, day)
+        prev_close = self.view.prev_close(instrument_id, day)
+        tick = self.view.tick(instrument_id, day)
         if at.astimezone(IST).time() >= _AT_CLOSE and bar is not None:
             self._funding_sources[key] = _FUNDING_CLOSE
-            return bar.close, None
+            return funding_sale(bar.close, bar.low, prev_close, tick)
         when = max(at, _at(day, _AT_LOW))
         if self._funding_bars[0] != day and self.funder is not None:
             self._funding_bars = (day, self._session_bars(day, set(self.funder.holdings)))
-        five = timedelta(minutes=5)
-        found = next(
-            (
-                b
-                for b in self._funding_bars[1].get(instrument_id, ())
-                if b.start + five <= when < b.start + 2 * five
-            ),
-            None,
-        )
+        found = bar_ending_at(self._funding_bars[1].get(instrument_id, ()), when)
         if found is not None:
             self._funding_sources[key] = _FUNDING_BAR
-            return found.close, None
+            return funding_sale(found.close, found.low, prev_close, tick)
         self._funding_sources[key] = _FUNDING_0920 if when > _at(day, _AT_LOW) else _FUNDING_AT_0920
         return price, None
 

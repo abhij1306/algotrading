@@ -495,7 +495,8 @@ always, its cash being the free cash plus what selling the rotation would net at
 it takes more than the free cash, the rotation sells for the rest before it fills: the weakest
 holding first (unranked on the last rebalance's close, then the lowest rank), the fewest shares
 that cover it, priced as a rotation sale at the entry's instant (never before 09:20: the close of
-the 5-minute bar ending then, else the 09:20 price, a close entry the daily close). Each such sale
+the 5-minute bar ending then, else the 09:20 price, a close entry the daily close; a holding
+whose bar closed locked at the lower band is skipped for the next-weakest). Each such sale
 is a `rebalances.csv` `sell` or `trim` row and a trade leg with the reason `rotation_funding`
 (the exit reason when it closes the trade); metrics `rotation_funding_fills` counts them by price
 source (`bar_5m`, `close`, `at_0920`, `stale_0920`), and a `stale_0920` sale (the 09:20 price for a
