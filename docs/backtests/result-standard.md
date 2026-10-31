@@ -508,6 +508,12 @@ leaves a losing position's funding idle. The conventions record `overlap` (`fund
 `rotation_capital`) and the knobs `overlap` only when set, so other runs keep their digests;
 known gap `overlap_funding_not_live`.
 
+**Rotation drawdown rules.** A rotation with `rotation.scale_down` adds the exit reason
+`rotation_scale_down` (a mid-period trim) and `rebalances.csv` `trim` rows with that reason and
+the firing close as `decision_date` (a trim that cannot fill has `qty` 0 and its block). The two
+keys (`max_per_industry`, `scale_down`) are in `config.json` `strategy_config` and run.json
+`config.resolved.strategy` only when set, so a run without them keeps its hashes.
+
 ---
 
 ## Accuracy checks and the fills' approximations

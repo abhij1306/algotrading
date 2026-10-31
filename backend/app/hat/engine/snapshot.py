@@ -41,6 +41,7 @@ __all__ = [
     "HARD_STOP",
     "day_counts",
     "entry_price_of",
+    "industry_of",
     "last_hard_stop",
     "owner_slots",
 ]
@@ -62,7 +63,9 @@ _ENTERED_STATES = (
 )
 
 
-def _industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
+def industry_of(session: Session, instrument_id: uuid.UUID, day: date) -> str:
+    """The instrument's industry in force on `day` (the newest classification effective by
+    then), `unknown` without one: the risk policy's industry cap and the rotation's read it."""
     row = session.scalar(
         select(HatIndustry.industry)
         .where(HatIndustry.instrument_id == instrument_id, HatIndustry.effective_from <= day)
@@ -125,7 +128,7 @@ def _slots(
             OpenPosition(
                 bot_id=position.bot_id,
                 instrument_id=position.instrument_id,
-                industry=_industry_of(session, position.instrument_id, trade_date),
+                industry=industry_of(session, position.instrument_id, trade_date),
                 qty=position.qty_open + remainders.get(position.signal_id, 0),
                 avg_entry=entry,
                 last_price=prices.get(position.instrument_id, entry),
@@ -139,7 +142,7 @@ def _slots(
             OpenPosition(
                 bot_id=signal.bot_id,
                 instrument_id=signal.instrument_id,
-                industry=_industry_of(session, signal.instrument_id, trade_date),
+                industry=industry_of(session, signal.instrument_id, trade_date),
                 qty=signal.qty,
                 avg_entry=entry,
                 last_price=prices.get(signal.instrument_id, entry),

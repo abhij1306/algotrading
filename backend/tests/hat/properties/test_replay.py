@@ -211,7 +211,8 @@ def test_both_sizings_agree_on_a_book_marked_at_its_prices() -> None:
     assert any(d.kind == "rotation_order" and d.cause == "capital_differs" for d in found)
 
 
-def _cost_sizing(chosen, lots, prices, at_cost, rules):  # noqa: ANN001, ANN202
+def _cost_sizing(chosen, lots, prices, at_cost, rules, *, share):  # noqa: ANN001, ANN202
+    assert share == 1
     held = {name: sum(q for q, _ in parts) for name, parts in lots.items()}
     return at_cost, orders(chosen, held, prices, at_cost, rules)
 

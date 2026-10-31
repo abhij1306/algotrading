@@ -67,7 +67,9 @@ ticks -> 5-minute bars -> TriggerMonitor -> signal -> evaluate_signal
   pure ranking, selection and order rules are `engine/rotation.py`, the backtest's book
   `backtest/rotation.py` and the live (paper) book `engine/rotation_live.py`, both calling them.
   Live ranks in the nightly scan on a rebalance close (`rotation.planned`) and trades at
-  `rotation.rebalance` (`daily/rotation.py`); a rotation holding takes no slot or open risk.
+  `rotation.rebalance` (`daily/rotation.py`); a rotation holding takes no slot or open risk. With
+  the optional `scale_down` the scan records a mid-period trim (`rotation.scale_down`) that the
+  same job trades.
 - **Shadow-day replay** (`daily/replay.py`, runbook): for a past session D, the live path's
   watchlist, planned entries, rotation night and close-phase exits beside the backtest engine's
   on the same store and config, each difference with its cause; reads nothing after D.

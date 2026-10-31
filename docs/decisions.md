@@ -259,6 +259,26 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   `momentum-rotation` is the research pick (riskadj, top 20, monthly, buffer 40, ADV20 >= Rs 10
   cr, close >= 50, 240 bars). Configs without the block keep their canonical JSON and hash.
 
+- **Rotation drawdown rules, optional (owner 2026-10-31: cut rotation drawdowns without idle
+  cash).** Two `rotation` keys, off unless set; backtest and live read the same config.
+  `max_per_industry: N` holds at most N targets per industry (the risk policy's classification,
+  point in time on the trade date): a holding or new name over the cap is passed over for the
+  next eligible one, and a held name over it is sold. An unknown industry is never capped: in the
+  store it marks mostly names that later left the index (of the 122 NIFTY 500 members without
+  one at 2016-12-31, none is a member today; 225 of the 379 known are), so one capped bucket
+  would tilt the selection towards survivors. Unknown share, NIFTY 500 point in time: 24% of
+  members at 2016-12-31, 17% 2017, 12% 2020, 6% 2023, 1% 2025. NSE_STOCKS: ~57% of all
+  ordinary-equity stocks every year; 5-15% of those trading >= Rs 10 cr a day at >= Rs 50.
+  `scale_down: {checks, when, keep_fraction}` reads regime-rule checks (any `regime` rule, on
+  the strategy's regime index and the breadth) on every close: `any_off` (or `all_off`) fires
+  it. A fire on a non-rebalance close trims each holding to `keep_fraction` of its shares at the
+  next 09:20, once per period (live: `rotation.scale_down`, traded by `rotation.rebalance`); a
+  rebalance whose close fires sizes on `keep_fraction` of the capital. Full size comes back only
+  at the next rebalance whose close does not fire, never mid-period, so a flipping check trades
+  at most once a month and stays one rule for both books. It needs `reweight: true` (without it
+  a held name would never be restored). The key is not `derisk`: a config key containing `risk`
+  is refused (HAT-BOT-072).
+
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
   backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
   sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that

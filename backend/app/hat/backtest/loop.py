@@ -200,7 +200,7 @@ from ..engine.portfolio.universe import members_on
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.scan import SESSIONS_AHEAD, ScanInputs, WindowKey, universe_passers, window_key
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
-from ..engine.strategy.config import Playbook, StopLowOfDay, StrategyConfig
+from ..engine.strategy.config import Playbook, Rotation, StopLowOfDay, StrategyConfig
 from ..models import (
     HatPosition,
     HatSignal,
@@ -998,7 +998,19 @@ class _Run:
             self._prefetch_first(pending, day)
         book.sell_pending(day, lambda i: self._quote(i, day, "sell"), self._symbol(day))
         rules = leg.config.rotation
-        if prev is None or rules is None or not rotation.is_rebalance(prev, day, rules.rebalance):
+        if prev is None or rules is None:
+            self._count_fills(book, day)
+            return
+        if not rotation.is_rebalance(prev, day, rules.rebalance):
+            if rules.scale_down is not None and not book.scaled and self._scale_down(rules, prev):
+                self._prefetch_first(list(book.holdings), day)
+                book.scale_down(
+                    day,
+                    prev,
+                    rotation.capital_share(rules, True),
+                    lambda i: self._quote(i, day, "sell"),
+                    self._symbol(day),
+                )
             self._count_fills(book, day)
             return
         allocation = leg.allocations.get(day)
@@ -1006,6 +1018,8 @@ class _Run:
             self._count_fills(book, day)
             return
         plan = self._rotation_plan(book, leg, prev, day)
+        fires = rules.scale_down is not None and self._scale_down(rules, prev)
+        book.scaled = fires
         funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
         overlay = self.overlay
 
@@ -1034,10 +1048,20 @@ class _Run:
         capital = equity * allocation.final_weight
         if book is self.funder:  # less what its sales still fund (`overlap_capital`)
             capital = overlap_capital(allocation.final_weight, equity, self._funded_open(day))
-        book.rebalance(day, plan, capital, market)
+        share = rotation.capital_share(rules, fires)  # the scale-down's fraction when it fires
+        book.rebalance(day, plan, capital * share, market)
         self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
+
+    def _scale_down(self, rules: Rotation, prev: date) -> bool:
+        """Whether the rotation's scale-down fires on `prev`'s close: its checks on the run's
+        regime index closes and the breadth through that close, as the regime gate reads them."""
+        if rules.scale_down is None:  # pragma: no cover - the callers check
+            return False
+        return rotation.scale_down_fires(
+            rules.scale_down, self.view.closes_through(prev), self.view.breadth_through(prev)
+        )
 
     def _rotation_plan(self, book: RotationBook, leg: _Leg, prev: date, day: date) -> Plan:
         """The rebalance `prev`'s close decides for trade date `day` (`RotationBook.plan`): the
@@ -1068,6 +1092,7 @@ class _Run:
             pending=self.view.pending_on(prev),
             gate_on=gate_on,
             can_buy=lambda i: self._quote(i, day, "buy")[0] is not None,
+            industry=lambda i: industry_on(self.data, i, day),
         )
 
     def _quote(self, instrument_id: str, day: date, side: str) -> Quote:

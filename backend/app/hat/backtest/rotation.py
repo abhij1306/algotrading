@@ -18,10 +18,15 @@ traded then (`rebalance`): sales and trims first, then buys and top-ups, scaled 
 when the cash and the overlay's credit cannot pay them all. A name without a bar that day does
 not trade, nor does a sale pinned at the lower band (its 09:15 bar, else the whole day) or a buy
 at the upper band (its 09:15 bar's close, else the open): a sale waits for the next session it
-can fill at (`_Holding.exit`), a buy is not made. A factor-pending name (CA5) is not scored or
-bought that night; a holding in it is kept. At the close the loop sells a holding at the close of
-its last session before a dated demerger (CA8) or its last traded session (HAT-BT-012), and at
-the period's end at its mark (`finish`).
+can fill at (`_Holding.exit`), a buy is not made. With the rules' `max_per_industry` the
+selection reads each name's industry on the trade date (`rotation.select`). With `scale_down`,
+on a close that is not a rebalance close and fires it, every holding is trimmed to
+`keep_fraction` of its shares at the next 09:20 (`scale_down`), once per rebalance period (a
+trim that cannot fill is not carried over); a rebalance whose close fires is sized on that
+fraction of the capital, and the next one whose close does not restores full size. A
+factor-pending name (CA5) is not scored or bought that night; a holding in it is kept. At the
+close the loop sells a holding at the close of its last session before a dated demerger (CA8)
+or its last traded session (HAT-BT-012), and at the period's end at its mark (`finish`).
 
 A trade is one holding from its first buy to its last sale; top-ups and trims change its size.
 Its entry price is its first buy's fill. It has no stop: its `initial_stop` is 0, so its R is its
@@ -253,6 +258,8 @@ class RotationBook:
         self.signals: list[SignalRow] = []
         self.rows: list[dict[str, Any]] = []
         self.ranks: dict[str, int] = {}  # the last rebalance's ranking, which `fund` reads
+        # the scale-down's state: trimmed (or sized down) since the last rebalance
+        self.scaled = False
         # one DP charge per name per sell day: the account's set, shared with its other books
         self._sold: set[tuple[date, str]] = set() if sold is None else sold
 
@@ -276,15 +283,16 @@ class RotationBook:
         pending: frozenset[str],
         gate_on: bool,
         can_buy: Callable[[str], bool],
+        industry: Callable[[str], str] | None = None,
     ) -> Plan:
         """The rebalance decided on `night`'s close: `passers` (the members passing the
         universe stage; `closes` their total-return window, a column each) less the
         factor-pending names, scored and ranked, and the target list (`rotation.select`), a
         held factor-pending name kept without a rank. Under the market filter with the gate off
-        the target is empty."""
+        the target is empty. `industry` is a name's industry on the trade date (the cap's)."""
         return rotation.plan(
             night, passers, closes, self.rules, self.holdings,
-            pending=pending, gate_on=gate_on, can_buy=can_buy,
+            pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
         )  # fmt: skip
 
     # --- the session -----------------------------------------------------------------------
@@ -323,6 +331,32 @@ class RotationBook:
             qty = holding.qty
             self._sell(holding, qty, price, day, reason, rank, score)
             self._row(day, None, name, symbol(name), "sell", reason, rank, score, qty, price)
+
+    def scale_down(
+        self,
+        day: date,
+        night: date,
+        keep_fraction: Decimal,
+        sell: Callable[[str], Quote],
+        symbol: Callable[[str], str],
+    ) -> None:
+        """Trim each holding to `keep_fraction` of its shares at `day`'s 09:20, the scale-down
+        `night`'s close fired (`rotation.scale_down_trims`); a holding whose sale is pending is
+        left to it, and a trim that cannot fill now is not carried over."""
+        self.scaled = True
+        held = {n: h.qty for n, h in self.holdings.items() if h.exit is None}
+        for order in rotation.scale_down_trims(held, keep_fraction):
+            name = order.instrument_id
+            price, blocked = sell(name)
+            if price is None:
+                self._row(day, night, name, symbol(name), "trim", blocked, None, None, 0, None)
+                continue
+            holding = self.holdings[name]
+            self._sell(holding, order.qty, price, day, rotation.SCALED_DOWN, None, None)
+            self._row(
+                day, night, name, symbol(name), "trim", rotation.SCALED_DOWN, None, None,
+                order.qty, price,
+            )  # fmt: skip
 
     def rebalance(self, day: date, plan: Plan, capital: Decimal, market: Market) -> None:
         """Trade `plan` at `day`'s 09:20 on `capital`, the sleeve's (module docstring)."""
