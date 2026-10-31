@@ -263,12 +263,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   cash).** Two `rotation` keys, off unless set; backtest and live read the same config.
   `max_per_industry: N` holds at most N targets per industry (the risk policy's classification,
   point in time on the trade date): a holding or new name over the cap is passed over for the
-  next eligible one, and a held name over it is sold. An unknown industry is never capped: in the
-  store it marks mostly names that later left the index (of the 122 NIFTY 500 members without
-  one at 2016-12-31, none is a member today; 225 of the 379 known are), so one capped bucket
-  would tilt the selection towards survivors. Unknown share, NIFTY 500 point in time: 24% of
-  members at 2016-12-31, 17% 2017, 12% 2020, 6% 2023, 1% 2025. NSE_STOCKS: ~57% of all
-  ordinary-equity stocks every year; 5-15% of those trading >= Rs 10 cr a day at >= Rs 50.
+  next eligible one, and a held name over it is sold. The classification follows ISIN lineage
+  on both books (a linked ISIN's counts for its chain). `unknown_industry` sets how a name
+  without one counts: `free` (default) never caps it, `bucket` counts every unknown name as one
+  industry. **Either choice is a bias:** before ~2021 an unknown industry marks mostly names that
+  later left the index (of the 122 NIFTY 500 members without one at 2016-12-31, none is a member
+  today; 225 of the 379 known are), so `free` lets the cap miss concentration among them and
+  `bucket` tilts the selection towards survivors (a look-ahead in effect). Unknown share, NIFTY
+  500 point in time: 24% of members at 2016-12-31, 20% 2017, 17% 2018, 14% 2019, 12% 2020, 9%
+  2021, 6% 2023, 3% 2024, 1% 2025. NSE_STOCKS: ~57% of all ordinary-equity stocks every year;
+  5-15% of those trading >= Rs 10 cr a day at >= Rs 50. With the cap, live subscribes the
+  open's names deeper than `top_n + buffer_rank` (`rotation.selection_depth`): to the rank by
+  which that many names the cap could admit have been seen, since a name beyond its industry's
+  count is never selected.
   `scale_down: {checks, when, keep_fraction}` reads regime-rule checks (any `regime` rule, on
   the strategy's regime index and the breadth) on every close: `any_off` (or `all_off`) fires
   it. A fire on a non-rebalance close trims each holding to `keep_fraction` of its shares at the
@@ -277,7 +284,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   at the next rebalance whose close does not fire, never mid-period, so a flipping check trades
   at most once a month and stays one rule for both books. It needs `reweight: true` (without it
   a held name would never be restored). The key is not `derisk`: a config key containing `risk`
-  is refused (HAT-BOT-072).
+  is refused (HAT-BOT-072). Under the overlap convention the fraction applies to the net
+  rotation sleeve (its capital after `overlap_capital`), and the cash a trim frees is ordinary
+  free cash the setup sleeves may use.
 
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
   backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting

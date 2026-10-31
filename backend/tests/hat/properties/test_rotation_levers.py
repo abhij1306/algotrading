@@ -18,9 +18,11 @@ from app.hat.engine.rotation import (
     scale_down_fires,
     scale_down_trims,
     select,
+    selection_depth,
     targets,
 )
 from app.hat.engine.rotation_live import scaled_in_period
+from app.hat.engine.snapshot import chain_members
 from app.hat.engine.strategy.config import ConfigError, Rotation, ScaleDown, parse_config
 from app.hat.engine.strategy.versions import seed_config
 
@@ -162,3 +164,56 @@ def test_the_keys_are_left_out_unset_and_the_scale_down_needs_reweight() -> None
             {**raw, "rotation": {**raw["rotation"], "scale_down": {"checks": [SMA3],
                                                                    "keep_fraction": 1.0}}}
         )  # fmt: skip
+
+
+def test_bucketed_unknowns_count_as_one_industry() -> None:
+    industry = {"x": UNKNOWN_INDUSTRY, "y": UNKNOWN_INDUSTRY, "d": "it"}
+    found = select(["x", "y", "d"], set(), 3, 3, lambda n: True, max_per_industry=1,
+                   industry=industry.__getitem__, bucket_unknown=True)  # fmt: skip
+    assert found == ["x", "d"]
+    rules = Rotation(max_per_industry=1, unknown_industry="bucket", top_n=3, buffer_rank=3,
+                     min_bars=5, long_sessions=5, short_sessions=5, skip_sessions=1)  # fmt: skip
+    ranks = (("x", 3.0), ("y", 2.0), ("d", 1.0))
+    picked = targets(ranks, set(), rules, gate_on=True, can_buy=lambda n: True,
+                     industry=industry.__getitem__)  # fmt: skip
+    assert picked == (("x", "d"), False)
+
+
+def test_the_selection_depth_reaches_past_the_names_the_cap_skips() -> None:
+    plain = Rotation(top_n=2, buffer_rank=2, min_bars=5, long_sessions=5, short_sessions=5,
+                     skip_sessions=1)  # fmt: skip
+    capped = plain.model_copy(update={"max_per_industry": 1})
+    bucket = capped.model_copy(update={"unknown_industry": "bucket"})
+    ranking = ["a", "b", "c", "d", "e", "f"]  # banks a b c, it d f, unknown e
+    assert selection_depth(ranking, plain, SECTOR.__getitem__) == 4
+    assert selection_depth(ranking, capped) == 4  # no classification: the uncapped rule
+    # admitted: a (bank), d (it), e (unknown, free), then f is a second it: 4 needs the whole list
+    assert selection_depth(ranking, capped, SECTOR.__getitem__) == 6
+    assert selection_depth(["a", "d", "e", "x"], capped, {**SECTOR, "x": "fmcg"}.__getitem__) == 4
+    # bucketed, the unknown counts once like an industry
+    found = selection_depth(["a", "e", "d", "y", "z"], bucket,
+                            {**SECTOR, "y": UNKNOWN_INDUSTRY, "z": "fmcg"}.__getitem__)  # fmt: skip
+    assert found == 5
+
+
+def test_a_chain_is_every_instrument_its_links_join_either_way() -> None:
+    links = [("old", "mid"), ("mid", "new"), ("p", "q")]
+    assert chain_members(links, "new") == {"old", "mid", "new"}
+    assert chain_members(links, "old") == {"old", "mid", "new"}
+    assert chain_members(links, "q") == {"p", "q"}
+    assert chain_members(links, "alone") == {"alone"}
+
+
+def test_unknown_industry_is_left_out_at_its_default_and_needs_a_cap() -> None:
+    raw = seed_config("momentum-rotation").to_json()
+    assert "unknown_industry" not in raw["rotation"]
+    on = parse_config(
+        {
+            **raw,
+            "rotation": {**raw["rotation"], "max_per_industry": 3, "unknown_industry": "bucket"},
+        }
+    )
+    assert on.to_json()["rotation"]["unknown_industry"] == "bucket"
+    with pytest.raises(ConfigError) as refused:
+        parse_config({**raw, "rotation": {**raw["rotation"], "unknown_industry": "bucket"}})
+    assert refused.value.codes == {"unknown_industry_without_cap"}

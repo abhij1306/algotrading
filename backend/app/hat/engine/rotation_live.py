@@ -27,7 +27,9 @@ first.
   (`scaled_in_period`), the night records `rotation.scale_down` for the next session, and that
   session's job trims every holding to `keep_fraction` of its shares (`scale_down`), as the
   backtest's book does. With the rules' `max_per_industry` the open's selection reads each
-  name's industry on the trade date (`snapshot.industry_of`, the risk policy's).
+  name's industry on the trade date (`snapshot.industry_of`, the risk policy's, following ISIN
+  lineage as the backtest's does), and the night records a deeper `depth` for the open's
+  subscriptions (`rotation.selection_depth`), so the names the cap skips to are priced too.
 
 Its prices are the live last trade at 09:20 or after, the definition the backtest and the
 replay share (`engine/fill_0920.py`: the last trade before 09:20, the 09:15 bar's close).
@@ -71,7 +73,7 @@ from .positions import TradeError
 from .regime_gate import regime_allows_longs
 from .scan import ScanInputs, universe_passers
 from .shadow import sell_position
-from .snapshot import industry_of
+from .snapshot import industry_lookup
 from .strategy.config import Rotation, StrategyConfig, parse_config
 from .watchlist import bot_universe_members
 
@@ -206,7 +208,11 @@ def plan_night(
         "strategy_version_id": str(bot.live_version_id),
         "passers": len(passers),
         # how deep the open's selection may reach: its subscriptions (`planned_instruments`)
-        "depth": rules.top_n + rules.buffer_rank,
+        "depth": rotation.selection_depth(
+            [name for name, _ in ranks],
+            rules,
+            None if rules.max_per_industry is None else industry_lookup(session, trade_date),
+        ),
         "ranking": [[name, str(_score(value))] for name, value in ranks],
     }
     if rules.scale_down is not None:
@@ -571,7 +577,7 @@ def rebalance(
         rules,
         gate_on=night.gate_on,
         price=price,
-        industry=lambda name: industry_of(session, uuid.UUID(name), night.trade_date),
+        industry=industry_lookup(session, night.trade_date),
     )
     first = context()
     missing = ["feed", *unpriced] if first.feed_stale is True else list(unpriced)

@@ -1013,13 +1013,15 @@ class _Run:
                 )
             self._count_fills(book, day)
             return
+        # the period's scale-down state is its rebalance close's, traded or not (live's plan
+        # records it whatever the open's allocation)
+        fires = rules.scale_down is not None and self._scale_down(rules, prev)
+        book.scaled = fires
         allocation = leg.allocations.get(day)
         if allocation is None:
             self._count_fills(book, day)
             return
         plan = self._rotation_plan(book, leg, prev, day)
-        fires = rules.scale_down is not None and self._scale_down(rules, prev)
-        book.scaled = fires
         funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
         overlay = self.overlay
 

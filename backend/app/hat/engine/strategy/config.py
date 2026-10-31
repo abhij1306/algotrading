@@ -539,9 +539,10 @@ class Rotation(Model):
     it falls out of the buffer or the universe. With `market_filter` the regime gate off on the
     rebalance close empties the book. `max_per_industry` (unset: no cap) holds at most that many
     targets per industry (`engine.rotation.select`), the classification the risk policy's industry
-    cap reads, point in time; `scale_down` (unset: off) is the mid-period scale-down
-    (`ScaleDown`). Both are left out of the canonical form when unset, so stored configs keep
-    their hash."""
+    cap reads, point in time; `unknown_industry` says how a name without one counts under it
+    (`free`, the default: never capped; `bucket`: every unknown name one industry);
+    `scale_down` (unset: off) is the mid-period scale-down (`ScaleDown`). All three are left out
+    of the canonical form at their defaults, so stored configs keep their hash."""
 
     rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
     score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
@@ -556,6 +557,9 @@ class Rotation(Model):
     min_change_pct: float = Field(default=2.0, ge=0, le=100)
     market_filter: bool = False
     max_per_industry: int | None = Field(default=None, ge=1, le=200, exclude_if=lambda v: v is None)
+    unknown_industry: Literal["free", "bucket"] = Field(
+        default="free", exclude_if=lambda v: v == "free"
+    )
     scale_down: ScaleDown | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
@@ -563,6 +567,8 @@ class Rotation(Model):
         if self.scale_down is not None and not self.reweight:
             # without reweight a held name keeps its size: the restore would never come
             raise ValueError("scale_down_needs_reweight")
+        if self.unknown_industry != "free" and self.max_per_industry is None:
+            raise ValueError("unknown_industry_without_cap")
         if self.buffer_rank < self.top_n:
             raise ValueError("buffer_rank_below_top_n")
         if self.short_sessions > self.long_sessions or self.skip_sessions >= self.long_sessions:

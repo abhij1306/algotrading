@@ -79,7 +79,7 @@ from ..engine.positions import position_state
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.rotation_live import night_ranking, rebalance_orders
 from ..engine.scan import ScanInputs, scan_bot, universe_passers
-from ..engine.snapshot import industry_of
+from ..engine.snapshot import industry_lookup
 from ..engine.strategy.config import ExitRule, Rotation, StrategyConfig, parse_config
 from ..engine.watchlist import bot_universe_members
 from ..errors import HatError
@@ -830,7 +830,7 @@ def live_side(
                         books[b.id],
                         prices,
                         rebalance_orders,
-                        industry=lambda n: industry_of(session, uuid.UUID(n), trade_date),
+                        industry=industry_lookup(session, trade_date),
                         scaled=_scaled(b.config.rotation, inputs[index]),
                     )
             continue

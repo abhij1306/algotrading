@@ -17,9 +17,10 @@ ranks on that close and selects at the next open, where it knows what it can buy
 `lot_sales` splits a sale over a live holding's lots (a top-up is a lot of its own).
 
 Two optional rules, off unless the config sets them: `max_per_industry` caps the targets per
-industry in `select` (an unknown industry is not capped: in the point-in-time store it marks
-mostly names that later left the index, so one capped bucket would tilt the selection towards
-the survivors), and `scale_down` (`scale_down_fires`) trims the book to a fraction mid-period
+industry in `select` (an unknown industry is not capped by default, `unknown_industry: free`: in
+the point-in-time store it marks mostly names that later left the index, so one capped bucket,
+`bucket`, tilts the selection towards the survivors; either choice is a bias, `decisions.md`),
+and `scale_down` (`scale_down_fires`) trims the book to a fraction mid-period
 (`scale_down_trims`) or sizes a rebalance on that fraction of the capital (`capital_share`).
 
 Every rotation order trades at 09:20, never at the open: its price is `engine/fill_0920.py`'s.
@@ -71,6 +72,7 @@ __all__ = [
     "scale_down_trims",
     "scores",
     "select",
+    "selection_depth",
     "targets",
     "window_rows",
     "zscores",
@@ -217,6 +219,7 @@ def select(
     *,
     max_per_industry: int | None = None,
     industry: Callable[[str], str] | None = None,
+    bucket_unknown: bool = False,
 ) -> list[str]:
     """The target names: `kept` first (held names kept without a rank), then each holding
     ranked within `buffer_rank` (1 the best of `ranking`), best first, then the best names
@@ -224,21 +227,23 @@ def select(
     outside the buffer, or not ranked, is not a target. With `max_per_industry` a holding or a
     new name whose `industry` already has that many targets is passed over for the next one (a
     held name passed over is sold); a kept name always stays and counts, and an unknown industry
-    (`UNKNOWN_INDUSTRY`) is never capped."""
+    (`UNKNOWN_INDUSTRY`) is never capped unless `bucket_unknown` counts every unknown name as one
+    industry."""
     target: list[str] = []
     counts: dict[str, int] = {}
 
     def room(name: str) -> bool:
         if max_per_industry is None or industry is None:
             return True
-        found = industry(name)
-        return found == UNKNOWN_INDUSTRY or counts.get(found, 0) < max_per_industry
+        key = _industry_key(industry(name), bucket_unknown)
+        return key is None or counts.get(key, 0) < max_per_industry
 
     def take(name: str) -> None:
         target.append(name)
         if max_per_industry is not None and industry is not None:
-            found = industry(name)
-            counts[found] = counts.get(found, 0) + 1
+            key = _industry_key(industry(name), bucket_unknown)
+            if key is not None:
+                counts[key] = counts.get(key, 0) + 1
 
     for name in list(kept)[:top_n]:
         take(name)
@@ -255,6 +260,39 @@ def select(
         if name not in target and name not in held and room(name) and can_buy(name):
             take(name)
     return target
+
+
+def _industry_key(found: str, bucket_unknown: bool) -> str | None:
+    """The industry a name counts under the cap as, None when it is never capped (an unknown
+    industry without `bucket_unknown`)."""
+    return None if found == UNKNOWN_INDUSTRY and not bucket_unknown else found
+
+
+def selection_depth(
+    ranking: Sequence[str], rules: Rotation, industry: Callable[[str], str] | None = None
+) -> int:
+    """How deep into `ranking` (best first) a rebalance's selection may reach, the names live
+    subscribes and prices for the open: `top_n + buffer_rank` without an industry cap. With one,
+    the rank by which `top_n + buffer_rank` names the cap could admit have been seen (a name
+    beyond the cap's count in its industry is never selected, so it does not count; an unknown
+    industry counts unless bucketed), or the whole ranking: the uncapped rule's slack measured in
+    names the cap leaves selectable."""
+    reach = rules.top_n + rules.buffer_rank
+    cap = rules.max_per_industry
+    if cap is None or industry is None:
+        return reach
+    bucket = rules.unknown_industry == "bucket"
+    counts: dict[str, int] = {}
+    admitted = 0
+    for n, name in enumerate(ranking, start=1):
+        key = _industry_key(industry(name), bucket)
+        if key is None or counts.get(key, 0) < cap:
+            admitted += 1
+            if key is not None:
+                counts[key] = counts.get(key, 0) + 1
+        if admitted >= reach:
+            return n
+    return len(ranking)
 
 
 @dataclass(frozen=True)
@@ -352,6 +390,7 @@ def targets(
         kept=[h for h in held if h in pending],
         max_per_industry=rules.max_per_industry,
         industry=industry,
+        bucket_unknown=rules.unknown_industry == "bucket",
     )
     return tuple(found), False
 
