@@ -1,5 +1,5 @@
 {
-  "format_version": "1.7",
+  "format_version": "1.8",
   "identity": {
     "run_id": "019a2b3c-4d5e-7f60-8a1b-2c3d4e5f6a7b",
     "strategy": "S1",
@@ -105,6 +105,7 @@
     "cagr_ex_top5_trades_pct": null,
     "max_position_pct_adv": null,
     "trades_over_5pct_adv": null,
+    "entry_fills_0920_estimated": 0,
     "avg_dd_pct": 6.1,
     "pbo": 0.31
   },

@@ -558,9 +558,33 @@ class InverseBeta(Model):
     floor: float = Field(default=0.5, gt=0, le=2)
 
 
+MAX_BUFFER = 1000  # the deepest hold buffer a rotation may have, a wide book's included
+
+
+def wide_buffer_rank(buffer_rank: int, top_n: int, wide_top_n: int) -> int:
+    """A wide book's hold buffer (`WideBook`): `buffer_rank` raised in proportion to `wide_top_n`
+    over `top_n`, rounded up."""
+    return -(-buffer_rank * wide_top_n // top_n)
+
+
 # The fewest sessions a period of each cadence has (holidays included): the tranches' offsets
 # must fit inside it, so every tranche trades once a period.
 MIN_PERIOD_SESSIONS = {"month_end": 15, "fortnight": 6, "weekly": 3}
+
+
+class WideBook(Model):
+    """A rotation's wider book in a weak market (`engine.rotation.widened`): on a rebalance
+    close where `checks` (regime rules on the strategy's regime index and the market breadth, as
+    `ScaleDown` reads them) fire, one off (`any_off`) or every one (`all_off`), that rebalance
+    holds `top_n` names, more than the rules' own, its `buffer_rank` raised in proportion
+    (rounded up), each an equal share of the same capital: more, smaller positions, never cash.
+    Decided on the rebalance close only; the next rebalance whose close does not fire returns
+    to the rules' `top_n`. Backtest only: live refuses such a config
+    (`rotation_live.WIDE_BOOK_NOT_LIVE`)."""
+
+    top_n: int = Field(ge=2, le=200)
+    checks: list[RegimeRule] = Field(min_length=1, max_length=4)
+    when: Literal["any_off", "all_off"] = "any_off"
 
 
 class Tranches(Model):
@@ -597,8 +621,11 @@ class Rotation(Model):
     `inverse_beta` (unset: equal weights) weights the targets by 1 / beta (`InverseBeta`);
     `tranches` (unset: one book) staggers the rebalance (`Tranches`); `refuse_near_limit` refuses
     a buy at or within one tick of the day's upper price band and holds a sale at or within one
-    tick of its lower one (`engine.rotation.near_limit`). All of these are left out of the
-    canonical form at their defaults, so stored configs keep their hash."""
+    tick of its lower one (`engine.rotation.near_limit`); `industry_relative` ranks each name on
+    its score less the median score of its industry that night (`engine.rotation.
+    industry_relative`); `wide_book` (unset: off) holds more names while a breadth rule is off
+    (`WideBook`). All of these are left out of the canonical form at their defaults, so stored
+    configs keep their hash."""
 
     rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
     score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
@@ -608,7 +635,7 @@ class Rotation(Model):
     vol_sessions: int = Field(default=252, ge=20, le=504)
     min_bars: int = Field(default=240, ge=1, le=504)
     top_n: int = Field(default=20, ge=1, le=200)
-    buffer_rank: int = Field(default=40, ge=1, le=1000)
+    buffer_rank: int = Field(default=40, ge=1, le=MAX_BUFFER)
     reweight: bool = True
     min_change_pct: float = Field(default=2.0, ge=0, le=100)
     market_filter: bool = False
@@ -622,9 +649,16 @@ class Rotation(Model):
     inverse_beta: InverseBeta | None = Field(default=None, exclude_if=lambda v: v is None)
     tranches: Tranches | None = Field(default=None, exclude_if=lambda v: v is None)
     refuse_near_limit: bool = Field(default=False, exclude_if=lambda v: not v)
+    industry_relative: bool = Field(default=False, exclude_if=lambda v: not v)
+    wide_book: WideBook | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Rotation:
+        if self.wide_book is not None:
+            if self.wide_book.top_n <= self.top_n:
+                raise ValueError("wide_book_not_wider")
+            if wide_buffer_rank(self.buffer_rank, self.top_n, self.wide_book.top_n) > MAX_BUFFER:
+                raise ValueError("wide_book_buffer_too_deep")
         if self.score_skip and (
             self.score != "riskadj" or self.skip_sessions >= self.short_sessions
         ):

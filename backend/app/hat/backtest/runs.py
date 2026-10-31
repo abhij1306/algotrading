@@ -22,6 +22,7 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 import subprocess
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -35,7 +36,7 @@ import polars as pl
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.paths import PROJECT_ROOT
+from app.paths import ENGINE_COMMIT_FILE, PROJECT_ROOT
 
 from ..confighash import config_hash
 from ..configs.records import Bot, Strategy, StrategyVersion
@@ -60,7 +61,7 @@ from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
-from . import etf_data, folder, trials
+from . import etf_data, folder, traded_universe, trials
 from .data import (
     NSE_STOCKS,
     NSE_STOCKS_UNIVERSE_ID,
@@ -229,6 +230,12 @@ def _sleeve_of(
         raise BacktestError("backtest_unknown_version")
     if request.universe == NSE_STOCKS:
         return version, nse_stocks_version(), strategy.user_id
+    try:
+        count = traded_universe.count_of_name(request.universe)
+    except ValueError as exc:
+        raise BacktestError(str(exc)) from None
+    if count is not None:
+        return version, top_traded_version(count), strategy.user_id
     universe = _universe_named(session, request.universe or "", strategy.user_id)
     live = universe_live_version(session, None if universe is None else universe.id)
     if live is None:
@@ -245,6 +252,18 @@ def nse_stocks_version() -> HatUniverseVersion:
         status="live",
         definition={},
         config_hash=NSE_STOCKS,
+    )
+
+
+def top_traded_version(count: int) -> HatUniverseVersion:
+    """The rule universe `TOP_TRADED_<count>`'s version (`traded_universe`), never stored."""
+    return HatUniverseVersion(
+        id=traded_universe.version_id(count),
+        universe_id=traded_universe.UNIVERSE_ID,
+        version=1,
+        status="live",
+        definition={},
+        config_hash=traded_universe.label(count),
     )
 
 
@@ -309,9 +328,12 @@ def _strategy_label(name: str) -> str:
 
 def _universe_label(version: HatUniverseVersion, name: str) -> str:
     """`<index without spaces>_PIT` for a universe read from its index point in time (e.g.
-    `NIFTY500_PIT`), `NSE_STOCKS` for the built-in one, else the universe's name."""
+    `NIFTY500_PIT`), `NSE_STOCKS` for the built-in one, `TOP_TRADED_<N>` for the rule one,
+    else the universe's name."""
     if version.id == NSE_STOCKS_VERSION_ID:
         return NSE_STOCKS
+    if (count := traded_universe.count_of(version.id)) is not None:
+        return traded_universe.label(count)
     index = (version.definition or {}).get("index")
     return f"{str(index).replace(' ', '').upper()}_PIT" if index else name
 
@@ -536,27 +558,51 @@ def fill_ranges(
 # --- one run -----------------------------------------------------------------------------------
 
 
-def engine_commit(root: Path = PROJECT_ROOT) -> str | None:
-    """The repository's HEAD, with `-dirty` when its tree has changes; None outside a git
-    checkout (the deployed image)."""
+def engine_commit(root: Path = PROJECT_ROOT, marker: Path = ENGINE_COMMIT_FILE) -> str | None:
+    """The commit of the code running (`commit_of`): the repository's HEAD, with `-dirty` when
+    its tree has changes, when `root` is a git checkout's top level; else the commit `git
+    archive` wrote into `marker` (an exported tree, even one placed inside another checkout);
+    None when neither says (a copied tree, the deployed image without the marker)."""
+
+    def git(*args: str) -> str | None:
+        try:
+            return subprocess.run(  # noqa: S603 - fixed arguments
+                ["git", "-C", str(root), *args],  # noqa: S607
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            ).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            return None
+
     try:
-        head = subprocess.run(  # noqa: S603 - fixed arguments
-            ["git", "-C", str(root), "rev-parse", "HEAD"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        ).stdout.strip()
-        dirty = subprocess.run(  # noqa: S603 - fixed arguments
-            ["git", "-C", str(root), "status", "--porcelain"],  # noqa: S607
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout.strip()
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return f"{head}-dirty" if dirty else head or None
+        written = marker.read_text(encoding="utf-8")
+    except OSError:
+        written = None
+    top = git("rev-parse", "--show-toplevel")
+    checkout = top is not None and Path(top).resolve() == root.resolve()
+    head = git("rev-parse", "HEAD") if checkout else None
+    dirty = git("status", "--porcelain") if checkout else None
+    return commit_of(checkout=checkout, head=head, dirty=dirty, marker=written)
+
+
+_SHA = re.compile(r"^[0-9a-f]{40}$")
+
+
+def commit_of(
+    *, checkout: bool, head: str | None, dirty: str | None, marker: str | None
+) -> str | None:
+    """The engine commit a run records: in a checkout (`root` is its top level) its `head`, with
+    `-dirty` when `git status` printed anything (`dirty`; None when it failed: no commit); else
+    the commit in the `marker` file when `git archive` substituted one (a 40-hex line), else
+    None. A checkout whose git read failed records None, never another tree's commit."""
+    if checkout:
+        if not head or dirty is None:
+            return None
+        return f"{head}-dirty" if dirty else head
+    found = (marker or "").strip()
+    return found if _SHA.match(found) else None
 
 
 def resolved_of(spec: RunSpec) -> dict[str, Any]:
@@ -743,6 +789,9 @@ def _blocks(
         "audit": _audit_ref(market.audit),
         **data_audit.run_counts(market.audit),
     }
+    rule = (market.snapshot.get("membership") or {}).get("rule")
+    if rule is not None:  # a rule universe (`traded_universe`): how its members were formed
+        data["universe_rule"] = rule
     config = {
         "overrides": changed_paths(resolved, base_resolved)
         if isinstance(base_resolved, dict)

@@ -26,6 +26,7 @@ __all__ = [
     "DEMERGER",
     "END_OF_PERIOD",
     "REBALANCE_COLUMNS",
+    "SKIP_COLUMNS",
     "BacktestResult",
     "FillRow",
     "SessionRow",
@@ -60,6 +61,11 @@ REBALANCE_COLUMNS = (
     "value",
     "target_value",
 )
+
+
+# skips.csv, one row per trigger of a watchlist row that never became a signal (`loop._skip`):
+# its trade date, strategy, playbook, instrument, symbol and the skip's reason
+SKIP_COLUMNS = ("date", "strategy", "playbook", "instrument_id", "symbol", "reason")
 
 
 @dataclass(frozen=True)
@@ -213,6 +219,9 @@ class BacktestResult:
     # a rotation leg's rebalance rows (`REBALANCE_COLUMNS`): rebalances.csv; empty
     # without one
     rebalances: tuple[Mapping[str, Any], ...] = ()
+    # each skipped trigger of a watchlist row (`SKIP_COLUMNS`): skips.csv; the counts by reason
+    # are `skips`, which also count the skips without a row
+    skip_rows: tuple[Mapping[str, Any], ...] = ()
     # the ledger reconciliation (`reconcile`): its status, what it checked, its findings
     ledger: Mapping[str, Any] = field(default_factory=dict)
     # the reads past the as-of clock the run made on purpose, by reason (`MarketView.hindsight`)

@@ -137,7 +137,8 @@ whose audit warns or fails):
   bars and on the daily estimate, regime, exit, industry, liquidity, playbook with its signals
   and refusals), `refusals` (what the risk gates blocked).
 - `trades.csv`, `equity.csv`, `refusals.csv` (with forward R of each blocked entry),
-  `signals.csv`, `stocks.csv`: why.
+  `signals.csv`, `stocks.csv`, `skips.csv` (each trigger that never became a signal, e.g.
+  `limit_not_reached`): why.
 - `config.json`: everything the run used, enough to rerun it.
 - A `book_vcp` run's detector audit: `python scripts/research/s1_book_audit.py --run-id <id>
   [--seed N]` replays the run's nightly scan (no day loop, its funnel checked against
@@ -326,6 +327,8 @@ line flag sets the same for one run or every variant.
 | Rotation staggered rebalance (`count` sub-books, tranche k deciding k x `offset_sessions` after the period's close; backtest only, no `scale_down` or overlap; unset = one book) | `set: ['rotation.tranches={"count": 4, "offset_sessions": 3}']` | `--set` |
 | Rotation refusal near the price band (a buy at or within a tick of the upper band passed over, a sale at the lower one held; counted in `metrics.rotation.near_limit_refused`; off by default) | `set: ['rotation.refuse_near_limit=true']` | `--set` |
 | Rotation size-aware impact (C x sqrt(order value / 20-session median traded value) bps on each rotation market order beside the slippage, cap 1000; `metrics.rotation.impact`; off by default) | `impact_bps: 100` (a portfolio file's `conventions: {impact_bps: 100}`) | `--impact-bps` |
+| Rotation industry-relative momentum (each score less its industry's median that night; an unknown industry keeps its raw score; off by default) | `set: ['rotation.industry_relative=true']` | `--set` |
+| Rotation wider book in weak markets (while the checks fire on a rebalance close, `top_n` names and the buffer raised in proportion; backtest only; `metrics.rotation.wide_rebalances`; unset = off) | `set: ['rotation.wide_book={"top_n": 30, "checks": [{"rule": "breadth_above", "min_pct": 40}]}']` | `--set` |
 | Risk per trade | `risk_pct: 0.005` | `--risk-pct` |
 | Sleeve weight | `sleeve_weight: 0.5` | `--sleeve-weight` |
 | Max positions (and the ladder's top level) | `max_positions: 10` | `--max-positions` |
@@ -340,7 +343,7 @@ line flag sets the same for one run or every variant.
 | `volume_pace` on the full day's volume on 5-minute sessions (the daily estimate refuses the rule; a look-ahead, known gap `volume_pace_on_full_day_volume`, and the run audit fails) | `volume_pace: full_day` | `--volume-pace` |
 | A rotation that funds the setup sleeves beside it (rotation weight kept, setup weights summing to at most 1 on top; `result-standard.md` v1.6) | the portfolio file's `conventions: {overlap: true}` only | none |
 | Slippage, cost model | one sweep per value | `--slippage-bps` (20 by default), `--cost-model` |
-| Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook) | `--universe`, `--from`, `--to` |
+| Universe, window | one sweep per value (a sweep reads one market); `NSE_STOCKS` every NSE stock (runbook); `TOP_TRADED` (or `TOP_TRADED_<N>`) the top 500 (N) stocks by median traded value, re-formed each March and September end (`decisions.md`) | `--universe`, `--from`, `--to` |
 
 Not knobs without a code change (strategy or engine changes, shared with live): the live regime
 engine's thresholds and multiplier table (`engine/portfolio/regime.py`, under `regime_mult:

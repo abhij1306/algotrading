@@ -1,7 +1,7 @@
-# Backtest Result Standard v1.7
+# Backtest Result Standard v1.8
 
-Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.7 changes amend them, a
-later one winning where they differ. `format_version` is `1.7` (`run.schema.json`,
+Sections 1 to 6 and the rules are v1.0; the sections v1.1 to v1.8 changes amend them, a
+later one winning where they differ. `format_version` is `1.8` (`run.schema.json`,
 `example_run.json`). How runs are made and checked: `process.md`.
 
 Every backtest run writes one folder. No exceptions, no partial runs.
@@ -17,6 +17,7 @@ runs/<run_id>/
   ep_candidates.csv  # pre-open playbook runs only: each gap-scan candidate-day
   overlay.csv     # ETF overlay runs only: one row per session of the sleeve
   rebalances.csv  # rotation runs only: each rebalance's orders and holds
+  skips.csv       # triggers that never became a signal (only when there is one)
 ```
 
 Why four files: headline metrics say *whether* a variant is better. Trades, equity and refusals say *why*, and that is what tweak suggestions are built from.
@@ -535,6 +536,20 @@ weight's; with `tranches` each tranche's rows and trades are its own (a name two
 two trades) and a row's `decision_date` names its tranche's close. A rotation fill that paid an
 impact has its range in the ledger and the run audit's `fills` check widened by its own impact,
 no other fill (`impact_fills_widened` in that check's summary).
+
+## v1.8 changes
+
+**metrics.entry_fills_0920_estimated**: the setup entries priced at the daily open moved to
+09:20 (a gap over the level, or a next-session entry, on the daily estimate); the rotation's
+09:20 counts stay in `metrics.rotation`, which adds `wide_rebalances` under `wide_book`.
+**skips.csv** (only when there is one): each trigger of a watchlist row that never became a
+signal (`date`, `strategy`, `playbook`, `instrument_id`, `symbol`, `reason`), so a lost entry
+(`limit_not_reached` and the rest) shows in a run comparison; `skips` still counts every skip.
+**data.universe_rule**: a rule universe's rule (`TOP_TRADED_<N>`, `decisions.md`).
+**identity.engine_commit** is the checkout's HEAD only when the code runs from that checkout's
+top level; a tree exported with `git archive` records its own commit (`backend/ENGINE_COMMIT`,
+written by `export-subst`), a copied tree null. The rotation keys `industry_relative` and
+`wide_book` are in the configs only when set.
 
 ---
 

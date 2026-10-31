@@ -181,11 +181,12 @@ from __future__ import annotations
 import math
 import uuid
 from bisect import bisect_left, bisect_right
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from fractions import Fraction
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -341,7 +342,7 @@ from .spec import (
 )
 from .standard import exit_sma, fwd_r, planned_target
 
-__all__ = ["run_backtest"]
+__all__ = ["run_backtest", "skip_row"]
 
 SKIP_NO_LEVEL = "no_trigger_level"
 SKIP_FACTOR_PENDING = "factor_pending"  # CA5: the day's adjusted history is not point in time
@@ -447,6 +448,9 @@ class _EntryPlan:
     basis: str = BASIS_DAILY  # what decided it: the session's 5-minute bars or the daily bar
     # a 5-minute stop order's LIMIT (`trigger.stop_limit`; None: the LIMIT is `price`)
     limit: Decimal | None = None
+    # priced at the daily open moved to 09:20 (a gap over the level or a next-session entry on
+    # the daily estimate, `fill_0920`): counted in `metrics.entry_fills_0920_estimated`
+    at_0920: bool = False
 
 
 @dataclass(frozen=True)
@@ -471,6 +475,22 @@ class _Row:
             None if row.pivot is None else Decimal(row.pivot),
             row.criteria_results or {},
         )
+
+
+def skip_row(
+    strategy: str, row: _Row, reason: str, symbol: Callable[[str, date], str]
+) -> dict[str, Any]:
+    """The skips.csv row (`report.SKIP_COLUMNS`) of `row`'s trigger skipped for `reason`, its
+    symbol on its trade date (`symbol`: instrument id text, day)."""
+    name = str(row.instrument_id)
+    return {
+        "date": row.trade_date,
+        "strategy": strategy,
+        "playbook": row.playbook,
+        "instrument_id": name,
+        "symbol": symbol(name, row.trade_date),
+        "reason": reason,
+    }
 
 
 @dataclass(frozen=True)
@@ -731,6 +751,8 @@ class _Run:
         self.rotation_dividends = _ZERO
         # each rotation fill by what its 09:20 price was read from (`fill_0920.REAL`, `ESTIMATED`)
         self.rotation_fills: dict[str, int] = {}
+        self.entry_fills_0920 = 0  # setup entries at the daily open moved to 09:20 (`at_0920`)
+        self.wide_rebalances = 0  # the rebalances a wide book's checks widened (`wide_book`)
         self._fill_sources: dict[tuple[str, date], str] = {}
         self._firsts_day: date | None = None
         self._firsts: dict[str, DataBar | None] = {}
@@ -768,6 +790,7 @@ class _Run:
         self.dividend_credits = 0
         self.equity: list[tuple[date, Decimal]] = []
         self.skips: dict[str, int] = {}
+        self.skip_rows: list[dict[str, Any]] = []  # skips.csv (`report.SKIP_COLUMNS`)
         # every skip and funnel count with its session, (day, kind, key): the truncation check's
         self.decisions: list[tuple[date, str, str]] = []
         self.today: date | None = None
@@ -1074,7 +1097,14 @@ class _Run:
         if allocation is None:
             self._count_fills(book, day)
             return
-        plan = self._rotation_plan(book, leg, prev, day)
+        # a wide book: this rebalance's rules, decided on its close (`rotation.widened`)
+        wide = rules.wide_book is not None and rotation.wide_fires(
+            rules.wide_book, self.view.closes_through(prev), self.view.breadth_through(prev)
+        )
+        rules = rotation.widened(rules, wide)
+        if wide:
+            self.wide_rebalances += 1
+        plan = self._rotation_plan(book, leg, prev, day, rules)
         funded = _at(day, _AT_LOW)  # the open's trades: the overlay sells at its 09:15 bar
         overlay = self.overlay
 
@@ -1111,7 +1141,7 @@ class _Run:
             weights = rotation.target_weights(
                 plan.target, self._betas(plan.target, prev, rules), rules.top_n
             )
-        book.rebalance(day, plan, capital * share, market, weights)
+        book.rebalance(day, plan, capital * share, market, weights, rules)
         self._count_fills(book, day)
         if overlay is not None and self._free_cash() < 0:
             overlay.fund(day, funded, -self._free_cash())
@@ -1169,12 +1199,14 @@ class _Run:
             rules.scale_down, self.view.closes_through(prev), self.view.breadth_through(prev)
         )
 
-    def _rotation_plan(self, book: RotationBook, leg: _Leg, prev: date, day: date) -> Plan:
-        """The rebalance `prev`'s close decides for trade date `day` (`RotationBook.plan`): the
-        members of `day` (the scan's rule, `scan_night_members`) that pass the universe stage on
-        `prev`, scored on their total-return closes through `prev`."""
-        rules = leg.config.rotation
-        if rules is None or self.tr_closes is None:  # pragma: no cover - a rotation leg's book
+    def _rotation_plan(
+        self, book: RotationBook, leg: _Leg, prev: date, day: date, rules: Rotation
+    ) -> Plan:
+        """The rebalance `prev`'s close decides for trade date `day` (`RotationBook.plan`) under
+        `rules` (the leg's, or a wide book's, `rotation.widened`): the members of `day` (the
+        scan's rule, `scan_night_members`) that pass the universe stage on `prev`, scored on
+        their total-return closes through `prev`."""
+        if self.tr_closes is None:  # pragma: no cover - a rotation leg's book
             raise BacktestError("backtest_not_a_rotation")
         inputs = ScanInputs(
             as_of=prev,
@@ -1211,6 +1243,7 @@ class _Run:
             )[0] is not None,
             industry=lambda i: industry_on(self.data, i, day),
             hold_only=hold_only,
+            rules=rules,
         )  # fmt: skip
 
     def _quote(
@@ -1318,8 +1351,9 @@ class _Run:
     def _rotation_metrics(self, metrics: Mapping[str, Any]) -> dict[str, Any]:
         """The run's rotation counts, as `run.json` `metrics.rotation` holds them: its fills by
         what their 09:20 price was read from, an overlap run's funding sales by theirs, the
-        orders `refuse_near_limit` refused (by side, once per name and day) and, under the
-        `impact_bps` convention, the impact its fills paid."""
+        orders `refuse_near_limit` refused (by side, once per name and day), with `wide_book`
+        the rebalances it widened and, under the `impact_bps` convention, the impact its fills
+        paid."""
         out: dict[str, Any] = {
             "fills_0920": metrics["rotation_fills_0920"],
             "fills_estimated": metrics["rotation_fills_estimated"],
@@ -1329,6 +1363,8 @@ class _Run:
         }
         if "rotation_funding_fills" in metrics:
             out["funding_fills"] = dict(metrics["rotation_funding_fills"])
+        if any(leg.config.rotation and leg.config.rotation.wide_book for leg in self.legs):
+            out["wide_rebalances"] = self.wide_rebalances
         if self.spec.conventions.impact_bps is not None:
             books = list(self.books.values())
             out["impact"] = {
@@ -1460,6 +1496,10 @@ class _Run:
         if key is not None and consumes(reason):
             self.leg.consumed.add(key)
         self.skips[reason] = self.skips.get(reason, 0) + 1
+        if row is not None:  # skips.csv: a lost entry shows in a run comparison
+            self.skip_rows.append(
+                skip_row(self.config.bot, row, reason, partial(symbol_on, self.data))
+            )
         if self.today is not None:
             self.decisions.append((self.today, "skip", reason))
 
@@ -1729,7 +1769,10 @@ class _Run:
             if bar.open > level:
                 self.estimated.add(GAP_OVER_ESTIMATED)
         basis = BASIS_CLOSE if at_close else BASIS_DAILY
-        plan = _EntryPlan(price, stop, dip, locked, failed, level, filters, at_close, None, basis)
+        at_0920 = playbook.next_session or (not at_close and bar.open > level)
+        plan = _EntryPlan(
+            price, stop, dip, locked, failed, level, filters, at_close, None, basis, at_0920=at_0920
+        )
         if playbook.next_session:
             return _Decision(row, plan, bar, (_GAP_SECONDS, _ZERO))  # bought at 09:20
         rank = trigger_rank(bar.open, level, self.spec.conventions.entry_fill_rule)
@@ -2392,6 +2435,8 @@ class _Run:
             return
         year = self.entry_bars.setdefault(row.trade_date.year, {})
         year[plan.basis] = year.get(plan.basis, 0) + 1
+        if plan.at_0920:
+            self.entry_fills_0920 += 1
         position = self.session.get(HatPosition, outcome.position_id)
         if position is None:  # pragma: no cover - open_entry returned the id it wrote
             return
@@ -2881,6 +2926,7 @@ class _Run:
         metrics["auction_risk_exits"] = auction_risk_summary(trade_rows)
         metrics["dividend_income"] = str(self.dividend_cash + self.rotation_dividends)
         metrics["dividend_credits"] = self.dividend_credits
+        metrics["entry_fills_0920_estimated"] = self.entry_fills_0920
         if self.books:
             metrics["rotation_fills_0920"] = self.rotation_fills.get(fill_0920.REAL, 0)
             metrics["rotation_fills_estimated"] = self.rotation_fills.get(fill_0920.ESTIMATED, 0)
@@ -2932,6 +2978,7 @@ class _Run:
             overlay=overlay,
             overlay_rows=() if self.overlay is None else tuple(r.csv() for r in self.overlay.rows),
             rebalances=tuple(row for book in self.books.values() for row in book.rows),
+            skip_rows=tuple(self.skip_rows),
             ledger=ledger_report,
             hindsight=dict(sorted(self.view.hindsight_reads.items())),
             decisions=tuple(self.decisions),

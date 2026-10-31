@@ -53,7 +53,7 @@
   },
   "properties": {
     "format_version": {
-      "const": "1.7"
+      "const": "1.8"
     },
     "identity": {
       "type": "object",
@@ -245,6 +245,10 @@
             "string",
             "null"
           ]
+        },
+        "universe_rule": {
+          "type": "object",
+          "description": "a rule universe's rule (TOP_TRADED_<N>, v1.8)"
         }
       }
     },
@@ -497,6 +501,10 @@
         "pbo": {
           "$ref": "#/$defs/num"
         },
+        "entry_fills_0920_estimated": {
+          "type": "integer",
+          "minimum": 0
+        },
         "rotation": {
           "type": "object",
           "required": [
@@ -580,6 +588,10 @@
                   "type": "string"
                 }
               }
+            },
+            "wide_rebalances": {
+              "type": "integer",
+              "minimum": 0
             }
           }
         }

@@ -10,7 +10,8 @@ for (`MarketView`), as live reads it that day, so an ex-date drop is no signal a
 earns the cash (`MarketData.dividends`). Features come from the `features_daily` partitions the
 nightly job wrote, the regime index from `index_daily`, and membership is the universe's index
 members as of each session (`point_in_time_members`, from `hat_index_member`), or for the
-built-in research universe `NSE_STOCKS` every NSE stock (`nse_stock_members`). Nothing else is
+built-in research universe `NSE_STOCKS` every NSE stock (`nse_stock_members`), or for the rule
+universe `TOP_TRADED_<N>` the top stocks by traded value (`top_traded_members`). Nothing else is
 filtered by what happened later: the day loop reads each input only up to the date it decides for
 (`MarketView`). The features must be the ones the nightly job wrote for the corporate actions the
 bars are adjusted with: the job's stored inputs digest must equal the digest of the stored actions
@@ -84,6 +85,7 @@ from ..models import (
 )
 from ..money import exact
 from ..time import IST, as_utc
+from . import traded_universe
 from .intraday import screened_buckets
 from .spec import BacktestError, membership_key
 
@@ -113,6 +115,7 @@ __all__ = [
     "index_members",
     "scan_night_members",
     "stopped_trading",
+    "top_traded_members",
 ]
 
 LOOKAHEAD = "backtest_lookahead"  # a decision read data stamped after its instant (`MarketView`)
@@ -829,6 +832,79 @@ def nse_stock_members(
     return members, source
 
 
+# A rule universe's candidates' EQ traded value over one reform window (`traded_universe`), the
+# latest ingest run's row per chain and day (`bars_daily_cap`); close x volume where NSE gave no
+# traded value (the factors cancel), as `min_turnover` reads it
+_TRADED_SQL = """
+SELECT instrument_id, date, CAST(COALESCE(traded_value, close * volume) AS DOUBLE) AS value
+FROM bars_daily_cap
+WHERE series = 'EQ' AND date BETWEEN ? AND ?
+  AND instrument_id IN (SELECT unnest(CAST(? AS VARCHAR[])))
+"""
+
+
+def top_traded_members(
+    store: DataStore,
+    session: Session,
+    adjustment: Adjustment,
+    days: Sequence[date],
+    since: date,
+    until: date,
+    count: int,
+) -> tuple[tuple[Interval, ...], dict[str, Any]]:
+    """The rule universe `TOP_TRADED_<count>`'s members over `since..until` by chain id
+    (`traded_universe`: each reform night's top names by median EQ traded value, from the daily
+    bars of every ordinary-equity NSE stock, `days` the store's sessions) and what they were read
+    from (the snapshot's `membership`, with the rule and its reform nights). Refused
+    `backtest_top_traded_history_short` when the store has no reform night with a full window on
+    or before `since`, `backtest_top_traded_empty` when a night finds no candidate."""
+    nights = traded_universe.reform_nights(days, since, until)
+    if not nights:
+        raise BacktestError("backtest_top_traded_history_short")
+    rows = session.execute(
+        select(HatInstrument.id, HatInstrument.isin)
+        .join(HatMarket, HatMarket.id == HatInstrument.market_id)
+        .where(HatMarket.code == "NSE")
+    ).all()
+    stocks = sorted({str(_chain_id(i, adjustment.lineage)) for i in nse_stocks(rows)})
+    lists: list[tuple[date, list[str]]] = []
+    with store.connect(adjustment) as con:
+        for night in nights:
+            try:
+                window = traded_universe.window_of(days, night)
+            except ValueError as exc:
+                raise BacktestError(str(exc)) from None
+            found = con.execute(_TRADED_SQL, [window[0], night, stocks]).fetchall()
+            names = traded_universe.top_names(traded_universe.by_name(found), window, count)
+            if not names:
+                raise BacktestError("backtest_top_traded_empty")
+            lists.append((night, names))
+    spans = traded_universe.intervals(lists, days)
+    members = point_in_time_members(
+        (Interval(uuid.UUID(name), first, left) for name, first, left in spans),
+        include=(),
+        exclude=(),
+        lineage={},
+        since=since,
+        until=until,
+    )
+    text = "\n".join(f"{night.isoformat()}:{','.join(names)}" for night, names in lists)
+    source = {
+        "index": None,
+        "source": "top_traded_value",
+        "digest": hashlib.sha256(text.encode()).hexdigest(),
+        "rows": len(spans),
+        "covered_from": since.isoformat(),
+        "covered_to": until.isoformat(),
+        "off_size_dates": sum(1 for _, names in lists if len(names) != count),
+        "universe_version_id": str(traded_universe.version_id(count)),
+        "universe_key": traded_universe.label(count),
+        "rule": traded_universe.rule(count),
+        "reform_nights": [night.isoformat() for night, _ in lists],
+    }
+    return members, source
+
+
 def _members(
     session: Session,
     universe_version_id: uuid.UUID,
@@ -1421,9 +1497,20 @@ def load_market(
     adjustment = stored_adjustment(session)
     expected = inputs_digest(adjustment)
     # the first scan runs on the night before the first session (the loop's `prev`)
-    members, membership = _members(
-        session, universe_version_id, adjustment.lineage, days[max(0, first - 1)], days[first], end
-    )
+    count = traded_universe.count_of(universe_version_id)
+    if count is not None:  # the rule universe, from the bars (`traded_universe`)
+        members, membership = top_traded_members(
+            store, session, adjustment, every_day, days[max(0, first - 1)], end, count
+        )
+    else:
+        members, membership = _members(
+            session,
+            universe_version_id,
+            adjustment.lineage,
+            days[max(0, first - 1)],
+            days[first],
+            end,
+        )
     instruments = {m.instrument_id for m in members}
     wanted = sorted(str(i) for i in instruments)
     with store.connect(adjustment) as con:

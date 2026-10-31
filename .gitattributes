@@ -20,3 +20,6 @@
 *.xlsx binary
 *.db binary
 *.sqlite binary
+
+# `git archive` writes the commit into the exported tree (`backtest.runs.engine_commit`).
+backend/ENGINE_COMMIT export-subst

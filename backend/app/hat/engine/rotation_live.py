@@ -39,8 +39,10 @@ target on its weight (`rotation.target_weights`); with `refuse_near_limit` the o
 a buy at or within one tick of the day's upper band and holds a sale (or skips a trim) at or
 within one tick of its lower one (`rotation.near_limit` on the previous close and the stored
 band, `limits`: the backtest's rule and source).
-`tranches` are backtest only: a night under them records nothing and logs
-`TRANCHES_NOT_LIVE`, so such a version never trades live.
+With `industry_relative` the night ranks each name on its score less its industry's median
+(`rotation.industry_relative`, the industry on the trade date, as the cap reads it).
+`tranches` and `wide_book` are backtest only: a night under them records nothing and logs
+`TRANCHES_NOT_LIVE` or `WIDE_BOOK_NOT_LIVE`, so such a version never trades live.
 
 Its prices are the live last trade at 09:20 or after, the definition the backtest and the
 replay share (`engine/fill_0920.py`: the last trade before 09:20, the 09:15 bar's close).
@@ -95,6 +97,7 @@ __all__ = [
     "EVENT_SCALE_DOWN",
     "FILLS",
     "TRANCHES_NOT_LIVE",
+    "WIDE_BOOK_NOT_LIVE",
     "Limits",
     "Planned",
     "Lot",
@@ -135,6 +138,7 @@ ALREADY_RAN = "already_ran"  # the trade date's job already ran: a second worker
 VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 TRANCHES_NOT_LIVE = "rotation_tranches_not_live"  # a staggered rebalance is backtest only
+WIDE_BOOK_NOT_LIVE = "rotation_wide_book_not_live"  # a wider book in weak markets: backtest only
 # a name's previous close, tick and stored band on the trade date (`rotation.near_limit`)
 Limits = Callable[[str], DailyInputs]
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
@@ -215,6 +219,9 @@ def plan_night(
     night = inputs.as_of
     if rules.tranches is not None:  # backtest only: never traded live
         logger.warning("rotation bot %s: %s", bot_id, TRANCHES_NOT_LIVE)
+        return False
+    if rules.wide_book is not None:  # backtest only: never traded live
+        logger.warning("rotation bot %s: %s", bot_id, WIDE_BOOK_NOT_LIVE)
         return False
     if not rotation.is_rebalance(night, trade_date, rules.rebalance):
         return _plan_scale_down(session, bot, rules, inputs, trade_date, now)
@@ -340,8 +347,8 @@ def night_ranking(
     `config` on the close of `inputs.as_of` for the rebalance at `trade_date`: the members of
     `trade_date` (as the backtest's rotation reads them) passing the universe stage that night,
     with `liquidity` those in its hold tier (the ones below its entry tier never bought),
-    scored on their total-return closes (`inputs.bars`). None without a universe or a
-    member."""
+    scored on their total-return closes (`inputs.bars`), with `industry_relative` against their
+    industry's median on `trade_date`. None without a universe or a member."""
     rules = config.rotation
     if rules is None:
         return None
@@ -359,7 +366,8 @@ def night_ranking(
         passers = [p for p in passers if p in hold]
         hold_only = frozenset(passers) - entry
     closes = closes_window(inputs.bars, passers, inputs.as_of, rotation.window_rows(rules))
-    ranks = rotation.ranking(passers, closes, rules)
+    industry = industry_lookup(session, trade_date) if rules.industry_relative else None
+    ranks = rotation.ranking(passers, closes, rules, industry=industry)
     gate_on = regime_allows_longs(config.regime, inputs.regime_closes, inputs.breadth)
     return passers, ranks, gate_on, hold_only
 
