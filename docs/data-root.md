@@ -24,7 +24,7 @@ rebuilt. "Snapshot" means it is in the data repo's releases (runbook, Snapshot a
 | `audits/` | Golden, data audit and data verification (`verify-*/`) reports | `golden`, audits, `data.verify` | Rerun |
 | `verify_reference/` | Public reference files the data verification downloaded (NSE archives and probes, Wayback lists, niftyindices) and D2's Fyers daily history, each written once | `data.verify --fetch`, `data.verify.fyers` | From the sources; manifest |
 | `backtests/` | Backtest runs, `trials.json`, data audits | backtest jobs | Rerun |
-| `results/`, `fundamentals/` | Results and fundamentals run logs and backups | results, fundamentals | Logs only |
+| `results/`, `fundamentals/` | Results and fundamentals run logs and backups; the research panel and its report (`fundamentals panel`) | results, fundamentals | Logs only; the panel from the store |
 | `build/`, `history_build/` | Build state and history build reports | `history_cli` | Reports only |
 | `update/`, `logs/` | Daily update status and lock, step logs | `app.hat.data.update` | Logs only |
 | `work/` | The download tools' working folders (`nifty500`, `kotak_5m`, `overlay`) | daily update steps | Hand-kept `overrides.json` and `symbol_alias.json` in `work/nifty500`: snapshot |

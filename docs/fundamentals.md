@@ -17,6 +17,16 @@ and basis.
   latest version's adds nothing. `public_at`, `public_at_source` and `public_at_estimated` follow
   the results timing rules (`data/results/timing.py`). `format` is the XBRL format; `family` is
   `indas`, `nbfc`, `bank`, `insurer` or `other`.
+- NSE's HTML results pages (`source=nse_html`, `point_in_time=true`): the history from 2012-03-31
+  where NSE has no XBRL (`nse_html.py`). The quarterly pages (Reg 33 listing) are taken by the
+  consolidated-first rule, the annual pages (Annual listing: the year's profit and loss, paid-up
+  capital as `share_capital` and reserves excluding revaluation, both `instant`) in both bases.
+  One filing per (period end, basis) combines the latest quarterly and annual page, versioned in
+  broadcast order; `public_at` follows the same timing rules, the broadcast estimating the
+  XBRL time. Figures are in lakh (x 10^5) unless the label says per share, shares, count or %.
+  Labels map by whole patterns in priority order; a page whose header period is a typo takes the
+  listing's when that precedes the broadcast (`html_listing_period`). `family` is `bank` when
+  the page has interest earned, else `other`.
 - The secondary source, screener.in (`source=screener`, `family=screener`,
   `point_in_time=false`): the figures one company page shows for one period end. A page shows
   figures as restated when it was fetched, **not the originals as first published**. `public_at`
@@ -24,7 +34,7 @@ and basis.
   regulatory deadline at 23:59 IST, `estimated`: 45 days after a quarter end (with its half-year
   balance sheet), 60 for a March quarter or a year, 21 for a shareholding pattern alone. It is
   never later than the page's fetch time (`observed`). The fetch-time summary is public when
-  fetched. Where both sources give a figure, NSE's is used. Since the figures are restated, the
+  fetched. Where both give a figure, the first-published one (NSE XBRL, then NSE HTML) is used. Since the figures are restated, the
   point-in-time reads (`known_at`) take a page's figures only from the later of `public_at` and
   `fetched_at`: before the fetch, the store reads NSE alone.
 
@@ -115,3 +125,30 @@ Valuations are stored only at the moments above. For any other day, apply the sa
 that day's close and the metrics as of that day. EPS is as reported: a quarter before a split or
 bonus is not restated, so `ttm_eps` and `eps_yoy` across one are not comparable. `pe` uses profit
 and market cap, so it is unaffected.
+
+## History and the research panel
+
+The store covers every NIFTY 500 point-in-time member with a membership on any day from
+2012-07-01 (a query on `hat_index_member`, so members added to the membership history join on the
+next run), with NSE period ends from 2012-03-31. Before FY2018 most first-published figures come
+from the HTML pages, 2018-2019 from the XBRL, the rest of the holes from the secondary source.
+BSE results XBRL (`source=bse`, priority after `nse_html`) is approved but not fetched: BSE's API
+refuses this host.
+
+`python -m app.hat.data.fundamentals panel` writes the research panel
+(`$HAT_DATA_ROOT/fundamentals/research-panel.parquet`, `research.py`): one row per
+(instrument, month end) from 2012-07 while the company is a member, with the fiscal-year,
+TTM and balance-sheet figures, shares, close and market cap. Unlike the store's point-in-time
+reads it uses the secondary source's figures from their `public_at` (lagged, not from the fetch),
+because they are the only figures for many company-years; each figure carries a `<column>_src`
+flag (`nse`, `nse_html`, `screener`, or `screener_late` for a cash flow or detailed balance sheet
+of a year before FY2020, which counts from year end + 183 days, the annual report). Each group
+reads the basis with the latest figure (`fy_basis`, `ttm_basis`, `bs_basis`). Book value from the
+HTML pages is used only when it agrees within 1.5x with the secondary source's (or with the
+year before plus the year's profit). Shares are paid-up capital / face value (median of the
+latest three quarters), carried across splits and bonuses, else the secondary source's share
+capital / face value with later splits undone; never from EPS. Prices and actions follow the
+company across ISIN changes. The run also writes `research-<date>.md`: member coverage per
+fiscal year 2013-2021 and per item, the source mix, and the restatement test (first-published
+FY2016 and FY2017 figures against the secondary source's, same basis: the share moved by more
+than 1, 5 and 20%, and sign flips). Nothing in the strategy or backtest path reads the panel.

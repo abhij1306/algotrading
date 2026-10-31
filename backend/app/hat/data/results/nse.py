@@ -5,7 +5,11 @@ The JSON API (`www.nseindia.com/api/...`) answers only a browser-like session th
 the referring page (for its cookies); the XBRL documents come from `nsearchives.nseindia.com`.
 One `Pacer` paces both at one request a second (bhavcopy's `DEFAULT_INTERVAL_SECONDS`); a
 401/403/429 waits `BACKOFF_SECONDS` before each retry and a 401/403 re-loads the page first.
-Answers with those statuses, and network errors, are not cached, so a rerun asks again. The
+NSE also answers with a maintenance or throttle page under status 200; such an answer, or any
+other that is not what its URL promises (`answers.failed`), waits the longer
+`OUTAGE_BACKOFF_SECONDS`, and `OUTAGE_LIMIT` URLs in a row still failing stop the run
+(`NseUnavailableError`). Answers with those statuses, failed answers and network errors are not
+cached, so a rerun asks again. The
 fields used, and why the listing time is not the filing time before 2022, are in the A0 probe
 report (docs/runbook.md, Financial results).
 """
@@ -24,6 +28,7 @@ from urllib.parse import urlencode
 from ...time import IST
 from ..bhavcopy import BROWSER_HEADERS, DEFAULT_INTERVAL_SECONDS
 from ..pacing import Pacer
+from .answers import failed
 from .raw import Entry, RawCache
 
 BASE = "https://www.nseindia.com"
@@ -36,11 +41,15 @@ INTEGRATED_FINANCIALS = "Integrated Filing- Financials"
 API_HEADERS = {**BROWSER_HEADERS, "Accept": "application/json, text/plain, */*"}
 RETRY_STATUSES = frozenset({401, 403, 429})
 BACKOFF_SECONDS = (5.0, 20.0, 60.0)
+OUTAGE_BACKOFF_SECONDS = (60.0, 300.0)
+OUTAGE_LIMIT = 3  # URLs in a row still failing after the backoff: NSE is down or throttling
+FAILED = 503  # the status a failed 200 answer is reported with (never cached)
 INTEGRATED_PAGE_SIZE = 500  # the endpoint pages by 20 unless asked; no symbol has 500 rows
 
 LISTING_REG33 = "reg33"
 LISTING_INSURANCE = "insurance"
 LISTING_INTEGRATED = "integrated"
+LISTING_ANNUAL = "annual"  # the Reg 33 listing's `period=Annual` rows (history only)
 
 
 # --- URLs -----------------------------------------------------------------------------------
@@ -50,8 +59,10 @@ def api_url(base: str, params: Mapping[str, str]) -> str:
     return f"{base}?{urlencode(params)}"
 
 
-def results_url(symbol: str) -> str:
-    return api_url(RESULTS_API, {"index": "equities", "symbol": symbol, "period": "Quarterly"})
+def results_url(symbol: str, period: str = "Quarterly") -> str:
+    """A symbol's Reg 33 listing: `Quarterly` (every quarter's results) or `Annual` (the year's
+    results, whose results pages carry the reserves; `LISTING_ANNUAL`)."""
+    return api_url(RESULTS_API, {"index": "equities", "symbol": symbol, "period": period})
 
 
 def insurance_url(start: date, end: date) -> str:
@@ -99,6 +110,7 @@ class Filing:
     xbrl_url: str | None
     revision: bool  # integrated `type_Sub` Revision, or a later filing of a filed quarter
     markers: str  # the listing's own format markers, joined
+    html_url: str | None = None  # the results page (reg33 rows to 2018 that have no XBRL)
 
 
 def nse_time(raw: str | None) -> datetime | None:
@@ -153,6 +165,7 @@ def parse_results_listing(body: bytes, listing: str = LISTING_REG33) -> list[Fil
                 xbrl_url=_xbrl(row.get("xbrl")),
                 revision=False,
                 markers="/".join(m for m in markers if m != "-") or "-",
+                html_url=_xbrl(row.get("resultDetailedDataLink")),
             )
         )
     return filings
@@ -269,6 +282,15 @@ def always(_entry: Entry) -> bool:
     return True
 
 
+class NseUnavailableError(RuntimeError):
+    """NSE kept answering with its maintenance or throttle page: stop and rerun later."""
+
+
+def usable(cache: RawCache, entry: Entry) -> bool:
+    """A cached answer worth reusing: not a transient failure and not a failed 200."""
+    return not transient(entry.status) and not failed(entry.url, entry.status, cache.body(entry))
+
+
 def transient(status: int) -> bool:
     """A failure worth asking again on the next run (no answer, or a server error): never cached
     and never reused."""
@@ -300,14 +322,21 @@ class Client:
         self.statuses: dict[int, int] = {}
         self._session: Any = None
         self._warm: set[str] = set()
+        self._failing = 0  # URLs in a row whose answer failed after the backoff
 
     def get(self, url: str, referer: str | None = RESULTS_PAGE, reuse: Reuse = always) -> Answer:
         entry = self.cache.entry(url)
-        if entry is not None and (self.offline or (reuse(entry) and not transient(entry.status))):
+        if entry is not None and (self.offline or (reuse(entry) and usable(self.cache, entry))):
             return Answer(url, entry.status, self.cache.body(entry), entry)
         if self.offline:
             return Answer(url, 0, b"", None)
         status, body = self._attempts(url, referer)
+        if failed(url, status, body):
+            self._failing += 1
+            if self._failing >= OUTAGE_LIMIT:
+                raise NseUnavailableError(f"{self._failing} answers in a row failed, last {url}")
+            return Answer(url, FAILED, body, None)  # not cached: the next run asks again
+        self._failing = 0
         if status in RETRY_STATUSES or transient(status):
             return Answer(url, status, body, None)  # not cached: the next run asks again
         entry = self.cache.put(url, status, body)
@@ -317,6 +346,12 @@ class Client:
         """Fetch `url`, backing off and retrying on 401/403/429 or a network failure; on a
         401/403 the referer page is visited again first (fresh cookies)."""
         status, body = self._fetch(url, referer)
+        if failed(url, status, body):
+            for pause in OUTAGE_BACKOFF_SECONDS:
+                self.sleep(pause)
+                status, body = self._fetch(url, referer)
+                if not failed(url, status, body):
+                    break
         for pause in BACKOFF_SECONDS:
             if status not in RETRY_STATUSES and status != 0:
                 break
