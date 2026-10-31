@@ -36,14 +36,13 @@ from .nse import (
     Filing,
     always,
     announcements_day_url,
-    failed,
     filings_of,
     insurance_url,
     integrated_url,
     results_url,
     usable,
 )
-from .raw import Entry, RawCache
+from .raw import Entry
 from .scope import BASIS_CONSOLIDATED_FIRST, by_rule
 from .universe import Member
 
@@ -211,16 +210,3 @@ def _listings(
             if answer.status == 200:
                 answers.append((listing, answer.body))
     return filings_of(answers)
-
-
-def mark_failed(cache: RawCache) -> dict[str, int]:
-    """Mark each cached 200 answer that `nse.failed` rejects (NSE's maintenance page, an empty or
-    foreign document) with a status-0 entry, so readers skip it and the next `fetch` asks again.
-    Returns the count per host."""
-    marked: dict[str, int] = {}
-    for url, entry in list(cache.entries().items()):
-        if failed(url, entry.status, cache.body(entry)):
-            cache.put(url, 0, b"")
-            host = url.split("/")[2]
-            marked[host] = marked.get(host, 0) + 1
-    return marked

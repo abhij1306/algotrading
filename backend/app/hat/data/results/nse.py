@@ -5,8 +5,8 @@ The JSON API (`www.nseindia.com/api/...`) answers only a browser-like session th
 the referring page (for its cookies); the XBRL documents come from `nsearchives.nseindia.com`.
 One `Pacer` paces both at one request a second (bhavcopy's `DEFAULT_INTERVAL_SECONDS`); a
 401/403/429 waits `BACKOFF_SECONDS` before each retry and a 401/403 re-loads the page first.
-NSE also answers with a maintenance or throttle page under status 200 ("Service Temporarily
-Unavailable"); such an answer, or an archive document that is not one (`failed`), waits the longer
+NSE also answers with a maintenance or throttle page under status 200; such an answer, or any
+other that is not what its URL promises (`answers.failed`), waits the longer
 `OUTAGE_BACKOFF_SECONDS`, and `OUTAGE_LIMIT` URLs in a row still failing stop the run
 (`NseUnavailableError`). Answers with those statuses, failed answers and network errors are not
 cached, so a rerun asks again. The
@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 from ...time import IST
 from ..bhavcopy import BROWSER_HEADERS, DEFAULT_INTERVAL_SECONDS
 from ..pacing import Pacer
+from .answers import failed
 from .raw import Entry, RawCache
 
 BASE = "https://www.nseindia.com"
@@ -40,11 +41,9 @@ INTEGRATED_FINANCIALS = "Integrated Filing- Financials"
 API_HEADERS = {**BROWSER_HEADERS, "Accept": "application/json, text/plain, */*"}
 RETRY_STATUSES = frozenset({401, 403, 429})
 BACKOFF_SECONDS = (5.0, 20.0, 60.0)
-OUTAGE_MARK = b"Service Temporarily Unavailable"
 OUTAGE_BACKOFF_SECONDS = (60.0, 300.0)
 OUTAGE_LIMIT = 3  # URLs in a row still failing after the backoff: NSE is down or throttling
 FAILED = 503  # the status a failed 200 answer is reported with (never cached)
-ARCHIVE_HOST = "nsearchives.nseindia.com"
 INTEGRATED_PAGE_SIZE = 500  # the endpoint pages by 20 unless asked; no symbol has 500 rows
 
 LISTING_REG33 = "reg33"
@@ -285,24 +284,6 @@ def always(_entry: Entry) -> bool:
 
 class NseUnavailableError(RuntimeError):
     """NSE kept answering with its maintenance or throttle page: stop and rerun later."""
-
-
-def failed(url: str, status: int, body: bytes) -> bool:
-    """Whether a 200 answer is not what was asked for. An archive document must be an XBRL file
-    (`.xml`), a results page (`.html` with its `tablehead` cells) or NSE's page saying it has no
-    data for the filing; anything else (empty, the maintenance page) failed. Any other NSE answer
-    fails when it is the maintenance page."""
-    if status != 200:
-        return False
-    head = body[:5000]
-    if ARCHIVE_HOST not in url:
-        return OUTAGE_MARK in head
-    path = url.lower()
-    if path.endswith(".xml"):
-        return b"xbrl" not in head.lower()
-    if path.endswith(".html"):
-        return not (b"tablehead" in body or b"No data available" in body)
-    return not body or OUTAGE_MARK in head
 
 
 def usable(cache: RawCache, entry: Entry) -> bool:

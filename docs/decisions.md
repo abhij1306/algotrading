@@ -671,7 +671,9 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   decide). The rest comes from the secondary source. The research panel may read the secondary
   source's restated figures from their deadline lag (cash flow and the detailed balance sheet
   before FY2020 from year end + 183 days), flagged per figure; the store's point-in-time reads
-  keep the fetch-time rule. Shares come from paid-up capital / face value, never EPS.
+  keep the fetch-time rule. Shares come from paid-up capital / face value, never EPS. Parked
+  (owner 2026-10-31): the history fetch is incomplete and hat_live holds none of it; resume with
+  the runbook's history commands.
 
 ## Operations
 
