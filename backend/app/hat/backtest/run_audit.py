@@ -43,7 +43,7 @@ import hashlib
 import io
 import json
 from collections import Counter, defaultdict
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -51,8 +51,16 @@ from typing import Any
 
 from ..money import exact
 from .data import HINDSIGHT_BREAKOUT_VOL_RATIO
+from .report import FillRow
 
-__all__ = ["AUDIT_VERSION", "audit_run", "changed_of", "check_ledger", "check_lookahead"]
+__all__ = [
+    "AUDIT_VERSION",
+    "audit_run",
+    "changed_of",
+    "check_ledger",
+    "check_lookahead",
+    "fill_impacts",
+]
 
 AUDIT_VERSION = "3"
 PASS, WARN, FAIL = "pass", "warn", "fail"
@@ -157,17 +165,30 @@ def check_binding(run: Mapping[str, Any]) -> dict[str, Any]:
     return _check("binding", summary, findings)
 
 
+def fill_impacts(fills: Iterable[FillRow]) -> dict[tuple[str, date, str, Decimal], Decimal]:
+    """The size-aware impact of each rotation fill that paid one, by (instrument id, day, side,
+    fill price): what `check_fills` widens that fill's range by (the largest, were two alike)."""
+    out: dict[tuple[str, date, str, Decimal], Decimal] = {}
+    for fill in fills:
+        if fill.impact_bps > 0:
+            key = (fill.instrument_id, fill.day, fill.side, fill.price)
+            out[key] = max(out.get(key, Decimal(0)), fill.impact_bps)
+    return out
+
+
 def check_fills(
     trades: Mapping[str, Sequence[Mapping[str, str]]],
     bars: Mapping[tuple[str, date], tuple[Decimal, Decimal]],
     slippage_bps: Decimal,
-    impact_bps: Decimal = Decimal(0),
+    impacts: Mapping[tuple[str, date, str, Decimal], Decimal] | None = None,
 ) -> dict[str, Any]:
     """Every entry (once per trade) and every leg's exit inside the day's (low, high) of `bars`,
-    keyed (instrument id, date), widened by the slippage and the largest size-aware impact a
-    rotation fill of the run paid (`impact_bps`, 0 without the convention); a fill on a day
-    without a bar is counted (a suspension mark or a delisting fills off the bars)."""
-    slip = (slippage_bps + impact_bps) / Decimal(10_000)
+    keyed (instrument id, date), widened by the slippage, and a rotation fill that paid a
+    size-aware impact by its own impact as well (`impacts`, `fill_impacts`: by instrument, day,
+    side and fill price, so no other fill is widened); a fill on a day without a bar is counted
+    (a suspension mark or a delisting fills off the bars)."""
+    impacts = impacts or {}
+    widened = 0
     outside, no_bar, checked = [], [], 0
 
     def test(
@@ -183,6 +204,11 @@ def check_fills(
             return
         checked += 1
         low, high = found
+        own = impacts.get((instrument_id, day, "buy" if what == "entry" else "sell", price))
+        if own:
+            nonlocal widened
+            widened += 1
+        slip = (slippage_bps + (own or 0)) / Decimal(10_000)
         if not low * (1 - slip) - PRICE_TOLERANCE <= price <= high * (1 + slip) + PRICE_TOLERANCE:
             outside.append(
                 {
@@ -223,7 +249,7 @@ def check_fills(
         "fills_checked": checked,
         "fills_without_bar": len(no_bar),
         "slippage_bps": str(slippage_bps),
-        **({"impact_max_bps": str(impact_bps)} if impact_bps else {}),
+        **({"impact_fills_widened": widened} if impacts else {}),
     }
     return _check("fills", summary, findings)
 
@@ -596,18 +622,18 @@ def audit_run(
     explained: Path | None = None,
     ledger: Mapping[str, Any] | None = None,
     hindsight: Mapping[str, int] | None = None,
-    impact_bps: Decimal = Decimal(0),
+    impacts: Mapping[tuple[str, date, str, Decimal], Decimal] | None = None,
 ) -> dict[str, Any]:
     """`audit.json` of a completed run: its `run.json` document, its CSV files by name, the (low,
     high) of each (instrument id, date) it filled on, on the price basis it fills on, its slippage
-    in bps (and the largest size-aware impact a fill paid), its data audit with the owner's
-    explanation of it (`check_data`) and its ledger reconciliation (`check_ledger`) and its
+    in bps (and each rotation fill's size-aware impact, `fill_impacts`), its data audit with the
+    owner's explanation of it (`check_data`) and its ledger reconciliation (`check_ledger`) and its
     hindsight reads (`check_lookahead`). The digest is sha256 of the rest of the document."""
     trades = _trades(_rows(csvs.get("trades")))
     equity = _rows(csvs.get("equity"))
     checks = [
         check_binding(run),
-        check_fills(trades, bars, slippage_bps, impact_bps),
+        check_fills(trades, bars, slippage_bps, impacts),
         check_sequence(trades),
         check_pnl(run, trades),
         check_costs(run, trades),

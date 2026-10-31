@@ -14,7 +14,6 @@ from ..engine import exits, trigger
 from ..money import require_exact
 
 __all__ = [
-    "band_limits",
     "breakout_volume_ok",
     "close_lower_locked",
     "first_trigger",
@@ -126,32 +125,6 @@ def close_lower_locked(
     if prev_close is None or prev_close <= 0 or tick is None or tick <= 0:
         return None
     return close == low and _at_lower_band(close, prev_close, tick)
-
-
-def band_limits(
-    high: Decimal, low: Decimal, prev_close: Decimal | None, tick: Decimal | None
-) -> tuple[Decimal | None, Decimal | None]:
-    """(the lower band price the session reached, the upper one), each None when it reached
-    none, for a rotation's `refuse_near_limit` (`engine.rotation.near_limit`): the run has no
-    band table, so the band is inferred from the day's range, the narrowest NSE band whose upper
-    price is within one tick of the `high` (`inferred_band`), and the narrowest whose lower
-    price is within one tick of the `low`. Live reads the stored band; a session that came near
-    its band without touching it within a tick is not seen here. None for both without a
-    previous close or a tick."""
-    band = inferred_band(high, prev_close, tick)
-    upper = None
-    if band is not None:
-        upper = trigger.upper_circuit_price(
-            trigger.DailyInputs(prev_close=prev_close, tick=tick, band_known=True, band_pct=band)
-        )
-    if prev_close is None or prev_close <= 0 or tick is None or tick <= 0 or low >= prev_close:
-        return None, upper
-    for pct in NSE_BANDS:
-        daily = trigger.DailyInputs(prev_close=prev_close, tick=tick, band_known=True, band_pct=pct)
-        lower = trigger.lower_circuit_price(daily)
-        if lower is not None and lower < prev_close and abs(low - lower) <= tick:
-            return lower, upper
-    return None, upper
 
 
 def _at_lower_band(close: Decimal, prev_close: Decimal, tick: Decimal) -> bool:

@@ -297,8 +297,10 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     ordered by the median traded value of their last `days` bars; a name is bought only in the
     top `entry_pct`%, and ranked (so kept while within `buffer_rank`) in the top `hold_pct`%
     (>= `entry_pct`). The ranking is over the hold tier and never depends on the holdings, so
-    live ranks it at night as before. A rupee `min_turnover` in the universe stage still applies
-    to holdings too: a config meant to replace it disables it.
+    live ranks it at night as before. A name below the entry tier is never bought, a held one
+    never topped up (only trimmed), and live's subscription depth reaches past those names as it
+    does past the industry cap's. A rupee `min_turnover` in the universe stage still applies to
+    holdings too: a config meant to replace it disables it.
   - `riskadj_skip: true`: both `riskadj` returns end `skip_sessions` before the decision close
     (12-1 / 6-1, the lookbacks still counted from the close); the volatility still ends on the
     close. Off, `riskadj` keeps reading the last month, as every stored run did.
@@ -316,15 +318,19 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   - `refuse_near_limit: true`: **refuse, not fill at the band** (a buy one tick under a band
     that then locks has no seller in practice): a buy priced at or within one tick of the day's
     upper band is passed over, and a sale at or within one tick of the lower band waits for the
-    next session (a trim is skipped). Live reads the stored band; the backtest has no band
-    table and infers the band the session reached from its high and low (the narrowest NSE band
-    within a tick of it), so it misses a session that came near a band without touching it.
-    `run.json` counts the refusals (`metrics.rotation.near_limit_refused`).
+    next session (a trim is skipped). One rule and one source for both books
+    (`rotation.near_limit`): the previous close, the tick and the stored band in force on the
+    trade date (`hat_price_band`, point in time), nothing of the session itself. A name with no
+    stored band then (the table starts when its loading began, so most of a long backtest) is
+    checked against every NSE band (2/5/10/20%): an order within one tick of any of those
+    prices is refused, one between two of them is not; a stored row without a band (F&O) never
+    is. `run.json` counts the refusals (`metrics.rotation.near_limit_refused`).
   - Size-aware cost is a run convention, not a strategy key (a cost assumption like the
     slippage; live paper fills are not moved by it): `--impact-bps C` moves each rotation
     market order by C x sqrt(order value / the name's 20-session median traded value through
-    the night before) bps beside the slippage, capped at 1000 bps; sales at a close or the
-    period's mark pay none. The ledger and the run audit widen each fill's range by its impact;
+    the night before) bps beside the slippage, capped at 1000 bps (on the shares actually
+    bought); sales at a close or the period's mark pay none. The ledger and the run audit widen
+    only those fills' ranges, each by its own impact;
     `run.json` reports `metrics.rotation.impact` (fills, rupees, largest bps).
 
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No

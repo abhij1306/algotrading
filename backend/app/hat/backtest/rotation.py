@@ -481,7 +481,9 @@ class RotationBook:
                 holding = _Holding(name, day, rank.get(name), score.get(name), price, price)
                 self.holdings[name] = holding
                 self.signals.append(market.entry(name, qty, price, rank.get(name), score.get(name)))
-            self._buy(holding, qty, price, day, extra[name])
+            # the impact of the shares bought (the cash may have cut them): at most the planned
+            # order's, so the outlay still fits what `affordable` found
+            self._buy(holding, qty, price, day, self._impact(name, qty, price, day))
             row(name, order.action, None if qty == order.qty else CASH, qty, price)
 
     def credit(self, day: date, quote: Callable[[str], Quote]) -> Decimal:

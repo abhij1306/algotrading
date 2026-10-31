@@ -531,9 +531,9 @@ is in the conventions (`impact`: `rule`, `coef_bps`, `max_bps`) and the knobs (`
 when set, so runs without them keep their digests. New `rebalances.csv` blocks
 `near_upper_limit` and `near_lower_limit`; with `inverse_beta` a row's `target_value` is its own
 weight's; with `tranches` each tranche's rows and trades are its own (a name two tranches hold is
-two trades) and a row's `decision_date` names its tranche's close. A fill's range in the ledger
-and the run audit's `fills` check widens by its impact (`impact_max_bps` in that check's
-summary).
+two trades) and a row's `decision_date` names its tranche's close. A rotation fill that paid an
+impact has its range in the ledger and the run audit's `fills` check widened by its own impact,
+no other fill (`impact_fills_widened` in that check's summary).
 
 ---
 

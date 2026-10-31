@@ -12,7 +12,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-from app.hat.backtest.fillrules import band_limits
+from app.hat.backtest.data import band_on
+from app.hat.backtest.report import FillRow
+from app.hat.backtest.run_audit import check_fills, fill_impacts
 from app.hat.backtest.spec import IMPACT_RULE, BacktestError, RunConventions
 from app.hat.costs import MAX_IMPACT_BPS, impact_bps
 from app.hat.engine import rotation
@@ -23,6 +25,7 @@ from app.hat.engine.strategy.config import (
     Rotation,
     Tranches,
 )
+from app.hat.engine.trigger import DailyInputs
 
 D = Decimal
 SMALL = {"short_sessions": 5, "long_sessions": 8, "skip_sessions": 2, "vol_sessions": 20,
@@ -162,32 +165,54 @@ def test_tranches_decide_at_their_offsets_after_each_period_close() -> None:
     ]  # fmt: skip
 
 
-def test_near_limit_is_at_or_within_one_tick_of_the_side_band() -> None:
-    tick = D("0.05")
-    assert rotation.near_limit("buy", D("104.95"), None, D("105.00"), tick)
-    assert rotation.near_limit("buy", D("105.00"), None, D("105.00"), tick)
-    assert not rotation.near_limit("buy", D("104.90"), None, D("105.00"), tick)
-    assert rotation.near_limit("sell", D("95.05"), D("95.00"), None, tick)
-    assert not rotation.near_limit("sell", D("95.10"), D("95.00"), None, tick)
-    assert not rotation.near_limit("buy", D("105"), None, None, tick)  # no band: no
-    assert not rotation.near_limit("buy", D("105"), None, D("105"), None)  # no tick: no
+def _daily(band: str | None, *, known: bool = True, prev: str | None = "100") -> DailyInputs:
+    return DailyInputs(
+        prev_close=None if prev is None else D(prev),
+        tick=D("0.05"),
+        band_known=known,
+        band_pct=None if band is None else D(band),
+    )
 
 
-def test_the_backtest_infers_the_band_the_session_reached() -> None:
-    tick = D("0.05")
-    # a 5% name that touched its upper band: 105.00 over 100
-    assert band_limits(D("105.00"), D("101"), D(100), tick) == (None, D("105.00"))
-    assert band_limits(D("103"), D("98.00"), D(100), tick) == (D("98.00"), None)  # 2% lower
-    assert band_limits(D("103"), D("99"), D(100), tick) == (None, None)
-    assert band_limits(D("105"), D("95"), None, tick) == (None, None)
+def test_near_limit_reads_only_the_stored_band_and_the_previous_close() -> None:
+    # the rule's inputs are the previous close, the tick and the band in force on the trade
+    # date: nothing of the session itself, so the backtest refuses only what live could
+    five = _daily("5")
+    assert rotation.near_limit("buy", D("104.95"), five)  # one tick under 105.00
+    assert rotation.near_limit("buy", D("105.00"), five)
+    assert not rotation.near_limit("buy", D("104.90"), five)
+    assert rotation.near_limit("sell", D("95.05"), five)
+    assert not rotation.near_limit("sell", D("95.10"), five)
+    assert not rotation.near_limit("sell", D("104.95"), five)  # a sale is held only at the lower
+    # an F&O name (a stored row without a band) and an unknown previous close: never refused
+    assert not rotation.near_limit("buy", D("200"), _daily(None))
+    assert not rotation.near_limit("buy", D("105"), _daily("5", prev=None))
+
+
+def test_near_limit_without_a_stored_band_checks_every_nse_band() -> None:
+    unknown = _daily(None, known=False)
+    for upper in ("102.00", "105.00", "110.00", "120.00"):
+        assert rotation.near_limit("buy", D(upper), unknown)
+        assert rotation.near_limit("buy", D(upper) - D("0.05"), unknown)
+    assert not rotation.near_limit("buy", D("103.50"), unknown)  # between two candidates
+    assert rotation.near_limit("sell", D("98.00"), unknown)
+    assert not rotation.near_limit("sell", D("97.00"), unknown)
+
+
+def test_the_stored_band_is_read_point_in_time() -> None:
+    rows = [(date(2024, 1, 1), D(20)), (date(2024, 6, 1), D(5)), (date(2025, 1, 1), None)]
+    assert band_on(rows, date(2023, 12, 31)) == (False, None)
+    assert band_on(rows, date(2024, 5, 31)) == (True, D(20))
+    assert band_on(rows, date(2024, 6, 1)) == (True, D(5))
+    assert band_on(rows, date(2025, 3, 1)) == (True, None)
 
 
 def test_live_refuses_a_price_near_the_band_on_the_order_side_only() -> None:
     def price(name: str) -> tuple[Decimal | None, str | None]:
         return {"up": (D("104.95"), None), "down": (D("95.05"), None)}.get(name, (None, "x"))
 
-    def limits(name: str) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
-        return D("95.00"), D("105.00"), D("0.05")
+    def limits(name: str) -> DailyInputs:
+        return _daily("5")
 
     buy = near_limit_price(price, limits, "buy")
     sell = near_limit_price(price, limits, "sell")
@@ -197,6 +222,53 @@ def test_live_refuses_a_price_near_the_band_on_the_order_side_only() -> None:
     assert buy("down") == (D("95.05"), None)
     assert buy("none") == (None, "x")
     assert near_limit_price(price, None, "buy") is price
+
+
+def test_a_hold_only_holding_is_never_topped_up_or_bought_only_trimmed() -> None:
+    prices = {"h": D(10), "n": D(10)}
+    # h is held below its target, n not held: neither is bought under `no_buy`
+    found = rotation.order_diff(["h", "n"], {"h": 10}, prices, D(1000), 2, D(0), reweight=True,
+                                no_buy={"h", "n"})  # fmt: skip
+    assert found == []
+    plain = rotation.order_diff(["h", "n"], {"h": 10}, prices, D(1000), 2, D(0), reweight=True)
+    assert [(o.instrument_id, o.action) for o in plain] == [("h", rotation.TOP_UP), ("n", "buy")]
+    # above its target it is still trimmed
+    trimmed = rotation.order_diff(["h"], {"h": 80}, prices, D(1000), 2, D(0), reweight=True,
+                                  no_buy={"h"})  # fmt: skip
+    assert [(o.instrument_id, o.action, o.qty) for o in trimmed] == [("h", rotation.TRIM, 30)]
+    # the plan carries the names through `orders`
+    chosen = rotation.Plan(date(2024, 1, 31), (("h", 1.0),), ("h",), hold_only=frozenset({"h"}))
+    rules = Rotation(top_n=2, buffer_rank=2)
+    assert rotation.orders(chosen, {"h": 10}, prices, D(1000), rules) == []
+
+
+def test_the_selection_depth_reaches_past_hold_only_names() -> None:
+    rules = Rotation(top_n=2, buffer_rank=2)
+    ranking = ["a", "b", "c", "d", "e", "f", "g"]
+    assert rotation.selection_depth(ranking, rules) == 4
+    assert rotation.selection_depth(ranking, rules, hold_only={"a", "c"}) == 6
+
+
+def test_only_a_rotation_fill_with_impact_is_widened_by_its_own_impact() -> None:
+    day = date(2024, 1, 2)
+    fills = [
+        FillRow(day, "r", "entry", "buy", 10, D("101.50"), D(1), D(200)),
+        FillRow(day, "s", "entry", "buy", 10, D("101.50"), D(1)),  # a setup fill: no impact
+    ]
+    impacts = fill_impacts(fills)
+    assert impacts == {("r", day, "buy", D("101.50")): D(200)}
+    bars = {("r", day): (D(99), D(100)), ("s", day): (D(99), D(100))}
+    trades = {
+        "1": [{"instrument_id": "r", "entry_date": "2024-01-02", "entry_price": "101.50",
+               "exit_date": "2024-01-02", "exit_price": "99.5"}],
+        "2": [{"instrument_id": "s", "entry_date": "2024-01-02", "entry_price": "101.50",
+               "exit_date": "2024-01-02", "exit_price": "99.5"}],
+    }  # fmt: skip
+    found = check_fills(trades, bars, D(20), impacts)
+    # 101.50 is 1.5% over the high: inside 20 + 200 bps for r, outside 20 bps for s
+    outside = [item["trade_id"] for f in found["findings"] for item in f["items"]]
+    assert outside == ["2"]
+    assert found["summary"]["impact_fills_widened"] == 1
 
 
 def test_impact_grows_with_the_square_root_of_the_order_share_and_is_capped() -> None:

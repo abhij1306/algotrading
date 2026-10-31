@@ -263,6 +263,14 @@ def impact_bps(coef_bps: Decimal, value: Decimal, median_value: Decimal | None) 
     return min(MAX_IMPACT_BPS, found).quantize(_IMPACT_PLACES)
 
 
+def _moved(slippage_bps: Decimal, extra_bps: Decimal) -> Decimal:
+    """The slippage with an `extra_bps` move added, kept below `MAX_SLIPPAGE_BPS` (a run's
+    slippage near it plus an impact must not abort a fill); the slippage itself without one."""
+    if not extra_bps:
+        return slippage_bps
+    return min(slippage_bps + extra_bps, MAX_SLIPPAGE_BPS - _IMPACT_PLACES)
+
+
 def check_slippage(bps: Decimal) -> Decimal:
     """`bps` when 0 <= bps < 10000, else `CostError` (checked when a run starts)."""
     if not isinstance(bps, Decimal) or not bps.is_finite() or not _ZERO <= bps < MAX_SLIPPAGE_BPS:
@@ -312,7 +320,7 @@ class BacktestFills:
         per instrument per sell day, however many sales). A buy `limit` caps the slipped price:
         a LIMIT order never fills above it. `extra_bps` moves the fill against the trade beside
         the slippage (a rotation order's size-aware impact)."""
-        filled = slipped(price, side, self.slippage_bps + extra_bps)
+        filled = slipped(price, side, _moved(self.slippage_bps, extra_bps))
         if limit is not None and side == "buy":
             filled = min(filled, limit)
         model = self.schedule.on(day)
@@ -333,7 +341,7 @@ class BacktestFills:
         bisection."""
         if cash <= 0:
             return 0
-        low, high = 0, int(cash // slipped(price, "buy", self.slippage_bps + extra_bps))
+        low, high = 0, int(cash // slipped(price, "buy", _moved(self.slippage_bps, extra_bps)))
         while low < high:
             mid = (low + high + 1) // 2
             if self.outlay(mid, price, day, extra_bps) <= cash:

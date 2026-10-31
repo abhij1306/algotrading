@@ -225,13 +225,13 @@ from .data import (
     Bar,
     MarketData,
     MarketView,
+    band_on,
     industry_on,
     symbol_on,
 )
 from .fillrules import (
     SKIP_PACE_LOW,
     SKIP_PACE_MISSING,
-    band_limits,
     breakout_volume_ok,
     close_lower_locked,
     first_trigger,
@@ -1199,8 +1199,8 @@ class _Run:
         high and the band, else the open at the day's high; an unknown circuit state too, live
         fails closed), a buy on the name's demerger exit session or factor-pending day
         (`demerger_pending`, `factor_pending`), and with `near_limit` (`refuse_near_limit`) an
-        order at or within one tick of the band the session reached (`near_upper_limit`,
-        `near_lower_limit`; `fillrules.band_limits`), counted once per (side, name, day). What
+        order at or within one tick of its band, known before the session (`near_upper_limit`,
+        `near_lower_limit`; `_near_limit`), counted once per (side, name, day). What
         the price was read from is kept for the run's counts (`_fill_sources`)."""
         bar = self.view.bar(instrument_id, day)
         if bar is None:
@@ -1213,7 +1213,7 @@ class _Run:
         if side == "sell":
             if self._lower_locked_0920(instrument_id, day, bar, first):
                 return None, "lower_circuit"
-            if near_limit and self._near_limit(instrument_id, day, bar, "sell", price):
+            if near_limit and self._near_limit(instrument_id, day, "sell", price):
                 return None, rotation.NEAR_LOWER_LIMIT
             return price, None
         if (instrument_id, day) in self.data.demerger_exits:
@@ -1227,20 +1227,22 @@ class _Run:
         )
         if locked is not False:
             return None, "upper_circuit"
-        if near_limit and self._near_limit(instrument_id, day, bar, "buy", price):
+        if near_limit and self._near_limit(instrument_id, day, "buy", price):
             return None, rotation.NEAR_UPPER_LIMIT
         return price, None
 
-    def _near_limit(
-        self, instrument_id: str, day: date, bar: Bar, side: str, price: Decimal
-    ) -> bool:
-        """Whether a rotation order at `price` is at or within one tick of the band `day`
-        reached (`rotation.near_limit` on `fillrules.band_limits`); counted when it is."""
-        tick = self.view.tick(instrument_id, day)
-        lower, upper = band_limits(
-            bar.high, bar.low, self.view.prev_close(instrument_id, day), tick
+    def _near_limit(self, instrument_id: str, day: date, side: str, price: Decimal) -> bool:
+        """Whether a rotation order at `price` is at or within one tick of its band
+        (`rotation.near_limit`, live's rule): the previous close, the tick and the stored band in
+        force on `day` (`data.band_on`), all known before the session; counted when it is."""
+        known, pct = band_on(self.data.bands.get(instrument_id, ()), day)
+        daily = trigger.DailyInputs(
+            prev_close=self.view.prev_close(instrument_id, day),
+            tick=self.view.tick(instrument_id, day),
+            band_known=known,
+            band_pct=pct,
         )
-        if not rotation.near_limit(side, price, lower, upper, tick):
+        if not rotation.near_limit(side, price, daily):
             return False
         self.near_limit.add((side, instrument_id, day))
         return True

@@ -48,6 +48,7 @@ from ..engine.rotation_live import (
     scale_down_planned,
     waiting_sales,
 )
+from ..engine.trigger import DailyInputs
 from ..execution.modes import bot_mode
 from ..governance import Mode
 from ..notify import Notifier
@@ -179,7 +180,7 @@ class Rotations:
         def price(name: str) -> tuple[Decimal | None, str | None]:
             return self._prices.checked(session, uuid.UUID(name), now)
 
-        def limits(name: str) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+        def limits(name: str) -> DailyInputs:
             return self._prices.limits(session, uuid.UUID(name), now)
 
         bot = configs_of(session).get(Bot, bot_id)

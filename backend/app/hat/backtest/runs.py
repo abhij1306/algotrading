@@ -56,7 +56,7 @@ from ..engine.portfolio.common import market_id_of
 from ..engine.portfolio.regime_service import regime_profile, stored_regime_table
 from ..engine.strategy.config import ConfigError, StrategyConfig, parse_config
 from ..models import HatUniverse, HatUniverseVersion
-from ..money import exact, require_exact
+from ..money import exact
 from ..risk.policy import PolicyError, PolicyVersion, RiskPolicy, effective_version, parse_policy
 from ..risk.policy_upkeep import load_versions
 from ..time import utc_now
@@ -88,7 +88,7 @@ from .overrides import (
     parse_set,
     read_policy_file,
 )
-from .run_audit import audit_run
+from .run_audit import audit_run, fill_impacts
 from .spec import (
     ENTRY_BARS_5M,
     INITIAL_EQUITY,
@@ -882,10 +882,7 @@ def _execute(
             explained=data_audit.explanation_of(root, market.audit.get("digest")),
             ledger=result.ledger,
             hindsight=result.hindsight,
-            impact_bps=require_exact(
-                ((result.metrics.get("rotation") or {}).get("impact") or {}).get("max_bps", "0"),
-                "impact_bps",
-            ),
+            impacts=fill_impacts(result.fills),
         )
         pbo = built.pbo
         evidence = evidence_doc(

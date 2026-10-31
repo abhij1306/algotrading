@@ -37,7 +37,8 @@ tier and records those below its entry tier (`hold_only`), which the open never 
 `rotation.betas` on the NIFTY 500 TRI, `ScanInputs.benchmark_tri`) and the open sizes each
 target on its weight (`rotation.target_weights`); with `refuse_near_limit` the open passes over
 a buy at or within one tick of the day's upper band and holds a sale (or skips a trim) at or
-within one tick of its lower one (`rotation.near_limit` on the stored band, `limits`).
+within one tick of its lower one (`rotation.near_limit` on the previous close and the stored
+band, `limits`: the backtest's rule and source).
 `tranches` are backtest only: a night under them records nothing and logs
 `TRANCHES_NOT_LIVE`, so such a version never trades live.
 
@@ -85,6 +86,7 @@ from .scan import ScanInputs, universe_passers
 from .shadow import sell_position
 from .snapshot import industry_lookup
 from .strategy.config import InverseBeta, Rotation, StrategyConfig, parse_config
+from .trigger import DailyInputs
 from .watchlist import bot_universe_members
 
 __all__ = [
@@ -133,8 +135,8 @@ ALREADY_RAN = "already_ran"  # the trade date's job already ran: a second worker
 VERSION_CHANGED = "version_changed"  # the bot's live version is not the one the night ranked
 CASH = "cash"  # a buy the cash cut down or out (the backtest's reason)
 TRANCHES_NOT_LIVE = "rotation_tranches_not_live"  # a staggered rebalance is backtest only
-# a name's (lower band price, upper band price, tick) on the trade date, each None when unknown
-Limits = Callable[[str], tuple[Decimal | None, Decimal | None, Decimal | None]]
+# a name's previous close, tick and stored band on the trade date (`rotation.near_limit`)
+Limits = Callable[[str], DailyInputs]
 # The fills of shadow trading (`shadow.SHADOW_FILLS`'s model), typed for the outlay and the
 # affordable shares the buys are scaled with.
 FILLS = BacktestFills(load_cost_schedule(DEFAULT_COST_MODEL), DEFAULT_SLIPPAGE_BPS)
@@ -226,6 +228,7 @@ def plan_night(
         [name for name, _ in ranks],
         rules,
         None if rules.max_per_industry is None else industry_lookup(session, trade_date),
+        hold_only,
     )
     payload: dict[str, Any] = {
         "trade_date": trade_date.isoformat(),
@@ -653,7 +656,9 @@ def rebalance(
         raise RotationUnpricedError(missing)
     done.unpriced = missing  # passed over: the backtest's name with no bar
     done.target = target
-    chosen = rotation.Plan(night.night, ranking, target, filtered=filtered)
+    chosen = rotation.Plan(
+        night.night, ranking, target, filtered=filtered, hold_only=night.hold_only
+    )
     # a holding is priced as it sells (a buy's band check is the selection's and the buys')
     prices = {
         n: p for n in {*target, *held} if (p := price(n)[0] if n in held else quote(n)) is not None
@@ -683,9 +688,9 @@ def rebalance(
             else rotation.TRIMMED
         )
         blocked = NO_PRICE if found is None else None
-        if found is not None and limits is not None:  # `refuse_near_limit`: the band read now
-            blocked = near_limit_price(price, limits, "sell")(name)[1]
-        if blocked is not None:
+        if found is not None and limits is not None:  # `refuse_near_limit`: one read, checked
+            found, blocked = near_limit_price(price, limits, "sell")(name)  # and sold at
+        if found is None or blocked is not None:
             done.row(name, order.action, blocked, 0, None)
             if order.action == rotation.SELL:  # a trim is not carried over: the next plan's
                 done.waiting[name] = reason
@@ -720,8 +725,7 @@ def near_limit_price(price: Price, limits: Limits | None, side: str) -> Price:
         found, why = price(name)
         if found is None:
             return found, why
-        lower, upper, tick = limits(name)
-        if rotation.near_limit(side, found, lower, upper, tick):
+        if rotation.near_limit(side, found, limits(name)):
             return None, NEAR_UPPER if side == "buy" else NEAR_LOWER
         return found, why
 

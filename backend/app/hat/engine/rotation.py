@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable, Collection, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import date
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from typing import TypeVar
@@ -49,6 +49,7 @@ from ..money import require_exact
 from ..risk.decision import ROTATION_PLAYBOOK
 from .regime_gate import RULES
 from .strategy.config import InverseBeta, Liquidity, Rotation, ScaleDown, Tranches
+from .trigger import DailyInputs, lower_circuit_price, upper_circuit_price
 
 __all__ = [
     "BUY",
@@ -109,6 +110,7 @@ UNKNOWN_INDUSTRY = "unknown"  # a name without a classification in force (never 
 NEAR_UPPER_LIMIT = "near_upper_limit"  # a buy refused at or within a tick of the upper band
 NEAR_LOWER_LIMIT = "near_lower_limit"  # a sale held at or within a tick of the lower band
 MIN_BETA_RETURNS = 20  # fewer paired daily returns than this: the name's beta is 1
+NSE_BAND_PCTS = (Decimal(2), Decimal(5), Decimal(10), Decimal(20))  # a band unknown: candidates
 BETA_PLACES = Decimal("0.0001")  # a beta's places (`inverse_beta`), as live records it
 _HUNDRED = Decimal(100)
 K = TypeVar("K")  # a lot's key
@@ -294,24 +296,31 @@ def _industry_key(found: str, bucket_unknown: bool) -> str | None:
 
 
 def selection_depth(
-    ranking: Sequence[str], rules: Rotation, industry: Callable[[str], str] | None = None
+    ranking: Sequence[str],
+    rules: Rotation,
+    industry: Callable[[str], str] | None = None,
+    hold_only: Collection[str] = (),
 ) -> int:
     """How deep into `ranking` (best first) a rebalance's selection may reach, the names live
     subscribes and prices for the open: `top_n + buffer_rank` without an industry cap. With one,
     the rank by which `top_n + buffer_rank` names the cap could admit have been seen (a name
     beyond the cap's count in its industry is never selected, so it does not count; an unknown
     industry counts unless bucketed), or the whole ranking: the uncapped rule's slack measured in
-    names the cap leaves selectable."""
+    names the cap leaves selectable. A `hold_only` name (the liquidity floor's, never bought) is
+    passed over as the cap passes one over, so the depth reaches past those too."""
     reach = rules.top_n + rules.buffer_rank
     cap = rules.max_per_industry
-    if cap is None or industry is None:
+    capped = cap is not None and industry is not None
+    if not capped and not hold_only:
         return reach
     bucket = rules.unknown_industry == "bucket"
     counts: dict[str, int] = {}
     admitted = 0
     for n, name in enumerate(ranking, start=1):
-        key = _industry_key(industry(name), bucket)
-        if key is None or counts.get(key, 0) < cap:
+        if name in hold_only:
+            continue
+        key = _industry_key(industry(name), bucket) if capped and industry else None
+        if key is None or counts.get(key, 0) < (cap or 0):
             admitted += 1
             if key is not None:
                 counts[key] = counts.get(key, 0) + 1
@@ -341,13 +350,15 @@ def order_diff(
     *,
     reweight: bool,
     weights: Mapping[str, Decimal] | None = None,
+    no_buy: Collection[str] = (),
 ) -> list[Order]:
     """The orders that take `held` (shares by name) to `target` at `prices`: a sale of every
     holding not a target, then each target's change to `capital` / `top_n` of value (with
     `weights`, `capital` times its weight), in whole shares. A change of at most
     `min_change_pct` percent of that value is skipped; without `reweight` a held target is left
     as it is. Sales and trims come first, then buys and top-ups in target order. A target
-    without a price gets no order."""
+    without a price gets no order, and one in `no_buy` (the liquidity floor's hold-only names)
+    no buy or top-up: it may only be trimmed."""
     sells = [Order(name, SELL, qty) for name, qty in held.items() if qty > 0 and name not in target]
     equal = capital / top_n if top_n > 0 else Decimal(0)
     trims: list[Order] = []
@@ -361,11 +372,16 @@ def order_diff(
         qty = held.get(name, 0)
         change = each - qty * price
         if qty == 0:
-            if change > floor and (shares := _shares(change, price)) > 0:
+            if name not in no_buy and change > floor and (shares := _shares(change, price)) > 0:
                 buys.append(Order(name, BUY, shares))
         elif reweight and -change > floor and (shares := _shares(-change, price)) > 0:
             trims.append(Order(name, TRIM, min(shares, qty)))
-        elif reweight and change > floor and (shares := _shares(change, price)) > 0:
+        elif (
+            reweight
+            and name not in no_buy
+            and change > floor
+            and (shares := _shares(change, price)) > 0
+        ):
             buys.append(Order(name, TOP_UP, shares))
     return [*sells, *trims, *buys]
 
@@ -373,12 +389,14 @@ def order_diff(
 @dataclass(frozen=True)
 class Plan:
     """A rebalance decided on `night`: the eligible names best first with their scores, the
-    target list, and whether the market filter emptied it."""
+    target list, whether the market filter emptied it, and the ranked names the liquidity
+    floor never buys (`hold_only`)."""
 
     night: date
     ranking: tuple[tuple[str, float], ...]
     target: tuple[str, ...]
     filtered: bool = False
+    hold_only: frozenset[str] = field(default_factory=frozenset)  # never bought nor topped up
 
 
 def ranking(
@@ -448,7 +466,7 @@ def plan(
         ranks, held, rules, pending=pending, gate_on=gate_on, can_buy=can_buy, industry=industry,
         hold_only=hold_only,
     )  # fmt: skip
-    return Plan(night, ranks, target, filtered=filtered)
+    return Plan(night, ranks, target, filtered=filtered, hold_only=frozenset(hold_only))
 
 
 def orders(
@@ -460,7 +478,8 @@ def orders(
     weights: Mapping[str, Decimal] | None = None,
 ) -> list[Order]:
     """`order_diff` of `chosen`'s target under `rules`, on `capital`, the sleeve's; `weights`
-    the targets' (`target_weights`) under `inverse_beta`, else equal."""
+    the targets' (`target_weights`) under `inverse_beta`, else equal; `chosen`'s hold-only
+    names are never bought or topped up."""
     return order_diff(
         chosen.target,
         held,
@@ -470,6 +489,7 @@ def orders(
         require_exact(rules.min_change_pct, "min_change_pct", floats=True),
         reweight=rules.reweight,
         weights=weights,
+        no_buy=chosen.hold_only,
     )
 
 
@@ -666,17 +686,31 @@ def tranche_due(since: int | None, rule: Tranches) -> int | None:
     return k if k < rule.count else None
 
 
-def near_limit(
-    side: str,
-    price: Decimal,
-    lower: Decimal | None,
-    upper: Decimal | None,
-    tick: Decimal | None,
-) -> bool:
-    """Whether an order at `price` is at or within one `tick` of the band it trades against: a
-    buy of the `upper` price, a sale of the `lower` one (an unknown band or tick: no)."""
-    if tick is None or tick <= 0:
+def near_limit(side: str, price: Decimal, daily: DailyInputs) -> bool:
+    """Whether an order at `price` is at or within one tick of the band it trades against (a buy
+    the upper band price, a sale the lower), read from what is known before the session:
+    `daily`'s previous close, tick and the stored band in force on the trade date
+    (`hat_price_band`, point in time; live's `DailyInputs`, the backtest's `MarketData.bands`),
+    one rule for both books. With a band known the order is refused at or beyond one tick inside
+    it; a known `band_pct` None (an F&O name, no band) never is. Without a stored band every NSE
+    band (`NSE_BAND_PCTS`) is a candidate, and an order within one tick of any of their prices is
+    refused (a price between two candidates is not). No previous close or tick: not refused."""
+    prev, tick = daily.prev_close, daily.tick
+    if prev is None or prev <= 0 or tick is None or tick <= 0:
         return False
-    if side == "buy":
-        return upper is not None and price >= upper - tick
-    return lower is not None and price <= lower + tick
+    if daily.band_known and daily.band_pct is None:
+        return False
+    known = daily.band_known
+    for pct in (daily.band_pct,) if known else NSE_BAND_PCTS:
+        band = replace(daily, band_known=True, band_pct=pct)
+        if side == "buy":
+            limit = upper_circuit_price(band)
+            if limit is not None and limit > prev:
+                if price >= limit - tick if known else abs(price - limit) <= tick:
+                    return True
+        else:
+            limit = lower_circuit_price(band)
+            if limit is not None and limit < prev:
+                if price <= limit + tick if known else abs(price - limit) <= tick:
+                    return True
+    return False
