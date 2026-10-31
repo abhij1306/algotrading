@@ -196,7 +196,7 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   slippage against the trade, then the versioned statutory charges (`costs.py`), so shadow
   results are net of what real trading pays.
 - **Dated cost schedule.** A fill is charged under the file of its cost-model version in force on
-  its trade date (`cost_models/cnc-delivery-2/`, from 2016-01-01, the backtest window's start);
+  its trade date (`cost_models/cnc-delivery-2/`, from 2011-06-22, HAT's first bar day);
   a run records the digest of every file in force in its window. The rates, their dates and
   sources: `docs/backtests/costs.md`. Stamp duty before 2020-07-01 was a state levy: HAT charges
   the Maharashtra rate. The DP charge is flat per instrument per sell day: the first sale of an
@@ -421,13 +421,15 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   so no last bar), which a run must see. A known vendor truncation is refused by where it is
   known to be, never by price behaviour. The rule's version is recorded in each run's
   conventions (`replay_rule`, so `config_digest` tells runs before and after it apart).
-- **Backtests from 2016-01-01** (owner, 2026-10-25). The NIFTY 500 history starts 2016-01-01:
-  the 2011-2015 notices are incomplete (they do not fit the archived lists of 2014 and 2015).
-  Until that membership is resolved, a backtest's first session is 2016-01-01 or later; a run
-  starting earlier is refused `backtest_starts_before_membership@2016-01-01`. Bars before 2016
-  still warm the indicators up. That is all a run reads before its first session: the lookback
-  reads bars and features, which rank all ordinary equity, never the index, so membership before
-  2016 serves no backtest and the data verify (D3) warns on those sessions, never fails.
+- **NIFTY 500 history from 2011-06-22** (owner, 2026-10-31; was 2016-01-01). The history starts
+  at HAT's first bar day so a backtest can cover ten years. It is rebuilt by undoing the notices
+  from today's list and resetting to each archived full list (2010-01-02, 2014-01-22, 2014-07-09,
+  2015-03-25) at its day; a list is the members before the changes effective that day. From
+  2014-01-22 on every notice and list must fit, or the build refuses; before it, a name that does
+  not fit is recorded in the build and coverage reports. Every notice from 2010 fits, and the
+  2014 and 2015 lists match exactly. The one residual is a missing 2010-2012 swap: 3IINFOTECH is
+  a member from the start to 2012-09-28 and is not on the 2010 list, while ZANDUPHARM
+  (ZANDUREALT) is on it and on no later one. The cost schedules start on the same day.
 - **D2's second source is Fyers' daily history** (owner, 2026-10-30: Yahoo is not reliable; it
   refused this host for hours). The price basis' calendar-year price return is compared with
   Fyers' (split- and bonus-adjusted, no dividends) within 2 points, for 2022 to 2025: Fyers
@@ -440,14 +442,23 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
   bar, and a later snapshot under another industry appends a reclassification from its capture
   day. A chain only the old lists name takes the current label its old label maps to where the
   mapping is unambiguous (at least 90% of 3 or more chains both lists name agree), else it stays
-  unknown; nothing is guessed. The industry is the company's, so a first classification is
-  never dated at the load: the nightly reference load dates a new chain's first from its
+  unknown, nothing guessed (pre-2016 exception: Archived-list industries). The industry is the
+  company's, so a first classification is never dated at the load: the nightly reference load dates a new chain's first from its
   listing and appends changes from the load day. Why: a load-dated first row left every earlier
   day `unknown`, so by-industry results were empty and the per-industry cap capped the whole
   book. The data audit warns above 5% unknown member-days, and a run whose per-industry cap is
   below its open positions while any member-day is unknown is refused (a sweep's uncapped
   variants still run). Loaded by
   `load-industry-history` (runbook).
+- **Archived-list industries** (owner, 2026-10-31). A chain that no NSE-list row classifies
+  takes, from the day of each CNX 500 list before 2016 that names it, the current label most of
+  the chains with its old label have (`best_fit`: 3 or more chains, no tie), in a row with
+  `hat_industry.source` `archived_list`. It is a best fit, not a classification: the 2014-2015
+  sectors split (CONSUMER GOODS is 55% FMCG, 30% Consumer Durables; CONSTRUCTION is Realty or
+  Construction; ENERGY is Power or Oil & Gas), so a cap on such a name can be off by one
+  industry. A known row is never replaced, and a label no current chain shares (PAPER) adds
+  nothing. The rows are not back-dated to the first bar. Why: before 2016, 21% of member-days
+  had no industry, so the per-industry cap refused those runs.
 - **Total return for signals, price basis for money.** Signals read dividend-adjusted series so a
   dividend never looks like a fall; fills and orders use the prices the broker sees. Every
   dividend counts: leaving small ones out biases returns down.

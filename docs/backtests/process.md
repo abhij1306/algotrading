@@ -30,7 +30,8 @@ result field means: `result-standard.md`.
    owner's living document per strategy outside the repo, as one `hat-criteria` block (below).
    They are not changed after a run has been seen; the review pins the block's sha256.
 2. **Windows.** Choose on the in-sample window; read the hold-out window once, for the one
-   candidate, at the end. Trades from 2016-01-01 only (point-in-time membership starts there).
+   candidate, at the end. Point-in-time membership and the cost schedules start 2011-06-22
+   (`cost_no_schedule` before).
    A hold-out runs the candidate's own `config.json` (step 7) and is refused for a candidate
    that is not a completed in-sample run (`backtest_hold_out_bad_candidate`), a window that
    does not start after the candidate's (`backtest_hold_out_overlaps`), a config that is not

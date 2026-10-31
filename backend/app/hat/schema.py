@@ -303,6 +303,8 @@ CREATE INDEX IF NOT EXISTS hat_announcement_instrument_published
     _KNOWN_CHECK,
     _DEMERGER_COLUMN,
     "ALTER TABLE hat_isin_lineage ADD COLUMN IF NOT EXISTS known_on date",
+    # a database created before the column (hat_live) gains it: NULL is NSE's own list
+    "ALTER TABLE hat_industry ADD COLUMN IF NOT EXISTS source text",
     # CA6: create_all makes the table; its rows are append-only
     _ACTION_VERSION_APPEND_ONLY_FN,
     """

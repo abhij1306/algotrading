@@ -7,7 +7,10 @@ import uuid
 from datetime import date
 
 from app.hat.data.industry_history import (
+    ARCHIVED,
     Snapshot,
+    archived_fill,
+    best_fit,
     chain_history,
     old_mapping,
     parse_snapshot,
@@ -71,21 +74,61 @@ def test_chain_history_back_dates_the_first_and_appends_changes() -> None:
     assert "c8" not in history  # IT maps to nothing: unknown
 
 
+def test_best_fit_takes_the_most_chains_label_and_leaves_ties_out() -> None:
+    current = {"c1": "FMCG", "c2": "FMCG", "c3": "Durables", "c4": "Power", "c5": "Oil"}
+    old = [{"c1": "CONSUMER", "c2": "CONSUMER", "c3": "CONSUMER", "c4": "ENERGY", "c5": "ENERGY"}]
+    assert best_fit(old, current) == {"CONSUMER": ("FMCG", 2, 3)}  # ENERGY: two votes, a tie
+
+
+def test_archived_fill_dates_each_list_and_skips_classified_chains() -> None:
+    """An unknown chain takes each pre-2016 list's best-fit label from that list's day; a
+    classified chain, a 2016+ list and a label that maps to nothing add no row."""
+    old10 = Snapshot(date(2010, 1, 2), (("I1", "IT"), ("I2", "IT"), ("I3", "IT"), ("I8", "IT")))
+    old14 = Snapshot(
+        date(2014, 1, 22),
+        (("I1", "IT"), ("I2", "IT"), ("I3", "IT"), ("I8", "MISC"), ("I9", "IT")),
+    )
+    old18 = Snapshot(date(2018, 10, 4), (("I5", "IT"),))
+    now = Snapshot(
+        date(2026, 10, 22),
+        (("I1", "Information Technology"), ("I2", "Information Technology"), ("I3", "Power")),
+    )
+    fill, fit = archived_fill([old10, old14, old18, now], CHAIN, {"c1", "c2", "c3", "c9"})
+    assert fit == {"IT": ("Information Technology", 2, 3)}
+    assert fill == {"c8": [(date(2010, 1, 2), "Information Technology")]}  # MISC: no row
+
+
 def test_plan_rows_replaces_the_managed_rows_only() -> None:
-    target = {"c1": [(date(2011, 6, 22), "Power")], "c4": [(date(2012, 1, 2), "Power")]}
+    target = {
+        "c1": [(date(2011, 6, 22), "Power", None)],
+        "c4": [(date(2012, 1, 2), "Power", None)],
+        "c8": [(date(2014, 1, 22), "Power", ARCHIVED)],
+    }
     stored = [
-        ("c1", "c1", date(2026, 10, 22), "Power"),  # the load-day row: replaced
-        ("c4", "c4", date(2012, 1, 2), "Power"),  # already right
-        ("c4", "c4", date(2026, 11, 2), "Realty"),  # after the newest snapshot: kept
-        ("c3", "c3", date(2026, 10, 22), "Realty"),  # a chain the snapshots do not classify
-        ("i7", "c4", date(2020, 1, 1), "Power"),  # on an older ISIN: moved to the head
+        ("c1", "c1", date(2026, 10, 22), "Power", None),  # the load-day row: replaced
+        ("c4", "c4", date(2012, 1, 2), "Power", None),  # already right
+        ("c4", "c4", date(2026, 11, 2), "Realty", None),  # after the newest snapshot: kept
+        ("c3", "c3", date(2026, 10, 22), "Realty", None),  # a chain the snapshots do not classify
+        ("i7", "c4", date(2020, 1, 1), "Power", None),  # on an older ISIN: moved to the head
+        ("c8", "c8", date(2014, 1, 22), "Power", None),  # its source changed: rewritten
     ]
     inserts, deletes, kept = plan_rows(target, stored, date(2026, 10, 25))
-    assert inserts == [("c1", date(2011, 6, 22), "Power")]
-    assert deletes == [("c1", date(2026, 10, 22)), ("i7", date(2020, 1, 1))]
+    assert inserts == [
+        ("c1", date(2011, 6, 22), "Power", None),
+        ("c8", date(2014, 1, 22), "Power", ARCHIVED),
+    ]
+    assert deletes == [
+        ("c1", date(2026, 10, 22)),
+        ("c8", date(2014, 1, 22)),
+        ("i7", date(2020, 1, 1)),
+    ]
     assert kept == 3
-    again = [("c1", "c1", date(2011, 6, 22), "Power"), *stored[1:4]]
-    assert plan_rows(target, again, date(2026, 10, 25)) == ([], [], 4)
+    again = [
+        ("c1", "c1", date(2011, 6, 22), "Power", None),
+        *stored[1:4],
+        ("c8", "c8", date(2014, 1, 22), "Power", ARCHIVED),
+    ]
+    assert plan_rows(target, again, date(2026, 10, 25)) == ([], [], 5)
 
 
 def test_unknown_member_days() -> None:

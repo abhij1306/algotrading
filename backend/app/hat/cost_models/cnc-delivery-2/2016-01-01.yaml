@@ -1,5 +1,5 @@
 # NSE delivery (CNC) charges in force from 2016-01-01 until the next file's effective_from.
-# Change: the first schedule: no trade before 2016-01-01. Sources: docs/backtests/costs.md.
+# Change: none (the first file of the 2016 backtest window). Sources: docs/backtests/costs.md.
 version: cnc-delivery-2
 effective_from: "2016-01-01"
 gst_rate: "0.145"  # service tax 14% + Swachh Bharat cess 0.5% (Finance Act 2015)

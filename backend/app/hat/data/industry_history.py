@@ -8,7 +8,11 @@ CNX 500 lists of 2010-2020 are not). Each instrument chain (an ISIN and its link
 ISINs: the first is in force from the chain's first bar, and a later snapshot that lists it
 under another industry appends a reclassification from that snapshot's day. A chain only the
 old lists name takes the current label its old label maps to, from its first bar, when the
-mapping is unambiguous (`old_mapping`); otherwise it stays unknown (no row).
+mapping is unambiguous (`old_mapping`). A chain still unknown (no row but archived ones) takes,
+from the day of each list before 2016 that names it (`ARCHIVED_BEFORE`), the current label its
+label maps to best (`best_fit`: the most chains' label, ties left out), flagged `source`
+`archived_list` (`archived_fill`; docs/decisions.md, "Archived-list industries"); otherwise it
+stays unknown.
 
 The snapshots are `HAT_DATA_ROOT/admin/<dir>/YYYY-MM-DD.csv` (data, never committed), dated by
 the day they were captured. `load_industry_history` writes `hat_industry` from them, under the
@@ -42,9 +46,13 @@ from .reference import parse_industry_csv
 from .store import DataStore
 
 __all__ = [
+    "ARCHIVED",
+    "ARCHIVED_BEFORE",
     "COUNT_FROM",
     "IndustryHistoryError",
     "Snapshot",
+    "archived_fill",
+    "best_fit",
     "chain_history",
     "load_industry_history",
     "old_mapping",
@@ -54,7 +62,9 @@ __all__ = [
     "unknown_member_days",
 ]
 
-COUNT_FROM = date(2016, 1, 1)  # the dry run's coverage counts start with the backtest history
+COUNT_FROM = date(2011, 6, 22)  # the dry run's coverage counts start with the NIFTY 500 history
+ARCHIVED = "archived_list"  # `hat_industry.source` of a row `archived_fill` writes
+ARCHIVED_BEFORE = date(2016, 1, 1)  # the lists `archived_fill` reads: the CNX 500 lists to 2015
 # An old label maps to the current label that at least this share of the chains listed in both
 # taxonomies took, over at least `MAP_MIN_CHAINS` of them; anything looser stays unknown.
 MAP_SHARE = 0.9
@@ -114,10 +124,13 @@ def _by_chain(snapshot: Snapshot, chain_of: Mapping[str, str]) -> dict[str, str]
     return {chain_of[i]: industry for i, industry in snapshot.rows if i in chain_of}
 
 
-def old_mapping(old: Iterable[Mapping[str, str]], current: Mapping[str, str]) -> dict[str, str]:
-    """Each old label -> the current label it maps to: the chains an old list (`old`, chain ->
-    label) and the current taxonomy (`current`, chain -> its newest label) both name vote, and
-    a label maps when at least `MAP_SHARE` of `MAP_MIN_CHAINS` or more agree."""
+def best_fit(
+    old: Iterable[Mapping[str, str]], current: Mapping[str, str]
+) -> dict[str, tuple[str, int, int]]:
+    """Each old label -> (the current label most of its chains have, how many do, of how many):
+    the chains an old list (`old`, chain -> label) and the current taxonomy (`current`, chain ->
+    its newest label) both name vote, once each. A label fewer than `MAP_MIN_CHAINS` chains
+    vote for, or whose top two current labels tie, maps to nothing."""
     votes: dict[str, dict[str, str]] = defaultdict(dict)
     for listing in old:
         for chain, label in listing.items():
@@ -125,10 +138,50 @@ def old_mapping(old: Iterable[Mapping[str, str]], current: Mapping[str, str]) ->
                 votes[label][chain] = current[chain]
     out = {}
     for label, by_chain in votes.items():
-        (best, n), *_ = Counter(by_chain.values()).most_common(1)
-        if len(by_chain) >= MAP_MIN_CHAINS and n >= MAP_SHARE * len(by_chain):
-            out[label] = best
+        top = Counter(by_chain.values()).most_common(2)
+        if len(by_chain) >= MAP_MIN_CHAINS and (len(top) == 1 or top[0][1] > top[1][1]):
+            out[label] = (top[0][0], top[0][1], len(by_chain))
     return out
+
+
+def old_mapping(old: Iterable[Mapping[str, str]], current: Mapping[str, str]) -> dict[str, str]:
+    """Each old label -> the current label it maps to unambiguously: its `best_fit` when at
+    least `MAP_SHARE` of the chains agree."""
+    return {
+        label: best
+        for label, (best, agree, of) in best_fit(old, current).items()
+        if agree >= MAP_SHARE * of
+    }
+
+
+def archived_fill(
+    snapshots: Sequence[Snapshot], chain_of: Mapping[str, str], classified: Iterable[str]
+) -> tuple[dict[str, list[tuple[date, str]]], dict[str, tuple[str, int, int]]]:
+    """The rows for chains not `classified` from the old-taxonomy lists before
+    `ARCHIVED_BEFORE`, and the mapping used: from each such list's day that names the chain, the
+    current label its label maps to by `best_fit` over those lists (a change appends a row; a
+    label that maps to nothing adds none)."""
+    current = _current(snapshots)
+    newest: dict[str, str] = {}
+    for snapshot in current:  # oldest first, so a chain keeps its newest label
+        newest.update(_by_chain(snapshot, chain_of))
+    in_current = {s.day for s in current}
+    listings = [
+        (s.day, _by_chain(s, chain_of))
+        for s in sorted(snapshots, key=lambda s: s.day)
+        if s.day not in in_current and s.day < ARCHIVED_BEFORE
+    ]
+    fit = best_fit((listing for _, listing in listings), newest)
+    done = set(classified)
+    fill: dict[str, list[tuple[date, str]]] = {}
+    for day, listing in listings:
+        for chain, label in sorted(listing.items()):
+            if chain in done or label not in fit:
+                continue
+            rows = fill.setdefault(chain, [])
+            if not rows or rows[-1][1] != fit[label][0]:
+                rows.append((day, fit[label][0]))
+    return fill, fit
 
 
 def chain_history(
@@ -166,32 +219,35 @@ def chain_history(
     return history, mapping
 
 
+Row = tuple[date, str, str | None]  # effective_from, industry, source (None: NSE's list)
+
+
 def plan_rows(
-    target: Mapping[str, Sequence[tuple[date, str]]],
-    stored: Iterable[tuple[str, str, date, str]],
+    target: Mapping[str, Sequence[Row]],
+    stored: Iterable[tuple[str, str, date, str, str | None]],
     managed_until: date,
-) -> tuple[list[tuple[str, date, str]], list[tuple[str, date]], int]:
-    """(rows to insert as (head, effective_from, industry), stored rows to delete as
+) -> tuple[list[tuple[str, date, str, str | None]], list[tuple[str, date]], int]:
+    """(rows to insert as (head, effective_from, industry, source), stored rows to delete as
     (instrument, effective_from), stored rows kept) for the classified chains: `target` per
-    chain head; `stored` as (instrument, its chain head, effective_from, industry). A classified
-    chain's stored rows dated on or before `managed_until` that are not its target go; later
-    ones, and every row of a chain the snapshots do not classify, stay."""
-    held: set[tuple[str, date, str]] = set()
+    chain head; `stored` as (instrument, its chain head, effective_from, industry, source). A
+    classified chain's stored rows dated on or before `managed_until` that are not its target
+    go; later ones, and every row of a chain the snapshots do not classify, stay."""
+    held: set[tuple[str, date, str, str | None]] = set()
     deletes: list[tuple[str, date]] = []
     kept = 0
-    for instrument, head, day, industry in stored:
+    for instrument, head, day, industry, source in stored:
         if head not in target or day > managed_until:
             kept += 1
-        elif instrument == head and (day, industry) in set(target[head]):
-            held.add((head, day, industry))
+        elif instrument == head and (day, industry, source) in set(target[head]):
+            held.add((head, day, industry, source))
             kept += 1
         else:
             deletes.append((instrument, day))
     inserts = [
-        (head, day, industry)
+        (head, day, industry, source)
         for head, rows in sorted(target.items())
-        for day, industry in rows
-        if (head, day, industry) not in held
+        for day, industry, source in rows
+        if (head, day, industry, source) not in held
     ]
     return inserts, sorted(deletes), kept
 
@@ -199,7 +255,7 @@ def plan_rows(
 def unknown_member_days(
     sessions: Sequence[date],
     spans: Mapping[str, Sequence[tuple[date, date | None]]],
-    history: Mapping[str, Sequence[tuple[date, str]]],
+    history: Mapping[str, Sequence[tuple[date, Any] | Row]],
 ) -> tuple[int, int, dict[str, int]]:
     """(member-days, member-days without a classification in force, those per chain) over
     `sessions` (sorted): a chain is a member on the sessions inside its [from, to) `spans`, and
@@ -208,7 +264,7 @@ def unknown_member_days(
     per_chain: dict[str, int] = {}
     for chain, member_spans in spans.items():
         rows = history.get(chain, ())
-        first = min((day for day, _ in rows), default=None)
+        first = min((row[0] for row in rows), default=None)
         missing = 0
         for lo, hi in member_spans:
             a = bisect_left(sessions, lo)
@@ -269,11 +325,19 @@ def load_industry_history(
         for instrument, day in con.execute(_FIRST_BARS_SQL).fetchall():
             chain = head(instrument)
             first_bar[chain] = min(day, first_bar.get(chain, day))
-    target, mapping = chain_history(snapshots, chain_of, first_bar)
+    history, mapping = chain_history(snapshots, chain_of, first_bar)
     stored = [
-        (str(r.instrument_id), head(str(r.instrument_id)), r.effective_from, r.industry)
+        (str(r.instrument_id), head(str(r.instrument_id)), r.effective_from, r.industry, r.source)
         for r in session.scalars(select(HatIndustry))
     ]
+    # a chain any row but an archived one classifies is known: the fill never replaces it
+    known = set(history) | {chain for _, chain, _, _, source in stored if source != ARCHIVED}
+    fill, fit = archived_fill(snapshots, chain_of, known)
+    target: dict[str, list[Row]] = {
+        chain: [(day, industry, None) for day, industry in rows] for chain, rows in history.items()
+    } | {
+        chain: [(day, industry, ARCHIVED) for day, industry in rows] for chain, rows in fill.items()
+    }
     inserts, deletes, kept = plan_rows(target, stored, newest)
     spans: dict[str, list[tuple[date, date | None]]] = defaultdict(list)
     for r in session.scalars(select(HatIndexMember).where(HatIndexMember.index_name == NIFTY_500)):
@@ -281,10 +345,15 @@ def load_industry_history(
             spans[head(str(r.instrument_id))].append((r.effective_from, r.effective_to))
     sessions = _sessions(session, count_from, newest)
     before: dict[str, list[tuple[date, str]]] = defaultdict(list)
-    for _, chain, day, industry in stored:
+    for _, chain, day, industry, _source in stored:
         before[chain].append((day, industry))
     total, unknown_before, _ = unknown_member_days(sessions, spans, before)
-    _, unknown_after, left = unknown_member_days(sessions, spans, target)
+    # after the load: the planned rows, and the stored rows of the chains they leave alone
+    untouched = {chain: rows for chain, rows in before.items() if chain not in target}
+    _, unknown_after, left = unknown_member_days(sessions, spans, untouched | target)
+    _, unknown_unfilled, _ = unknown_member_days(
+        sessions, spans, untouched | {c: r for c, r in target.items() if c not in fill}
+    )
     if apply:
         for instrument, day in deletes:
             session.execute(
@@ -300,8 +369,9 @@ def load_industry_history(
                 sector=industry,
                 industry=industry,
                 effective_from=day,
+                source=source,
             )
-            for chain, day, industry in inserts
+            for chain, day, industry, source in inserts
         )
         session.flush()
     names = {str(i): s for i, s in session.execute(select(HatInstrument.id, HatInstrument.symbol))}
@@ -310,8 +380,20 @@ def load_industry_history(
         "snapshots": [s.day.isoformat() for s in sorted(snapshots, key=lambda s: s.day)],
         "current_taxonomy_from": _current(snapshots)[0].day.isoformat(),
         "old_label_mapping": dict(sorted(mapping.items())),
-        "chains_classified": len(target),
-        "chains_reclassified": sum(len(rows) > 1 for rows in target.values()),
+        "chains_classified": len(history),
+        "chains_reclassified": sum(len(rows) > 1 for rows in history.values()),
+        "archived_fill": {
+            "source": ARCHIVED,
+            "lists_before": ARCHIVED_BEFORE.isoformat(),
+            "chains": len(fill),
+            "rows": sum(len(rows) for rows in fill.values()),
+            "label_mapping": {
+                label: {"industry": best, "agree": agree, "of": of}
+                for label, (best, agree, of) in sorted(fit.items())
+            },
+            "member_chains_filled": sum(1 for c in spans if c in fill),
+            "unknown_member_days_without_it": unknown_unfilled,
+        },
         "inserted": len(inserts),
         "deleted": len(deletes),
         "kept": kept,

@@ -337,6 +337,7 @@ def _reference() -> object:
         },
         history={"new": [(date(2020, 6, 1), None, "ABCNEW")]},
         alias={"ALIASED": "ISIN:INE3", "DUMMY": "PSEUDO:DUM1"},
+        first_bar=date(2015, 1, 1),
     )
 
 
@@ -365,7 +366,62 @@ def test_n500__split_by_isin_at_lineage_dates() -> None:
 def test_n500__wanted_notice() -> None:
     assert n500.wanted_notice("Oct 23, 2026", "Replacements in indices")
     assert not n500.wanted_notice("Oct 23, 2026", "Launch of Nifty ETF index")
-    assert not n500.wanted_notice("Jan 05, 2010", "Replacements in indices")
+    assert n500.wanted_notice("Jan 05, 2010", "Replacements in indices")
+    assert not n500.wanted_notice("Dec 28, 2009", "Replacements in indices")
+
+
+def test_n500__resolve_before_the_bars_and_from_archived_lists() -> None:
+    """Before HAT's first bar the distance is measured from it; a symbol no span resolves takes
+    the ISIN the nearest archived list gives it."""
+    ref = _reference()
+    assert ref.resolve("ABC", date(2012, 1, 1), "in") == "old"  # 1096 days, clamped to 0
+    ref.listed = {"GONE": [(date(2010, 1, 2), "INE9")], "ABCX": [(date(2010, 1, 2), "INE3")]}
+    assert ref.resolve("GONE", date(2010, 5, 1), "out") == "PSEUDO:INE9"
+    assert ref.resolve("ABCX", date(2010, 5, 1), "in") == "other"
+    assert ref.resolve("NEVER", date(2010, 5, 1), "in") is None
+    # a symbol-history interval from 1900 is a span, never the first bar: the clamp holds
+    spans = {**ref.spans, "XYZ": [(date(1900, 1, 1), date(2026, 1, 1), "other")]}
+    early = n500.Reference(ref.isin, ref.lineage, spans, ref.history, first_bar=ref.first_bar)
+    assert early.resolve("ABC", date(2012, 1, 1), "in") == "old"
+
+
+def test_n500__archived_lists(tmp_path: Path) -> None:
+    path = tmp_path / "20100102131654_cnx500.csv"
+    path.write_text(
+        "\nConstituents list of S&P CNX 500\n\n"
+        "Company Name,Industry,Symbol,Series,ISIN Code\n"
+        "ABC Ltd.,BANKS,ABC,EQ,INE1\n"
+        "No Isin Ltd.,POWER,NOISIN,EQ,\n"
+    )
+    assert n500.list_day(path) == date(2010, 1, 2)
+    assert n500.list_day(Path("2015-03-25.csv")) == date(2015, 3, 25)
+    rows = n500.read_list(path)
+    assert [(r["Symbol"], r["ISIN Code"], r["Industry"]) for r in rows] == [
+        ("ABC", "INE1", "BANKS")
+    ]
+    ref = _reference()
+    gone = {"Symbol": "GONE", "ISIN Code": "INE9"}
+    assert n500.list_members([*rows, gone], ref, date(2010, 1, 2)) == {
+        "new": "ABC",  # INE1 is `old`, keyed by its chain's end
+        "PSEUDO:INE9": "GONE",
+    }
+
+
+def test_n500__clip_cuts_the_history_at_its_start() -> None:
+    from app.hat.data.index_membership import Member
+
+    start = date(2011, 6, 22)
+    members = [
+        Member("A", "A", date(2010, 1, 2), date(2011, 1, 1), "x.pdf;y.pdf"),  # gone by start
+        Member("B", "B", date(2010, 4, 8), date(2012, 3, 7), "in.pdf;out.pdf"),
+        Member("C", "C", date(2010, 1, 2), None, "in.pdf"),
+        Member("D", "D", date(2013, 1, 1), None, "d.pdf"),
+    ]
+    assert n500.clip(members, start, "today.csv") == [
+        Member("B", "B", start, date(2012, 3, 7), "out.pdf"),
+        Member("C", "C", start, None, "today.csv"),
+        members[3],
+    ]
 
 
 # ---------------------------------------------------------------------------------------------

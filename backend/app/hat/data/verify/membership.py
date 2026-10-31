@@ -4,7 +4,7 @@ constituent lists.
 - Scope: a backtest reads membership only from the night before its first session, and refuses
   a start before the history (`backtest.data.membership_cover_refusal`); its lookback reads bars
   and features, which rank every ordinary equity, never the index. So the history must start by
-  `NEEDED_FROM` (decisions.md "Backtests from 2016-01-01"; a later start fails), and the
+  `NEEDED_FROM` (decisions.md "NIFTY 500 history from 2011-06-22"; a later start fails), and the
   sessions before its start are listed (warn), not failed. A session after its end fails (dated:
   a backtest there has no point-in-time universe).
 - Size: the members of each session from the cover's start, grouped into runs of one count; a
@@ -77,8 +77,9 @@ LIST_URLS = (
 CAPTURE_URL = "https://web.archive.org/web/{stamp}id_/{original}"
 DUMMY_PREFIX = "DUM"  # a demerger dummy's ISIN (DUM545A01024) and symbol (DUMMYHEG)
 LIVE_SUFFIX = "_nsearchives-live.csv"
-# [A] decisions.md "Backtests from 2016-01-01": the first session a backtest may read members on
-NEEDED_FROM = date(2016, 1, 1)
+# [A] decisions.md "NIFTY 500 history from 2011-06-22": the first session a backtest may read
+# members on
+NEEDED_FROM = date(2011, 6, 22)
 
 
 @dataclass(frozen=True)

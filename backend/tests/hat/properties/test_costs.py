@@ -206,10 +206,30 @@ def test_schedule_picks_the_file_in_force(day: date, effective_from: date) -> No
     assert load_cost_schedule().on(day).effective_from == effective_from
 
 
+@pytest.mark.parametrize("version", ["cnc-delivery-1", "cnc-delivery-2"])
+@pytest.mark.parametrize(
+    ("day", "effective_from", "stt", "tax"),
+    [
+        (date(2011, 6, 22), date(2011, 6, 22), "0.00125", "0.103"),
+        (date(2012, 6, 30), date(2012, 4, 1), "0.00125", "0.1236"),
+        (date(2012, 7, 1), date(2012, 7, 1), "0.001", "0.1236"),
+        (date(2015, 12, 31), date(2015, 11, 15), "0.001", "0.145"),
+    ],
+)
+def test_schedule_resolves_before_2016(
+    version: str, day: date, effective_from: date, stt: str, tax: str
+) -> None:
+    """Both versions charge 2011-06-22..2015-12-31 under the STT and service tax then in force."""
+    model = load_cost_schedule(version).on(day)
+    assert model.effective_from == effective_from
+    assert {c.name: c.rate for c in model.components}["stt"] == D(stt)
+    assert model.gst_rate == D(tax)
+
+
 def test_schedule_refuses_a_day_before_its_first_file_and_records_the_window() -> None:
     """No charges exist before the first file; a run records each file in force in its window."""
     schedule = load_cost_schedule()
-    before = date(2015, 12, 31)
+    before = date(2011, 6, 21)
     with pytest.raises(CostError, match="cost_no_schedule"):
         schedule.on(before)
     recorded = schedule.to_json(date(2020, 5, 4), date(2021, 2, 1))
