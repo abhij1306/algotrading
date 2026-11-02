@@ -34,7 +34,7 @@ from __future__ import annotations
 import logging
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -671,17 +671,45 @@ def companies(
 Stored = tuple[dict[str, list[tuple[Any, ...]]], dict[str, str], dict[str, str]]
 
 
+def company_chains(filed: Iterable[str], newer: Mapping[str, str]) -> dict[str, list[str]]:
+    """Each company with a filing, keyed by its chain's latest instrument: its instruments
+    across its ISIN changes, the latest first (`newer`: each instrument that changed ISIN ->
+    the end of its chain, `results.universe.successors`). A company whose filings sit under
+    more than one of its instruments is one company, and its latest instrument is in its chain
+    whether or not it has a filing itself."""
+    heads = {newer.get(i, i) for i in filed}
+    chains: dict[str, list[str]] = {h: [h] for h in heads}
+    for old, latest in newer.items():
+        if latest in chains and old not in chains[latest]:
+            chains[latest].append(old)
+    return chains
+
+
+def merged(group: Sequence[Company]) -> Company:
+    """One company from several readings of it under one key (`group`, the first's key and
+    symbol kept): every filing, every split and bonus once, the newest face value."""
+    first = group[0]
+    if len(group) == 1:
+        return first
+    ids = list(dict.fromkeys(i for c in group for i in c.ids))
+    actions = sorted({a for c in group for a in c.actions}, key=lambda a: a.ex_date)
+    faces = [c.face_value_now for c in group if c.face_value_now is not None]
+    return Company(
+        first.instrument,
+        first.symbol,
+        tuple(ids),
+        tuple(k for c in group for k in c.known),
+        tuple(actions),
+        max(faces, default=None),
+    )
+
+
 def _chains(
     session: Session, filings: dict[str, list[tuple[Any, ...]]]
 ) -> dict[str, list[str]]:  # pragma: no cover - the database
-    """Each filing instrument's instruments across its ISIN changes, the latest first."""
     from ..results.universe import successors
 
-    chains: dict[str, list[str]] = {i: [i] for i in filings}
-    for old, latest in successors(session).items():
-        if latest in chains:
-            chains[latest].append(old)
-    return chains
+    return company_chains(filings, successors(session))
 
 
 def _companies(
@@ -692,10 +720,10 @@ def _companies(
 ) -> Iterator[Company]:  # pragma: no cover - the database
     filings, symbols, families = stored
     actions = _actions(session)
-    for instrument, rows in filings.items():
-        ids = chains[instrument]
+    for head, ids in chains.items():
         if wanted is not None and not any(i in wanted for i in ids):
             continue
+        rows = [r for i in ids for r in filings.get(i, [])]
         facts = _facts(session, [s[0] for s in rows])
         known = [
             replace(k, family=families[s[0]])
@@ -706,8 +734,8 @@ def _companies(
             {a for i in ids for a in actions.get(i, [])}, key=lambda a: a.ex_date
         )
         yield Company(
-            instrument,
-            symbols[instrument],
+            head,
+            symbols.get(head) or next(symbols[i] for i in ids if i in symbols),
             tuple(ids),
             tuple(known),
             tuple(company_actions),

@@ -51,7 +51,7 @@ from __future__ import annotations
 
 import math
 from bisect import bisect_right
-from collections.abc import Callable, Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
@@ -73,6 +73,7 @@ from ..data.fundamentals.research import (
     base,
     book_value,
     freshest,
+    merged,
     shares_at,
 )
 from ..time import IST
@@ -95,6 +96,7 @@ __all__ = [
     "Screen",
     "aged",
     "basis_shares",
+    "by_member",
     "cutoff",
     "digest_text",
     "factor_on",
@@ -518,17 +520,25 @@ def load(
     ids = heads | {old for old, head in lineage.items() if head in heads}
     factors = _factors(bars)
     out: dict[str, History] = {}
-    for company in companies(session, ids):
-        key = next(
-            (h for i in company.ids if (h := lineage.get(i, i)) in heads),
-            None,
-        )
-        if key is None:
-            continue
+    for key, group in by_member(companies(session, ids), lineage, heads).items():
         series = factors.get(key)
-        found = history(company, lambda d, s=series: factor_on(s, d), until)
+        found = history(merged(group), lambda d, s=series: factor_on(s, d), until)
         if found.days:
             out[key] = found
+    return out
+
+
+def by_member(
+    found: Iterable[Company], lineage: Mapping[str, str], heads: Collection[str]
+) -> dict[str, list[Company]]:
+    """The companies under the run's member their instruments chain to (`lineage`), each
+    member's together (`research.merged` makes them one), never one overwriting another; a
+    company chaining to no member is left out."""
+    out: dict[str, list[Company]] = {}
+    for company in found:
+        key = next((h for i in company.ids if (h := lineage.get(i, i)) in heads), None)
+        if key is not None:
+            out.setdefault(key, []).append(company)
     return out
 
 

@@ -15,7 +15,7 @@ from app.hat.backtest import fundamentals as fx
 from app.hat.backtest.overrides import Overrides, parse_set
 from app.hat.data.fundamentals.book import KnownFact
 from app.hat.data.fundamentals.items import ANNUAL, INSTANT
-from app.hat.data.fundamentals.research import Company, Known
+from app.hat.data.fundamentals.research import Action, Company, Known, company_chains, merged
 from app.hat.engine.strategy.config import ConfigError, Fundamentals, Rotation, parse_config
 from app.hat.engine.strategy.versions import seed_config
 
@@ -318,3 +318,45 @@ def test_under_ebit_ev_the_financials_rank_apart_on_earnings_yield() -> None:
         "u": fx.MISSING_KEPT,
     }
     assert found.kept == ("c2", "b2", "u")
+
+
+# --- companies across ISIN changes ------------------------------------------------------------
+
+
+def test_a_company_is_one_chain_under_its_latest_instrument() -> None:
+    newer = {"old": "new", "older": "new", "x": "y"}
+    # filings under two instruments of one chain: one company; a latest instrument without a
+    # filing of its own is still the key and in the chain (its prices and actions)
+    chains = company_chains(["old", "older", "solo"], newer)
+    assert chains == {"new": ["new", "old", "older"], "solo": ["solo"]}
+
+
+def test_readings_under_one_member_merge_never_overwrite() -> None:
+    a = Company(
+        "new",
+        "NEW",
+        ("new", "old"),
+        (_known(date(2015, 5, 12), "nse", 1, (ANNUAL, "revenue", 1)),),
+        (Action(date(2016, 1, 1), D("0.5"), split=True),),
+        None,
+    )
+    b = Company(
+        "old",
+        "OLD",
+        ("old",),
+        (_known(date(2014, 5, 12), "nse", 1, (ANNUAL, "revenue", 2), end=date(2014, 3, 31)),),
+        (
+            Action(date(2016, 1, 1), D("0.5"), split=True),
+            Action(date(2013, 1, 1), D(1), split=False),
+        ),
+        (date(2020, 1, 1), D(2)),
+    )
+    groups = fx.by_member([a, b], {"old": "new"}, {"new"})
+    assert list(groups) == ["new"]
+    assert len(groups["new"]) == 2
+    one = merged(groups["new"])
+    assert (one.instrument, one.ids) == ("new", ("new", "old"))
+    assert len(one.known) == 2
+    assert [x.ex_date for x in one.actions] == [date(2013, 1, 1), date(2016, 1, 1)]
+    assert one.face_value_now == (date(2020, 1, 1), D(2))
+    assert fx.by_member([b], {}, {"new"}) == {}
