@@ -51,14 +51,14 @@ def _items(name: str) -> dict[str, tuple[str, Decimal]]:
 
 
 def test_annual_page_gives_the_year_and_its_balances() -> None:
-    page = parse_page((FIXTURES / "html_persistent_fy2016_annual.html").read_bytes())
+    page = parse_page((FIXTURES / "html_persistent_fy2016_annual.txt").read_bytes())
     assert (page.symbol, page.basis, page.period_end, page.annual) == (
         "PERSISTENT",
         "standalone",
         date(2016, 3, 31),
         True,
     )
-    items = _items("html_persistent_fy2016_annual.html")
+    items = _items("html_persistent_fy2016_annual.txt")
     assert items["revenue"] == ("annual", Decimal("144713.60") * LAKH)
     assert items["net_profit"] == ("annual", Decimal("26546.10") * LAKH)
     assert items["share_capital"] == ("instant", Decimal("8000.00") * LAKH)
@@ -68,9 +68,9 @@ def test_annual_page_gives_the_year_and_its_balances() -> None:
 
 
 def test_bank_quarter_page() -> None:
-    page = parse_page((FIXTURES / "html_bank_quarter.html").read_bytes())
+    page = parse_page((FIXTURES / "html_bank_quarter.txt").read_bytes())
     assert (page.symbol, page.family, page.annual) == ("ICICIBANK", "bank", False)
-    items = _items("html_bank_quarter.html")
+    items = _items("html_bank_quarter.txt")
     assert items["revenue"] == ("quarter", Decimal("1348193.00") * LAKH)
     assert items["finance_cost"] == ("quarter", Decimal("807742.00") * LAKH)
     assert items["paid_up_capital"] == ("quarter", Decimal("116317.00") * LAKH)
@@ -98,7 +98,7 @@ def test_labels_map_by_whole_pattern_and_rank() -> None:
 
 
 def test_header_typo_takes_the_listing_period() -> None:
-    page = parse_page((FIXTURES / "html_bank_quarter.html").read_bytes())
+    page = parse_page((FIXTURES / "html_bank_quarter.txt").read_bytes())
     broadcast = datetime(2017, 5, 3, 18, 0, tzinfo=IST)
     moved = dated(page, date(2017, 3, 31), broadcast)
     assert moved.period_end == date(2017, 3, 31)
@@ -281,7 +281,7 @@ def test_html_filings_pass_the_filing_checks() -> None:
 
 def test_2012_page_keeps_its_first_figure_after_the_column_heads() -> None:
     """A 2012 page's first row (`Net Sales/Income from Operation`) follows the column heads."""
-    page = parse_page((FIXTURES / "html_2012_quarter.html").read_bytes())
+    page = parse_page((FIXTURES / "html_2012_quarter.txt").read_bytes())
     items = {x.item: (x.period_kind, x.value) for x in page.facts if x.item}
     assert (page.symbol, page.period_end, page.annual) == ("3MINDIA", date(2012, 3, 31), False)
     assert items["revenue"] == ("quarter", Decimal("39573.86") * LAKH)
