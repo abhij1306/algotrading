@@ -277,3 +277,12 @@ def test_html_filings_pass_the_filing_checks() -> None:
 
     assert NSE_HTML in FUNDAMENTAL_SOURCES
     assert {FAMILY_BANK, FAMILY_OTHER} <= set(FUNDAMENTAL_FAMILIES)
+
+
+def test_2012_page_keeps_its_first_figure_after_the_column_heads() -> None:
+    """A 2012 page's first row (`Net Sales/Income from Operation`) follows the column heads."""
+    page = parse_page((FIXTURES / "html_2012_quarter.html").read_bytes())
+    items = {x.item: (x.period_kind, x.value) for x in page.facts if x.item}
+    assert (page.symbol, page.period_end, page.annual) == ("3MINDIA", date(2012, 3, 31), False)
+    assert items["revenue"] == ("quarter", Decimal("39573.86") * LAKH)
+    assert items["net_profit"] == ("quarter", Decimal("2177.22") * LAKH)

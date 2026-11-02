@@ -38,10 +38,11 @@ FAMILY_OTHER = "html"
 # as `(a)` or `ii.` dropped) gives the first item whose pattern matches it whole; a page keeps
 # one fact per item, the one of the earliest pattern
 _PROFIT = r"net profit ?/ ?\(loss\)|net profit ?\(\+\) ?/ ?loss ?\(-\)|net profit ?/ ?loss"
+_COLUMN_HEADS = ("description", "amount")
 HTML_ITEMS: tuple[tuple[str, str], ...] = (
     ("revenue", r"total income from operations ?\(net\).*|revenue from operations.*"),
     ("revenue", r"interest earned.*"),
-    ("revenue", r"net sales ?/ ?income from operations.*"),
+    ("revenue", r"net sales ?/ ?income from operations?.*"),
     ("other_income", r"other income"),
     ("total_income", r"total income"),
     ("material_cost", r"cost of materials consumed|consumption of raw materials"),
@@ -289,7 +290,9 @@ def parse_page(body: bytes) -> HtmlPage:
         if cell.cls == "tablehead":
             key = normal(cell.text)
             continue
-        if key is not None and cell.cls == "t1":
+        # the table's column heads (`Description`, `Amount ...`) have no header value: on the
+        # 2012 pages the first figure's label follows them directly
+        if key is not None and cell.cls == "t1" and not key.startswith(_COLUMN_HEADS):
             header.setdefault(key, cell.text)
             key = None
             continue
