@@ -5,6 +5,7 @@ basis, the value multiples and the screen's drops and missing-data marks."""
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -74,13 +75,21 @@ def _at(day: date) -> datetime:
     return datetime(day.year, day.month, day.day, 12, tzinfo=UTC)
 
 
-def _known(day: date, source: str, version: int, *facts: tuple[str, str, int]) -> Known:
-    kinds = [KnownFact(kind, FY15, item, D(value)) for kind, item, value in facts]
-    return Known(_at(day), source, "consolidated", FY15, version, tuple(kinds))
+def _known(
+    day: date,
+    source: str,
+    version: int,
+    *facts: tuple[str, str, int],
+    basis: str = "consolidated",
+    family: str = "indas",
+    end: date = FY15,
+) -> Known:
+    kinds = [KnownFact(kind, end, item, D(value)) for kind, item, value in facts]
+    return Known(_at(day), source, basis, end, version, tuple(kinds), family)
 
 
-def _company(*known: Known, bank: bool = False) -> Company:
-    return Company("i", "SYM", ("i",), known, (), None, bank)
+def _company(*known: Known) -> Company:
+    return Company("i", "SYM", ("i",), known, (), None)
 
 
 def test_a_figure_counts_from_its_public_date_first_published_first() -> None:
@@ -100,16 +109,17 @@ def test_a_figure_counts_from_its_public_date_first_published_first() -> None:
     assert found.at(date(2016, 2, 1)).profit == 12  # nothing after the period is read
 
 
+BALANCE = (
+    (ANNUAL, "revenue", 1000),
+    (ANNUAL, "net_profit", 60),
+    (ANNUAL, "pbt", 80),
+    (ANNUAL, "finance_cost", 20),
+    (ANNUAL, "cfo", -5),
+)
+
+
 def _balance(equity: int, debt: int, cash: int | None = None) -> Company:
-    facts = [
-        (ANNUAL, "revenue", 1000),
-        (ANNUAL, "net_profit", 60),
-        (ANNUAL, "pbt", 80),
-        (ANNUAL, "finance_cost", 20),
-        (ANNUAL, "cfo", -5),
-        (INSTANT, "equity_owners", equity),
-        (INSTANT, "borrowings", debt),
-    ]
+    facts = [*BALANCE, (INSTANT, "equity_owners", equity), (INSTANT, "borrowings", debt)]
     if cash is not None:
         facts.append((INSTANT, "cash", cash))
     return _company(_known(date(2015, 5, 12), "nse", 1, *facts))
@@ -122,16 +132,61 @@ def test_quality_figures_from_the_latest_year_and_balance_sheet() -> None:
     assert figs.cfo == -5
     assert figs.ebit == 100
     assert figs.net_debt == 150
+    assert (figs.flow_end, figs.balance_end, figs.cfo_end) == (FY15, FY15, FY15)
     negative = fx.history(_balance(-10, 200), lambda _d: None, date(2016, 1, 1)).figures[0]
     assert negative.gearing == math.inf
     assert negative.net_debt is None  # no cash stated: unknown, never 0
 
 
-def test_a_bank_has_no_roce_gearing_or_enterprise_value() -> None:
-    bank = _company(*_balance(300, 200, 50).known, bank=True)
-    figs = fx.history(bank, lambda _d: None, date(2016, 1, 1)).figures[0]
-    assert (figs.roce, figs.gearing, figs.ebit, figs.net_debt) == (None, None, None, None)
-    assert figs.cfo == -5
+def test_one_basis_per_snapshot() -> None:
+    # the latest results are consolidated; the balance sheet is standalone only: not mixed in
+    company = _company(
+        _known(date(2015, 5, 12), "nse", 1, *BALANCE),
+        _known(
+            date(2015, 5, 12),
+            "nse",
+            1,
+            (INSTANT, "equity_owners", 300),
+            (INSTANT, "borrowings", 200),
+            basis="standalone",
+        ),
+    )
+    figs = fx.history(company, lambda _d: None, date(2016, 1, 1)).figures[0]
+    assert figs.ebit == 100
+    assert (figs.roce, figs.gearing, figs.balance_end) == (None, None, None)
+
+
+def test_the_family_is_the_one_known_on_each_day() -> None:
+    # an NBFC that becomes a bank: a bank only from its first bank filing
+    nbfc = _known(date(2015, 5, 12), "nse", 1, *BALANCE, family="nbfc")
+    bank = _known(date(2016, 5, 12), "nse", 1, *BALANCE, family="bank", end=date(2016, 3, 31))
+    page = _known(date(2016, 6, 1), "screener", 1, (ANNUAL, "revenue", 1), family="screener")
+    found = fx.history(_company(nbfc, bank, page), lambda _d: None, date(2017, 1, 1))
+    assert found.at(date(2016, 5, 11)).family == "nbfc"
+    assert found.at(date(2016, 5, 12)).family == "bank"
+    assert found.at(date(2016, 7, 1)).family == "bank"  # a restated page tells nothing
+
+
+def test_a_stale_figure_counts_as_missing() -> None:
+    figs = fx.Figures(
+        roce=0.2,
+        gearing=0.5,
+        cfo=1.0,
+        profit=2.0,
+        ebit=3.0,
+        net_debt=4.0,
+        flow_end=date(2020, 3, 31),
+        balance_end=date(2019, 3, 31),
+        cfo_end=date(2020, 3, 31),
+    )
+    fresh = fx.aged(figs, date(2021, 3, 31), 550)
+    assert fresh is not None
+    assert (fresh.profit, fresh.cfo) == (2.0, 1.0)
+    assert (fresh.roce, fresh.gearing, fresh.net_debt) == (None, None, None)  # 731 days
+    old = fx.aged(figs, date(2021, 12, 31), 550)
+    assert old is not None
+    assert (old.profit, old.ebit, old.cfo) == (None, None, None)
+    assert fx.aged(None, date(2021, 1, 1), 550) is None
 
 
 # --- valuation --------------------------------------------------------------------------------
@@ -160,8 +215,17 @@ def test_the_multiples_as_yields() -> None:
 # --- the screen -------------------------------------------------------------------------------
 
 
-def _screen(rules: Fundamentals, figs: dict[str, fx.Figures | None]) -> fx.Screen:
-    return fx.screen(list(figs), figs.get, lambda _n: 10.0, rules)
+def _screen(
+    rules: Fundamentals,
+    figs: dict[str, fx.Figures | None],
+    industries: dict[str, str] | None = None,
+) -> fx.Screen:
+    found = industries or {}
+    return fx.screen(list(figs), figs.get, lambda _n: 10.0, lambda n: found.get(n, "IT"), rules)
+
+
+def _marks(found: fx.Screen) -> dict[str, str]:
+    return {m.name: m.reason for m in found.marks}
 
 
 def test_quality_drops_the_first_failing_check_and_marks_the_missing() -> None:
@@ -178,7 +242,7 @@ def test_quality_drops_the_first_failing_check_and_marks_the_missing() -> None:
     }
     found = _screen(rules, figs)
     assert found.kept == ("a", "f", "g")
-    assert dict(found.marks) == {
+    assert _marks(found) == {
         "b": fx.ROCE,
         "c": fx.GEARING,
         "d": fx.CFO,
@@ -186,9 +250,39 @@ def test_quality_drops_the_first_failing_check_and_marks_the_missing() -> None:
         "f": fx.MISSING_KEPT,
         "g": fx.MISSING_KEPT,
     }
+    assert {m.name for m in found.marks if m.kept} == {"f", "g"}
     dropped = _screen(_rules(quality={"min_roce": 0.1}, missing="drop"), figs)
     assert dropped.kept == ("a", "c", "d")
-    assert dict(dropped.marks)["f"] == fx.MISSING_DROPPED
+    assert _marks(dropped)["f"] == fx.MISSING_DROPPED
+    assert not any(m.kept for m in dropped.marks)
+
+
+def test_roce_and_gearing_pass_for_a_financial_and_are_missing_for_an_unknown_kind() -> None:
+    rules = _rules(quality={"min_roce": 0.1, "max_gearing": 1.0, "positive_cfo": True})
+    levered = fx.Figures(roce=0.02, gearing=5.0, cfo=1.0)
+    figs = {
+        "nbfc": replace(levered, family="nbfc"),
+        "insurer": replace(levered, family="insurer"),
+        "by_industry": replace(levered, family="html"),  # an HTML page: the industry tells
+        "page": replace(levered, family="html"),  # neither tells: not an ordinary company
+        "loss": fx.Figures(family="bank", cfo=-1.0),  # the cash flow check still applies
+    }
+    found = _screen(
+        rules,
+        figs,
+        {"by_industry": fx.FINANCIAL_INDUSTRY, "page": "unknown", "loss": "unknown"},
+    )
+    assert found.kept == ("nbfc", "insurer", "by_industry", "page")
+    assert _marks(found) == {
+        "nbfc": fx.FINANCIAL,
+        "insurer": fx.FINANCIAL,
+        "by_industry": fx.FINANCIAL,
+        "page": fx.MISSING_KEPT,
+        "loss": fx.CFO + "_financial",
+    }
+    assert fx.kind("indas", "unknown") == "ordinary"
+    assert fx.kind(None, "Realty") == "ordinary"
+    assert fx.kind("bank", "Realty") == "financial"
 
 
 def test_value_drops_the_most_expensive_share_losses_first() -> None:
@@ -200,8 +294,27 @@ def test_value_drops_the_most_expensive_share_losses_first() -> None:
     figs["none"] = fx.Figures(shares=1.0)  # no profit: not ranked, counted once
     found = _screen(rules, figs)
     # 10 ranked: the 2 cheapest-yielding go, the loss first
-    assert dict(found.marks) == {"loss": fx.VALUE, "n1": fx.VALUE, "none": fx.MISSING_KEPT}
+    assert _marks(found) == {"loss": fx.VALUE, "n1": fx.VALUE, "none": fx.MISSING_KEPT}
     assert "none" in found.kept
     both = _rules(quality={"min_roce": 0.1}, value={"multiple": "earnings_yield"})
-    marks = dict(_screen(both, {"x": fx.Figures(shares=1.0)}).marks)
-    assert marks == {"x": fx.MISSING_KEPT}
+    assert _marks(_screen(both, {"x": fx.Figures(shares=1.0)})) == {"x": fx.MISSING_KEPT}
+
+
+def test_under_ebit_ev_the_financials_rank_apart_on_earnings_yield() -> None:
+    rules = _rules(value={"multiple": "ebit_ev", "drop_pct": 50})
+    figs: dict[str, fx.Figures | None] = {
+        "c1": fx.Figures(ebit=1.0, net_debt=0.0, shares=1.0),
+        "c2": fx.Figures(ebit=5.0, net_debt=0.0, shares=1.0),
+        # a bank's EBIT/EV would rank it cheapest; its earnings yield ranks it with the banks
+        "b1": fx.Figures(family="bank", profit=1.0, ebit=50.0, net_debt=0.0, shares=1.0),
+        "b2": fx.Figures(family="bank", profit=3.0, ebit=1.0, net_debt=0.0, shares=1.0),
+        "u": fx.Figures(family="html", ebit=9.0, net_debt=0.0, shares=1.0),
+    }
+    found = _screen(rules, figs, {"u": "unknown"})
+    assert _marks(found) == {
+        "c1": fx.VALUE,
+        "b1": fx.VALUE + "_financial",
+        "b2": fx.FINANCIAL,
+        "u": fx.MISSING_KEPT,
+    }
+    assert found.kept == ("c2", "b2", "u")

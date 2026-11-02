@@ -631,13 +631,16 @@ class Fundamentals(Model):
     names passing the universe stage and the liquidity floor on each decision close: `quality`
     and then `value`, at least one. A figure is read from its public date (the research panel's
     rule: first-published before restated, a restated figure never before its own public date)
-    plus `lag_sessions` sessions. A name without a figure a check needs is kept or dropped by
+    plus `lag_sessions` sessions; one whose period ended more than `max_age_days` before the
+    decision close counts as missing. ROCE, debt/equity and EV/EBIT do not apply to a financial
+    (a bank, an NBFC, an insurer). A name without a figure a check needs is kept or dropped by
     `missing`; the run counts both in skips.csv. Backtest only: live refuses such a config
     (`rotation_live.FUNDAMENTALS_NOT_LIVE`)."""
 
     quality: FundamentalQuality | None = Field(default=None, exclude_if=lambda v: v is None)
     value: FundamentalValue | None = Field(default=None, exclude_if=lambda v: v is None)
     lag_sessions: int = Field(default=1, ge=0, le=126)
+    max_age_days: int = Field(default=550, ge=90, le=2000)
     missing: Literal["keep", "drop"] = "keep"
 
     @model_validator(mode="after")

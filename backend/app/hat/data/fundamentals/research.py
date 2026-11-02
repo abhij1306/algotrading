@@ -35,7 +35,7 @@ import logging
 from bisect import bisect_right
 from collections import defaultdict
 from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -109,6 +109,7 @@ class Known:
     period_end: date
     version: int
     facts: tuple[KnownFact, ...]
+    family: str = ""  # the filing's taxonomy family (`hat_fundamental_filing.family`)
 
 
 @dataclass(frozen=True)
@@ -645,8 +646,9 @@ def run(
 class Company:
     """One company's stored filings as the panel reads them (`known_filings`), keyed by its
     latest instrument (`instrument`; `ids` its instruments, the latest first), with its splits
-    and bonuses across them, the face value its secondary-source page showed when fetched, and
-    whether a first-published filing has the bank taxonomy (`bank`)."""
+    and bonuses across them and the face value its secondary-source page showed when fetched.
+    Each filing's taxonomy family is on its `Known`, so a reader takes the family known at a
+    date."""
 
     instrument: str
     symbol: str
@@ -654,7 +656,6 @@ class Company:
     known: tuple[Known, ...]
     actions: tuple[Action, ...]
     face_value_now: tuple[date, Decimal] | None
-    bank: bool
 
 
 def companies(
@@ -666,7 +667,8 @@ def companies(
     yield from _companies(session, stored, _chains(session, stored[0]), wanted)
 
 
-Stored = tuple[dict[str, list[tuple[Any, ...]]], dict[str, str], set[str]]  # `_stored`
+# `_stored`: the filings' keys by instrument, the symbols, each filing's family
+Stored = tuple[dict[str, list[tuple[Any, ...]]], dict[str, str], dict[str, str]]
 
 
 def _chains(
@@ -688,14 +690,18 @@ def _companies(
     chains: dict[str, list[str]],
     wanted: Collection[str] | None,
 ) -> Iterator[Company]:  # pragma: no cover - the database
-    filings, symbols, banks = stored
+    filings, symbols, families = stored
     actions = _actions(session)
     for instrument, rows in filings.items():
         ids = chains[instrument]
         if wanted is not None and not any(i in wanted for i in ids):
             continue
         facts = _facts(session, [s[0] for s in rows])
-        known = [k for s in rows for k in known_filings(*s[1:], facts.get(s[0], []))]
+        known = [
+            replace(k, family=families[s[0]])
+            for s in rows
+            for k in known_filings(*s[1:], facts.get(s[0], []))
+        ]
         company_actions = sorted(
             {a for i in ids for a in actions.get(i, [])}, key=lambda a: a.ex_date
         )
@@ -706,13 +712,12 @@ def _companies(
             tuple(known),
             tuple(company_actions),
             _face_now(rows, facts),
-            instrument in banks,
         )
 
 
 def _stored(session: Session) -> Stored:  # pragma: no cover
-    """Every stored filing's keys, by instrument, each instrument's symbol, and the instruments
-    with a first-published filing in the bank taxonomy."""
+    """Every stored filing's keys, by instrument, each instrument's symbol, and each filing's
+    taxonomy family."""
     from sqlalchemy import select
 
     from ...models import HatFundamentalFiling
@@ -720,7 +725,7 @@ def _stored(session: Session) -> Stored:  # pragma: no cover
     filing = HatFundamentalFiling
     by: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
     symbols: dict[str, str] = {}
-    banks: set[str] = set()
+    families: dict[str, str] = {}
     for row in session.execute(
         select(
             filing.id,
@@ -737,8 +742,7 @@ def _stored(session: Session) -> Stored:  # pragma: no cover
     ):
         key = str(row.instrument_id)
         symbols[key] = row.symbol
-        if row.point_in_time and row.family == "bank":
-            banks.add(key)
+        families[str(row.id)] = row.family
         by[key].append(
             (
                 str(row.id),
@@ -750,7 +754,7 @@ def _stored(session: Session) -> Stored:  # pragma: no cover
                 row.version,
             )
         )
-    return by, symbols, banks
+    return by, symbols, families
 
 
 def _facts(

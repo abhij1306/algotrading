@@ -1261,33 +1261,37 @@ class _Run:
     ) -> list[str]:
         """The names of `prev`'s decision for `day` the fundamentals screen keeps
         (`fundamentals.screen`): each name's figures public by the lag's cutoff, priced on its
-        last close through `prev`. Each name it drops, and each it keeps without a figure, is a
-        skips.csv row of `day` (`fundamentals.MISSING_KEPT` and the drop reasons)."""
+        last close through `prev`, its industry on `day`. Each name it drops, and each it keeps
+        without a figure or as a financial, is a skips.csv row of `day`; a kept one is a `kept`
+        decision, not a skip."""
         histories = self.data.fundamentals
         at = fundamentals.cutoff(self.view.days, self.view.index[prev], rule.lag_sessions)
 
         def figures(name: str) -> fundamentals.Figures | None:
             found = histories.get(name)
-            return None if found is None else found.at(at)
+            figs = None if found is None else found.at(at)
+            return fundamentals.aged(figs, prev, rule.max_age_days)
 
         def close(name: str) -> float | None:
             found = self.view.last_close(name, prev)
             return None if found is None else float(found[1])
 
-        result = fundamentals.screen(names, figures, close, rule)
-        for name, reason in result.marks:
-            self.skips[reason] = self.skips.get(reason, 0) + 1
+        result = fundamentals.screen(
+            names, figures, close, lambda i: industry_on(self.data, i, day), rule
+        )
+        for mark in result.marks:
+            self.skips[mark.reason] = self.skips.get(mark.reason, 0) + 1
             self.skip_rows.append(
                 {
                     "date": day,
                     "strategy": leg.config.bot,
                     "playbook": leg.prefix + PLAYBOOK,
-                    "instrument_id": name,
-                    "symbol": symbol_on(self.data, name, day),
-                    "reason": reason,
+                    "instrument_id": mark.name,
+                    "symbol": symbol_on(self.data, mark.name, day),
+                    "reason": mark.reason,
                 }
             )
-            self.decisions.append((day, "skip", reason))
+            self.decisions.append((day, "kept" if mark.kept else "skip", mark.reason))
         return list(result.kept)
 
     def _quote(
