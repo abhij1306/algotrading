@@ -185,23 +185,57 @@ def _series(folder: str, *days: date) -> str:
     return json.dumps([{date_key: f"{d:%d %b %Y}", value_key: "1,234.5"} for d in days])
 
 
-def test_the_overlay_is_short_until_every_series_reaches_the_session(tmp_path: Path) -> None:
-    """Coverage is read from the files' rows, not their names. Harm: an overlay built from
-    series ending before the session (or from an error page saved under a full-year name) stores
-    TRIs that stop short (its coverage gaps then read as data)."""
-    from app.hat.data.update.steps import OVERLAY_SERIES, overlay_short
+def test_the_overlay_is_short_until_every_series_holds_each_year_and_the_session(
+    tmp_path: Path,
+) -> None:
+    """Coverage is read from the files' rows, not their names, for every year from the overlay's
+    start. Harm: an overlay built from series ending before the session, from an error page
+    saved under a full-year name, or from a fresh folder holding this year only, stored with
+    gaps that read as data."""
+    from app.hat.data.update.steps import OVERLAY_SERIES, OVERLAY_START, overlay_short
 
     for folder in OVERLAY_SERIES:
         (tmp_path / "niftyindices" / folder).mkdir(parents=True)
+        for year in range(OVERLAY_START.year, FRI.year):
+            (tmp_path / "niftyindices" / folder / f"{year}0101_{year}1231.json").write_text(
+                _series(folder, date(year, 6, 1))
+            )
         (tmp_path / "niftyindices" / folder / "20260101_20261030.json").write_text(
             _series(folder, THU, FRI)
         )
-    assert overlay_short(tmp_path, FRI) == []
+    assert overlay_short(tmp_path, FRI) == {}
     rate = tmp_path / "niftyindices" / "NIFTY_1D_RATE_INDEX" / "20260101_20261030.json"
     rate.write_text(_series("NIFTY_1D_RATE_INDEX", WED, THU))  # named to FRI, rows to THU
-    tri = tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261030.json"
+    tri = tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20180101_20181231.json"
     tri.write_text("<html>Access Denied</html>")
-    assert overlay_short(tmp_path, FRI) == ["NIFTY_50_TRI", "NIFTY_1D_RATE_INDEX"]
+    (tmp_path / "niftyindices" / "NIFTY_500_TRI" / "20150101_20151231.json").unlink()
+    assert overlay_short(tmp_path, FRI) == {
+        "NIFTY_50_TRI": [2018],
+        "NIFTY_500_TRI": [2015],
+        "NIFTY_1D_RATE_INDEX": [2026],
+    }
+
+
+def test_the_overlay_hand_request_names_each_missing_year() -> None:
+    from app.hat.data.update.steps import overlay_manual
+
+    text = overlay_manual({"NIFTY_500_TRI": [2015, 2026]}, FRI)
+    assert "-o NIFTY_500_TRI_20150101_20151231.json" in text
+    assert "-o NIFTY_500_TRI_20260101_20261030.json" in text
+    given = "NIFTY_500_TRI_20150101_20151231.json NIFTY_500_TRI_20260101_20261030.json"
+    assert text.endswith(f"--only etf --file {given}")
+
+
+def test_ca_retires_only_the_hand_files_a_session_read(tmp_path: Path) -> None:
+    """Harm: a change list handed over without its pair, or on a night no session was ready,
+    moved to `used/` unread, so the ISIN lineage never gets it."""
+    from app.hat.data.update.steps import ca_used
+
+    pr, sym, name = (tmp_path / n for n in ("PR301026.zip", "symbolchange.csv", "namechange.csv"))
+    assert ca_used([sym, name], [pr]) == [sym, name, pr]
+    assert ca_used([sym, name], []) == []  # no session ran
+    assert ca_used([sym, None], [pr]) == [pr]  # one list alone is not read
+    assert ca_used([None, None], [pr]) == [pr]
 
 
 def test_a_handed_overlay_file_is_used_only_when_valid_and_replaces_only_a_broken_one(

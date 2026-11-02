@@ -32,7 +32,7 @@ from datetime import date
 
 from ..money import MONEY_SCALE, exact
 from .bhavcopy import BhavRow, ParsedDay
-from .fyers_master import fyers_listings
+from .fyers_master import fyers_listings, master_refused
 from .identity import best_per_isin
 from .mcp_client import CODE_NO_DATA, McpClient, McpError, parse_data_date
 from .reference import EQUITY_SERIES, ISIN_RE
@@ -309,6 +309,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the MC
         before = max((d for d in stored_days if d < fresh[0]), default=None)
         stored = _symbol_isins(store, before)
         listed = fyers_listings(download_nse_cm())
+        refused = master_refused(listed, stored.values())
+        if refused is not None:
+            sys.stderr.write(refused + "\n")
+            return 2
         listed_isins = set(listed.values())
         symbols = universe(listed, stored)
         first = before or fresh[0]  # the previous session too: its rows explain today's gaps

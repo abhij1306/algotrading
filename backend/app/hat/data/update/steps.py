@@ -18,7 +18,7 @@ import shutil
 import subprocess  # noqa: S404 - runs the repo's own command lines, never a shell
 import sys
 import uuid
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
@@ -492,7 +492,7 @@ def ca(ctx: Context) -> Done:
     sources = _hand_sources(archives, *changes)
     deps = _nightly_deps(ctx, sources)
     done = _each_session(ctx, CA_ADJUST, ready, lambda day: lambda: CaAdjust(deps).run(day))
-    _retire(ctx, [p for p in (*changes, *(archives[d] for d in ready)) if p is not None])
+    _retire(ctx, ca_used(changes, [archives[d] for d in ready]))
     waiting = days[len(ready) :]
     if waiting:
         files = [hand.pr_archive(d) for d in waiting]
@@ -501,6 +501,15 @@ def ca(ctx: Context) -> Done:
         note += f" {hand.NAME_CHANGES.url})"
         raise StepManual(hand.manual("ca", files, note), done.last_good)
     return done
+
+
+def ca_used(changes: Sequence[Path | None], archives: Sequence[Path]) -> list[Path]:
+    """The handed files the sessions that ran read: their PR archives, and the change lists
+    only when a session ran and both were there (`_hand_sources` reads neither without the
+    other); a file no job read stays in the inbox for the next run."""
+    both = all(c is not None for c in changes)
+    read = [c for c in changes if c is not None] if archives and both else []
+    return [*read, *archives]
 
 
 def ready_prefix(days: Sequence[date], have: set[date]) -> list[date]:
@@ -817,7 +826,7 @@ def etf(ctx: Context) -> Done:
     builds = [script("overlay_etf.py", "--work", work, s) for s in ("build", "store")]
     if not on and not ctx.dry_run:
         _overlay_hand_files(ctx, work)
-    short = [] if on else overlay_short(work, ctx.through)
+    short = {} if on else overlay_short(work, ctx.through)
     if ctx.dry_run:
         return Done(None, would([*fetches, *([] if short else builds)]))
     chain(ctx, fetches)
@@ -880,34 +889,46 @@ def overlay_days(data: bytes, folder: str) -> list[date]:
     return sorted(out)
 
 
-def overlay_short(work: Path, through: date) -> list[str]:
-    """The overlay's niftyindices series whose kept files hold no day on or after `through` (read
-    from the files, not their names)."""
-    short = []
+# `overlay_etf.py` START: the overlay's series run from this day, one kept file per year
+OVERLAY_START = date(2015, 1, 1)
+
+
+def overlay_short(work: Path, through: date) -> dict[str, list[int]]:
+    """Per overlay niftyindices series, the years from `OVERLAY_START` its kept files hold no day
+    of, and `through`'s year when they hold no day on or after `through` (read from the files'
+    rows, not their names); only the series with any."""
+    short: dict[str, list[int]] = {}
     for folder in OVERLAY_SERIES:
-        last = [
-            days[-1]
+        days = [
+            d
             for p in (work / "niftyindices" / folder).glob("*.json")
-            if (days := overlay_days(p.read_bytes(), folder))
+            for d in overlay_days(p.read_bytes(), folder)
         ]
-        if not last or max(last) < through:
-            short.append(folder)
+        held = {d.year for d in days}
+        years = [y for y in range(OVERLAY_START.year, through.year) if y not in held]
+        if not days or max(days) < through:
+            years.append(through.year)
+        if years:
+            short[folder] = years
     return short
 
 
-def overlay_manual(short: Sequence[str], through: date) -> str:
-    """The `manual` detail for the overlay series that do not reach `through`: this year's
-    answer of each, from 1 January to `through`."""
+def overlay_manual(short: Mapping[str, Sequence[int]], through: date) -> str:
+    """The `manual` detail for the overlay series short of `through`: one answer per missing
+    year (the whole year, the current one to `through`), as the overlay's `indices` asks."""
     from ..index_history import HISTORY_URL, TRI_URL
     from . import hand
 
-    start = date(through.year, 1, 1)
     files = []
-    for folder in short:
+    for folder, years in short.items():
         base, kind = OVERLAY_SERIES[folder]
         url = TRI_URL if kind == "tri" else HISTORY_URL
-        files.append(hand.niftyindices_series(folder.replace("_", " "), base, url, start, through))
-    return hand.manual("etf", files, f"overlay series short of {through}: {', '.join(short)}")
+        for year in years:
+            start, end = date(year, 1, 1), min(date(year, 12, 31), through)
+            name = folder.replace("_", " ")
+            files.append(hand.niftyindices_series(name, base, url, start, end))
+    names = ", ".join(f"{f} {'/'.join(map(str, y))}" for f, y in short.items())
+    return hand.manual("etf", files, f"overlay series short of {through}: {names}")
 
 
 def results(ctx: Context) -> Done:

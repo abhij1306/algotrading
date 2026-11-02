@@ -70,6 +70,22 @@ def test_fyers_master_gives_the_isin_of_each_equity_symbol_and_series() -> None:
     assert mcp_bars.universe(listed, {"OLDCO": "x"}) == ["3IINFOLTD", "OLDCO", "RELIANCE"]
 
 
+def test_a_fyers_master_that_lost_the_market_is_refused() -> None:
+    """Harm: a changed or broken master (no CSV, other columns) read as a market with fewer
+    stocks, the dropped ones never asked of the MCP."""
+    from app.hat.data.fyers_master import master_refused
+
+    listed = fyers_listings(FYERS)
+    assert master_refused(listed, ["INE002A01018", "INE748C01038"]) is None
+    assert master_refused(fyers_listings("<html>Access Denied</html>"), []) == (
+        "fyers_master_unreadable: no equity listing"
+    )
+    shifted = "\n".join(",".join(r.split(",")[1:]) for r in FYERS.splitlines())  # a column less
+    assert master_refused(fyers_listings(shifted), ["INE002A01018"]) is not None
+    many = [f"INE{i:03d}Z01018" for i in range(10)]
+    assert master_refused(listed, many) == "fyers_master_short: 0 of the last session's 10 ISINs"
+
+
 def _row(symbol: str, series: str = "EQ", day: str = "2026-10-30", **kw: object) -> dict:
     row = {
         "symbol": symbol,

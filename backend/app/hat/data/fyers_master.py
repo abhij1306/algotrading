@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Iterable, Mapping
 
 from .reference import EQUITY_SERIES, ISIN_RE
 
@@ -40,3 +41,21 @@ def download_nse_cm() -> str:  # pragma: no cover - the network
     response = requests.get(FYERS_NSE_CM_URL, timeout=120)
     response.raise_for_status()
     return response.content.decode("utf-8-sig", errors="replace")
+
+
+# [A] Fyers' master lists every traded equity (2,993 on 2026-11-02): a master naming fewer of the
+# last session's ISINs is a changed or broken file, not the market.
+MIN_SHARE = 0.9
+
+
+def master_refused(listed: Mapping[tuple[str, str], str], stored: Iterable[str]) -> str | None:
+    """Why `listed` (`fyers_listings`) cannot be the master, else None: no listing at all, or
+    fewer than `MIN_SHARE` of the ISINs of the last stored session (`stored`). Harm: the
+    symbols it drops never asked of the MCP, a new listing's bars silently missing."""
+    if not listed:
+        return "fyers_master_unreadable: no equity listing"
+    want = set(stored)
+    have = want & set(listed.values())
+    if want and len(have) < MIN_SHARE * len(want):
+        return f"fyers_master_short: {len(have)} of the last session's {len(want)} ISINs"
+    return None
