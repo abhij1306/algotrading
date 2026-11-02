@@ -399,9 +399,19 @@ def load_reference(work: Path) -> Reference:
 # commands
 
 
+def _backend_path() -> None:
+    backend = str(REPO_ROOT / "backend")
+    if backend not in sys.path:
+        sys.path.insert(0, backend)
+
+
 def _get(url: str) -> bytes:
     if not url.startswith("https://"):
         raise ValueError(url)
+    _backend_path()
+    from app.hat.data.nse_web import guard  # noqa: PLC0415 - after the sys.path change
+
+    guard(url)  # niftyindices and NSE's archive while `HAT_NSE_WEB` is off: refused, unsent
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})  # noqa: S310 - https
     with urllib.request.urlopen(req, timeout=60) as resp:  # noqa: S310 - https checked
         return resp.read()

@@ -8,7 +8,7 @@ rebuilt. "Snapshot" means it is in the data repo's releases (runbook, Snapshot a
 
 | Path | Holds | Written by | Rebuild |
 | --- | --- | --- | --- |
-| `raw/` | NSE source files: bhavcopy zips, index closes | `history_cli`, nightly ingest | No: snapshot, manifest |
+| `raw/` | NSE source files: bhavcopy zips, index closes, the bhavcopy MCP's rows (`mcp_bhavcopy_<date>.json`) | `history_cli`, `mcp_bars`, nightly ingest | No: snapshot, manifest |
 | `raw_tri/` | NIFTY 500 TRI JSON from niftyindices | `index_history` | From the source site |
 | `bars_daily_raw/date=*/` | Daily bars, unadjusted, per session | `history_cli`, ingest | From `raw/`; manifest |
 | `bars_5m/date=*/` | 5-minute bars (Fyers history, Kotak top-up) | `minute_history`, `bars5m_import` | No: snapshot, manifest |
@@ -20,7 +20,7 @@ rebuilt. "Snapshot" means it is in the data repo's releases (runbook, Snapshot a
 | `index_daily/`, `breadth_daily/`, `market_breadth/` | Index levels and market breadth per session | ingest, `features` | From `raw/`; manifest |
 | `etf/` | ETF overlay data (`daily`, `indices`, `liquid_tr`, `bars_5m`, `manifest.json`) | `overlay_etf.py` | From the overlay's raw files; manifest |
 | `ca_bc/` | NSE book-closure files | `ca.adjust` | From NSE |
-| `admin/` | Config store (`admin/config/`), owner rulings and review TSVs | admin commands, configs | No: snapshot |
+| `admin/` | Config store (`admin/config/`), owner rulings and review TSVs, the hand-downloaded NSE files (`admin/nse/`, read ones in `used/<date>/`) | admin commands, configs | No: snapshot |
 | `audits/` | Golden, data audit and data verification (`verify-*/`) reports | `golden`, audits, `data.verify` | Rerun |
 | `verify_reference/` | Public reference files the data verification downloaded (NSE archives and probes, Wayback lists, niftyindices) and D2's Fyers daily history, each written once | `data.verify --fetch`, `data.verify.fyers` | From the sources; manifest |
 | `backtests/` | Backtest runs, `trials.json`, data audits | backtest jobs | Rerun |

@@ -123,6 +123,8 @@ ACTIONS: Mapping[str, str] = {
     "events.partitions.",
     # data
     "update.failed": "Read the step's detail and log (update --status), fix, rerun with --only.",
+    "update.manual": "A data update step needs NSE files downloaded by hand: update --status "
+    "names each address and the import command.",
     "update.late": "The daily data update has not run for the due date: check the timer "
     "(systemctl --user list-timers) and the machine.",
     "verify.failed": "A data verification check failed: read verify.md in that report and "

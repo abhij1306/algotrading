@@ -353,10 +353,14 @@ class InstrumentIds(Protocol):
 
 
 def to_bar_rows(
-    parsed: ParsedDay, instrument_id: InstrumentIds, run_id: object
+    parsed: ParsedDay,
+    instrument_id: InstrumentIds,
+    run_id: object,
+    source: str = SOURCE_BHAVCOPY,
 ) -> tuple[list[BarRow], list[tuple[str, str]]]:
     """`bars_daily_raw` rows for the parsed day (each with the series it traded under) and the
-    (isin, series) keys with no instrument, which are reported and not written."""
+    (isin, series) keys with no instrument, which are reported and not written. `source` is the
+    rows' (`mcp` for a day read from the bhavcopy MCP, `mcp_bars`)."""
     rows: list[BarRow] = []
     unresolved: list[tuple[str, str]] = []
     for r in parsed.rows:
@@ -377,7 +381,7 @@ def to_bar_rows(
                 r.prev_close,
                 r.volume,
                 r.traded_value,
-                SOURCE_BHAVCOPY,
+                source,
                 run_id,  # type: ignore[arg-type]
             )
         )
@@ -397,10 +401,15 @@ Fetcher = Callable[[str], FetchResult]
 
 
 def http_fetcher(timeout: float = 30.0) -> Fetcher:  # pragma: no cover - the real network
-    """The operator's fetcher: browser-like headers, one request per call. Never used by tests."""
+    """The operator's fetcher: browser-like headers, one request per call. Never used by tests.
+    An NSE web URL while `HAT_NSE_WEB` is off raises `nse_web.NseWebOffError`, unsent."""
 
     def fetch(url: str) -> FetchResult:
         import requests  # deferred: only a real build needs the HTTP stack
+
+        from .nse_web import guard
+
+        guard(url)
 
         try:
             response = requests.get(url, headers=BROWSER_HEADERS, timeout=timeout)

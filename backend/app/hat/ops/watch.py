@@ -4,7 +4,8 @@
 (`deploy/systemd/hat-watch.*`), looks at:
 
 - the daily data update's status file (`update.failed`: the latest run's failed or skipped
-  steps; `update.late`: no run started for the latest due run date, `UPDATE_LATE_AT` IST), when
+  steps; `update.manual`: its steps waiting on a file the owner downloads from NSE by hand;
+  `update.late`: no run started for the latest due run date, `UPDATE_LATE_AT` IST), when
   this machine runs it;
 - the data verification reports under `audits/verify-*` (`verify.failed`: the newest report
   that ran a check failed it);
@@ -73,6 +74,7 @@ logger = logging.getLogger(__name__)
 
 UPDATE_FAILED = "update.failed"
 UPDATE_LATE = "update.late"
+UPDATE_MANUAL = "update.manual"
 VERIFY_FAILED = "verify.failed"
 DISK_LOW = "disk.low"
 DB_DOWN = "db.down"
@@ -125,8 +127,10 @@ def update_due(now: datetime) -> date:
 def update_findings(status: Mapping[str, Any] | None, now: datetime) -> list[Finding]:
     """The data update's findings from its status file (None: this machine has none, so it does
     not run the update): its latest run's failed and skipped steps, one alert per run (keyed by
-    its start; a step that fails later in the run is not a second alert); and no run started on
-    or after the latest due run date (`update_due`), one alert per due date."""
+    its start; a step that fails later in the run is not a second alert); its `manual` steps
+    (waiting on a file the owner downloads from NSE by hand) with the steps `waiting` on them,
+    one alert per run; and no run
+    started on or after the latest due run date (`update_due`), one alert per due date."""
     if status is None:
         return []
     out: list[Finding] = []
@@ -142,6 +146,10 @@ def update_findings(status: Mapping[str, Any] | None, now: datetime) -> list[Fin
                 {**_numbered("failed", failed), **_numbered("skipped", skipped)},
             )
         )
+    manual, waiting = _names(run.get("manual")), _names(run.get("waiting"))
+    if manual:
+        detail = {**_numbered("manual", manual), **_numbered("waiting", waiting)}
+        out.append(Finding(UPDATE_MANUAL, f"{UPDATE_MANUAL}:{started}", detail))
     try:
         last = datetime.fromisoformat(started).astimezone(IST).date() if started else None
     except ValueError:

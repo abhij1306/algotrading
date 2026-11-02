@@ -251,5 +251,5 @@ and weights, so an undefined colour class or a weight above 500 generates nothin
 
 Environment: `.env.example` lists every variable: `DB_*`; the Fyers app `CLIENT_ID`,
 `SECRET_KEY`, `REDIRECT_URI`; `HAT_BROKER` and the Kite app `KITE_API_KEY`, `KITE_API_SECRET`,
-`KITE_REDIRECT_URI`; `DB_STATE_NAME` (hat_state's name); `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_DATA_REPO`, the MCP URLs and
+`KITE_REDIRECT_URI`; `DB_STATE_NAME` (hat_state's name); `HAT_ENABLED`, `HAT_USER_ID`, `HAT_DATA_ROOT`, `HAT_DATA_REPO`, `HAT_NSE_WEB`, the MCP URLs and
 Telegram secrets; `BACKEND_HOST`/`BACKEND_PORT` and logging for `backend/start_server.py`.

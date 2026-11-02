@@ -22,7 +22,14 @@ OK = "ok"
 FAILED = "failed"
 SKIPPED = "skipped"  # a step it waits on failed or was skipped in this run
 NOT_DUE = "not_due"  # a weekly step run within the week
-RESULTS = (OK, FAILED, SKIPPED, NOT_DUE)
+# NSE's web is off (`nse_web`) and the step needs a file the owner downloads by hand: its detail
+# names the address and the import command. The run does not fail.
+MANUAL = "manual"
+# A step it waits on is manual (or waiting): its data is not there yet, so it is not run (a
+# `features` run on bars without the day's split), unless it may read what is stored
+# (`Step.stale_ok`). Not a failure: it runs once the owner's files are in.
+WAITING = "waiting"
+RESULTS = (OK, FAILED, SKIPPED, NOT_DUE, MANUAL, WAITING)
 
 
 @dataclass(frozen=True)
@@ -31,26 +38,37 @@ class Step:
     after: tuple[str, ...] = ()  # the steps whose data it reads; it is skipped when one fails
     cadence: str = DAILY
     about: str = ""
+    # of `after`, the steps whose stored data it may read while they wait on a hand-over (manual)
+    stale_ok: tuple[str, ...] = ()
 
 
 # Every daily data step, in the order they run (each after the steps it waits on).
 STEPS: tuple[Step, ...] = (
-    Step("calendar", about="NSE holiday list into hat_trading_calendar (calendar.refresh)"),
-    Step("bars", about="bhavcopy days into bars_daily_raw, index_daily (history_cli --resume)"),
+    Step(
+        "calendar",
+        cadence=WEEKLY,
+        about="NSE holiday list into hat_trading_calendar (calendar.refresh)",
+    ),
+    Step("bars", about="bhavcopy days into bars_daily_raw (the bhavcopy MCP, or history_cli)"),
     Step("listing", ("bars",), about="NSE equity list into the stock instrument master"),
     Step(
         "ingest",
         ("bars",),
         about="per session: index levels, market breadth, NIFTY 500 TRI, ingest.completed",
     ),
+    # web off: the NIFTY 500 TRI from the files handed over, every bar day still without one
+    Step("tri", ("ingest",), about="NIFTY 500 TRI days still missing, from the handed files"),
     Step("quality", ("ingest",), about="per session: quality.gate"),
     Step("ca", ("ingest",), about="per session: ca.adjust (bc file, dividends, demergers)"),
     Step("features", ("quality", "ca"), about="features_daily and breadth_daily"),
     Step("membership", ("bars",), about="NIFTY 500 membership CSV rebuilt and loaded"),
+    # [A] the members as last loaded: Kotak reaches back only 30 days, so the top-up never waits
+    # on a list handed over late (a member that joined since is topped up once it is loaded).
     Step(
         "bars5m",
         ("bars", "membership"),
         about="Kotak 5-minute top-up of the members' missing sessions, imported",
+        stale_ok=("membership",),
     ),
     Step("etf", about="ETF overlay data top-up, built and stored under etf/"),
     Step("results", cadence=WEEKLY, about="NSE results fetch, parse, derive"),
@@ -81,9 +99,17 @@ def selected(steps: Sequence[Step], only: Iterable[str] = ()) -> list[Step]:
     return [s for s in steps if not wanted or s.name in wanted]
 
 
-def blocked_by(step: Step, results: Mapping[str, str]) -> str | None:
-    """The first step `step` waits on that failed or was skipped in this run, else None."""
-    return next((a for a in step.after if results.get(a) in (FAILED, SKIPPED)), None)
+def blocked_by(step: Step, results: Mapping[str, str]) -> tuple[str, str] | None:
+    """The first step `step` waits on that did not succeed in this run, and what that makes
+    `step`: `skipped` after a failed or skipped one, `waiting` after a manual or waiting one
+    (unless `stale_ok` names it); None when it runs."""
+    for a in step.after:
+        result = results.get(a)
+        if result in (FAILED, SKIPPED):
+            return a, SKIPPED
+        if result in (MANUAL, WAITING) and a not in step.stale_ok:
+            return a, WAITING
+    return None
 
 
 def latest_finished(trading_days: Sequence[date], now: datetime) -> date | None:
@@ -163,5 +189,6 @@ def write_status(path: Path, steps: Mapping[str, StepStatus], run: Mapping[str, 
 
 
 def exit_code(results: Mapping[str, str]) -> int:
-    """1 when any step failed or was skipped, else 0."""
+    """1 when any step failed or was skipped, else 0 (a `manual` or `waiting` step waits on
+    the owner)."""
     return 1 if any(r in (FAILED, SKIPPED) for r in results.values()) else 0

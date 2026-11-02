@@ -364,6 +364,11 @@ class Client:
     def _fetch(self, url: str, referer: str | None) -> tuple[int, bytes]:  # pragma: no cover
         import requests  # network: never in tests
 
+        from ..nse_web import guard
+
+        for target in (referer, url):  # `HAT_NSE_WEB` off: refused before any request
+            if target:
+                guard(target)
         if self._session is None:
             self._session = requests.Session()
             self._session.headers.update(self.headers)

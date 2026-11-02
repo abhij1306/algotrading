@@ -242,19 +242,43 @@ steps that read it are skipped.
 
 | Step | Does | Waits on |
 | --- | --- | --- |
-| `calendar` | `calendar.refresh`: NSE's holiday list into `hat_trading_calendar` | |
-| `bars` | `history_cli --resume`: the bhavcopy days into `bars_daily_raw`, the index archive | |
-| `listing` | `listing.refresh`: the stocks of the instrument master from NSE's equity list (`EQUITY_L.csv`): an ISIN the bars registered is activated and named, renames and series moves are taken, a stock the list dropped is delisted, the Fyers symbols follow; funds and rights entitlements are left to `reference.weekly` | bars |
-| `ingest` | `ingest.nightly` per session on the stored bars: index levels, market breadth, NIFTY 500 TRI, `ingest.completed` | bars |
+| `calendar` | weekly: `calendar.refresh`: NSE's holiday list into `hat_trading_calendar` (web off: the handed `holiday-master.json`) | |
+| `bars` | `history_cli --resume`: the bhavcopy days into `bars_daily_raw`, the index archive; web off: `mcp_bars`, the bhavcopy MCP's rows per symbol (universe: the last session's ISINs and Fyers' symbol master), kept as `raw/mcp_bhavcopy_<date>.json`, a session written only when whole: at least 90% of the last one's rows, and every stock of the session before present unless the MCP's history of it holds that session (no trade today) or Fyers no longer lists it (else unwritten, asked again next run) | |
+| `listing` | `listing.refresh`: the stocks of the instrument master from NSE's equity list (`EQUITY_L.csv`, handed when web off): an ISIN the bars registered is activated and named, renames and series moves are taken, a stock the list dropped is delisted, the Fyers symbols follow; funds and rights entitlements are left to `reference.weekly` | bars |
+| `ingest` | `ingest.nightly` per session on the stored bars: index levels (web off: the stored index file, else the MCP's snapshot), market breadth, NIFTY 500 TRI (web on), `ingest.completed` | bars |
+| `tri` | web off: the NIFTY 500 TRI of every bar day since the last stored one, from the handed niftyindices answers (kept under `raw_tri/`) | ingest |
 | `quality` | `quality.gate` per session | ingest |
-| `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`) | ingest |
+| `ca` | `ca.adjust` per session: `bc` file, dividends, demergers, lineage (next-session lookups need MCP: logged `corporate_action.unchecked`); web off: the sessions whose `PRddmmyy.zip` was handed, with `symbolchange.csv` and `namechange.csv` | ingest |
 | `features` | `features --through` | quality, ca |
-| `membership` | `nifty500_membership.py` fetch, text, parse, reference, build as of today; the build copied into `admin/` as `nifty500-membership-<today>.csv`, then `load-index-membership --apply` of it | bars |
+| `membership` | `nifty500_membership.py` fetch (web off: the handed `ind_nifty500list.csv`, with `--as-of` its download day, never before the latest stored change, and notice PDFs), text, parse, reference, build as of today (web off: the `--as-of` day); the build copied into `admin/` as `nifty500-membership-<day>.csv`, then `load-index-membership --apply` of it | bars |
 | `bars5m` | `kotak_5m.py members`, then `topup` from the first session (of the last 10 and every one after the last stored day) in which a member with a daily bar has no 5-minute bars and no ledgered refusal, then `bars5m_import --apply`; fails while one is still missing | bars, membership |
-| `etf` | `overlay_etf.py` local, kotak, indices, dividends, build, store | |
-| `results` | weekly: results fetch, fetch-secondary, parse, derive | |
+| `etf` | `overlay_etf.py` local, kotak, indices, dividends, build, store; web off: the index series come handed, and build and store wait until they reach the last session | |
+| `results` | weekly: results fetch (not when web off: no hand import), fetch-secondary, parse, derive | |
 | `fundamentals` | weekly: fundamentals extract, derive | results, bars |
 | `record` | `record.refresh`: manifests and reference CSVs pushed to the data repo (Data record) | |
+
+NSE's web off: NSE's sites (`nseindia.com`, `nsearchives`, `niftyindices.com`) block this machine,
+and the owner ruled they are never used from it nor worked around. `HAT_NSE_WEB` (default off)
+is the one switch: off, every request to them is refused in code (`nse_web.guard`, error
+`nse_web_off`). A step that needs a file only they publish then reads it from the inbox
+`HAT_DATA_ROOT/admin/nse/`; without it the step reports `manual` with the exact address (a curl
+line for a niftyindices POST), the name to save it under and the command that imports it, and
+the rest of the update goes on. The steps that read its data are `waiting` (not run: `features`
+never runs on bars without the night's split) unless they may read the stored data (`bars5m`
+reads the members as last loaded: Kotak reaches back only 30 days). Neither fails the run; the
+watch raises `update.manual`. Download the files on another machine, copy them to this one,
+then:
+
+```bash
+scripts/hat_data_update.sh --only calendar --file holiday-master.json
+scripts/hat_data_update.sh --only ca --file PR301026.zip symbolchange.csv namechange.csv
+scripts/hat_data_update.sh --only membership --file ind_nifty500list.csv --as-of 2026-11-02
+```
+
+`--file` copies the files into the inbox (paths from where you stand); a dated file is moved to
+`admin/nse/used/<date>/` once its step read it. A snapshot (the NIFTY 500 list) needs
+`--as-of`, the day it was downloaded. The bars read NSE's public bhavcopy MCP
+(`HAT_MCP_BHAVCOPY_URL`, default `https://mcp.nseindia.in/bhavcopy/cm/mcp`; `off` turns it off).
 
 Results and fundamentals run weekly: the cached filings change only in results season, `extract`
 replaces every row (about 15 minutes), and an NSE filing keeps NSE's own `public_at`, so a week's
@@ -275,7 +299,7 @@ scripts/hat_data_update.sh --status                  # the status file
 ```
 
 Status: `HAT_DATA_ROOT/update/status.json` holds, per step, `result` (`ok`, `failed`, `skipped`,
-`not_due`), `last_good` (the session its data is complete through), `last_run`, `last_ok_run`,
+`not_due`, `manual`, `waiting`), `last_good` (the session its data is complete through), `last_run`, `last_ok_run`,
 `detail` and `log`; the step's output is in `HAT_DATA_ROOT/logs/update/<date>/<step>.log`. The
 exit is 1 when a step failed or was skipped, 3 when another run holds `update/update.lock`.
 `bars5m` also needs the minute-history lock: while another `bars_5m` writer runs it fails, and
@@ -715,6 +739,9 @@ list-timers hat-watch.timer`, `journalctl --user -u hat-watch`.
 - **`update.failed`** (one per run), **`update.late`** (no run started for the due date: today
   from 21:30 IST, else yesterday): Daily data update, Recover; for late, `systemctl --user
   list-timers hat-data-update.timer` and linger.
+- **`update.manual`** (one per run): a step waits on NSE files handed by hand (and the steps
+  `waiting` on it); its `detail` names the addresses and the `--file` command (Daily data
+  update, NSE's web off).
 - **`verify.failed`**: the newest report that ran a check failed it; read its `verify.md`
   (Data verification).
 - **`watch.check_error`**: one check raised (its name and error type); the others ran.

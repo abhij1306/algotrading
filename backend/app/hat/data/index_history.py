@@ -384,10 +384,15 @@ Poster = Callable[[str, bytes], FetchResult]
 
 
 def http_poster(timeout: float = 60.0) -> Poster:  # pragma: no cover - the real network
-    """The operator's JSON POST: browser-like headers, one request per call. Never used by tests."""
+    """The operator's JSON POST: browser-like headers, one request per call. Never used by tests.
+    An NSE web URL while `HAT_NSE_WEB` is off raises `nse_web.NseWebOffError`, unsent."""
 
     def post(url: str, body: bytes) -> FetchResult:
         import requests  # deferred: only a real load needs the HTTP stack
+
+        from .nse_web import guard
+
+        guard(url)
 
         headers = {**BROWSER_HEADERS, "Content-Type": "application/json; charset=UTF-8"}
         try:
@@ -627,14 +632,37 @@ TRI_LOOKBACK = timedelta(days=14)
 
 
 def nightly_tri(
-    store: DataStore, source: IndexSource, trade_date: date, *, apply: bool
+    store: DataStore,
+    source: IndexSource,
+    trade_date: date,
+    *,
+    apply: bool,
+    since: date | None = None,
 ) -> BackfillReport:
     """The nightly ingest's TRI step: `backfill` of `NIFTY_500_TRI` alone over the bar days from
-    `TRI_LOOKBACK` before `trade_date` to it, from `source` (`tri_source`). A day niftyindices
-    does not have stays missing (`left`), never carried."""
-    return backfill(
-        store, (source,), trade_date - TRI_LOOKBACK, trade_date, apply=apply, names=(NIFTY_500_TRI,)
-    )
+    `TRI_LOOKBACK` before `trade_date` (or `since`, when earlier) to it, from `source`
+    (`tri_source`). A day niftyindices does not have stays missing (`left`), never carried."""
+    start = trade_date - TRI_LOOKBACK if since is None else min(since, trade_date - TRI_LOOKBACK)
+    return backfill(store, (source,), start, trade_date, apply=apply, names=(NIFTY_500_TRI,))
+
+
+def tri_since(last_stored: date | None, trade_date: date) -> date:
+    """The first bar day the TRI step looks at: the day after the last stored TRI day, so a day
+    still missing is asked for however long ago it was (a file handed over late), and never
+    less than `TRI_LOOKBACK`."""
+    floor = trade_date - TRI_LOOKBACK
+    return floor if last_stored is None else min(last_stored + timedelta(days=1), floor)
+
+
+def last_index_day(store: DataStore, name: str, through: date) -> date | None:
+    """The last bar day through `through` that stores a row of index `name`; None for none."""
+    start = INDEX_STARTS.get(name)
+    for day in sorted((d for d in store.days(DATASET_BARS) if d <= through), reverse=True):
+        if start is not None and day < start:
+            return None
+        if any(r.index_name == name for r in store.read_index(day)):
+            return day
+    return None
 
 
 # niftyindices' TRI answers as fetched by `verify-tri --fetch`, under HAT_DATA_ROOT, one file per
@@ -659,6 +687,23 @@ def latest_tri_raw(folder: Path, name: str, year: int) -> Path | None:
     """The kept answer for `year` that reaches furthest (its last day ends the name)."""
     files = folder.glob(f"{name.replace(' ', '_')}_{year}????_{year}????.json")
     return max(files, key=lambda p: p.stem.rsplit("_", 1)[-1], default=None)
+
+
+def kept_tri_source(folder: Path) -> IndexSource:
+    """The NIFTY 500 TRI from niftyindices' answers kept under `folder` (`latest_tri_raw` per
+    calendar year), for a machine NSE's web is off for (`nse_web`): a year with no kept answer,
+    or a day the answer lacks, gives no point (the day stays missing, never carried). Any other
+    index has no rows here."""
+
+    def source(name: str, start: date, end: date) -> Iterable[IndexPoint]:
+        if name.upper() != NIFTY_500_TRI:
+            return
+        for year in range(start.year, end.year + 1):
+            path = latest_tri_raw(folder, NIFTY_500_TRI, year)
+            points = parse_tri_json(path.read_bytes(), NIFTY_500_TRI) if path else None
+            yield from (p for p in points or () if start <= p.day <= end)
+
+    return source
 
 
 def _tri_closes(data: bytes) -> dict[date, Decimal] | None:
