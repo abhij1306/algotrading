@@ -1,0 +1,308 @@
+
+
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 3.0//EN">
+<HTML>
+<HEAD>
+<!--<TITLE>NSE - Financial Results Details</TITLE>-->
+
+
+<script language="javascript" src="/js/commonfuncs.js"></script>
+
+<script language="javascript">
+        var isIE=(document.all)?1:0;
+        var isNS4=(document.layers)?1:0;
+        var isNS6=((document.getElementById)&&(navigator.appName=='Netscape'))?1:0;
+        var isNS=((isNS4)||(isNS6))?1:0;
+        var DHTML=(isIE||isNS4||isNS6)?1:0;
+        function handleError() {
+                return true;
+        }
+        window.onerror = handleError;
+        capEvents();
+</script>
+
+<!--<script language="javascript" src="/js/corp_leftnav.js"></script>-->
+</HEAD>
+
+<BODY bgcolor="#ffffff" leftmargin=0 topmargin=0 marginheight=0 marginwidth=0>
+
+<TABLE cellspacing=0 border=0 cellpadding=0 height=100%>
+<tr>
+
+<!--Left Nav Bar Starts Here-->
+<script language="javascript">
+    //    writeLeftNav();
+</script>
+<!--Left Nav Bar Ends Here-->
+<!--Content Area Starts Here-->
+<td  valign=top>
+<TABLE CELLPADDING=0 CELLSPACING=0 BORDER=0  height=100%>
+<!--<tr height=50>
+<td colspan=3 valign=top class=smalllinks><a name="top"><br></a>&nbsp;&nbsp;<a href="/homepage.htm">Home</a> &gt; <a href=/content/corporate/corp_introduction.htm>Corporates</a> &gt; <a href=/content/corporate/corpinfo.htm>Corporate Information</a> &gt; Financial Results<br><br></td>
+</tr>-->
+<TR>
+<TD width=20>&nbsp;</TD>
+<TD valign=top>
+<!--<font class=header>Financial Results</font>-->
+
+
+
+<link href="./css/bootstrap.min.css" rel="stylesheet"> <link href="./css/gijgo.min.css" rel="stylesheet"> <link rel="stylesheet" type="text/css" href="./css/slick.css"/> <link rel="stylesheet" href="./css/jquery.mCustomScrollbar.css"> <link rel="stylesheet" type="text/css" href="./css/bootstrap-multiselect.css" /> <link href="./css/style.css" rel="stylesheet"> 
+<center>
+<p>
+<br>
+<TABLE border=0 cellspacing=1 cellpadding=6 align=center class="table table-bordered">
+   <TR>
+   	<TD class=tablehead>Symbol</TD>
+   	<TD class=t1>3MINDIA</TD>
+   	<TD class=tablehead>Company</TD>
+<!--Start : MN : 2Sep2010 : To give link of Market Tracker on company name-->
+	<!--<TD class=t1>3M India Limited</TD>-->
+	<TD class=t1><a title="View Market Tracker" onClick=openMktTrckr("3MINDIA") style="color: blue; cursor: pointer">3M India Limited</a>
+	</TD>
+<!--End : MN : 2Sep2010 : To give link of Market Tracker on company name-->
+   </TR>
+   <TR>
+   	<TD class=tablehead>Industry</TD>
+   	<TD class=t1>-</TD>
+   	<TD class=tablehead>Audited / Un-Audited</TD>
+   	<TD class=t1>Unaudited</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Cumulative / Non-Cumulative</TD>
+   	<TD class=t1>Non-Cumulative</TD>
+   	<TD class=tablehead>Consolidated / Non-Consolidated </TD>
+   	<TD class=t1>Non-Consolidated</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Period</TD>
+   	<TD class=t1>Quarterly</TD>
+   	<TD class=tablehead>Relating to</TD>
+   	<TD class=t1>Fourth Quarter</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Financial Year</TD>
+   	<TD class=t1>01-Apr-2011 To 31-Mar-2012</TD>
+   	<TD class=tablehead>Period Ended</TD>
+   	<TD class=t1>31-Mar-2012</TD>
+   </TR>
+
+     	 
+   </TABLE>
+</p>
+</center>
+
+<div class="header3">Non Banking</div>
+<br><table cellpadding=0 cellspacing=4 border=0>
+<tr><td valign=top>
+<table cellpadding=0 cellspacing=0 border=0>
+<tr><td>
+<table cellpadding=3 cellspacing=1 class="table table-bordered">
+<tr>
+<td  class=tablehead>Description</td><td class=tablehead> Amount(Rs. in lakhs)</td>
+</tr>
+<TR><TD class=t1>
+Net Sales/Income from Operation</td>
+<TD class=t0 nowrap>
+39573.86</td>
+</tr>
+<TR><TD class=t1>
+Other Operating Income</td>
+<TD class=t0 nowrap>
+556.36</td>
+</tr>
+<TR><TD class=t1>
+Increase/Decrease in Stock in trade and work in progress</td>
+<TD class=t0 nowrap>
+-8103.45</td>
+</tr>
+<TR><TD class=t1>
+Consumption of Raw Materials</td>
+<TD class=t0 nowrap>
+23726.07</td>
+</tr>
+<TR><TD class=t1>
+Purchase of traded goods</td>
+<TD class=t0 nowrap>
+10048.63</td>
+</tr>
+<TR><TD class=t1>
+Employees Cost</td>
+<TD class=t0 nowrap>
+4634.25</td>
+</tr>
+<TR><TD class=t1>
+Depreciation</td>
+<TD class=t0 nowrap>
+820.06</td>
+</tr>
+<TR><TD class=t1>
+Other Expenditure</td>
+<TD class=t0 nowrap>
+6035.86</td>
+</tr>
+<TR><TD class=t1>
+Total Expenditure</td>
+<TD class=t0 nowrap>
+37161.42</td>
+</tr>
+<TR><TD class=t1>
+Profit from Operations before Other Income,  Interest & Exceptional Items </td>
+<TD class=t0 nowrap>
+2968.80</td>
+</tr>
+<TR><TD class=t1>
+Other Income</td>
+<TD class=t0 nowrap>
+378.29</td>
+</tr>
+<TR><TD class=t1>
+Profit before Interest & Exceptional Items </td>
+<TD class=t0 nowrap>
+3347.09</td>
+</tr>
+<TR><TD class=t1>
+Interest</td>
+<TD class=t0 nowrap>
+124.21</td>
+</tr>
+<TR><TD class=t1>
+ Profit after Interest but before Exceptional Items </td>
+<TD class=t0 nowrap>
+3222.88</td>
+</tr>
+<TR><TD class=t1>
+Exceptional items</td>
+<TD class=t0 nowrap>
+-</td>
+</tr>
+<TR><TD class=t1>
+Profit(+)/Loss(-) from Ordinary Activities before tax</td>
+<TD class=t0 nowrap>
+3222.88</td>
+</tr>
+<TR><TD class=t1>
+Tax Expense</td>
+<TD class=t0 nowrap>
+1045.66</td>
+</tr>
+<TR><TD class=t1>
+Net Profit(+)/Loss(-) from Ordinary Activities after tax</td>
+<TD class=t0 nowrap>
+2177.22</td>
+</tr>
+<TR><TD class=t1>
+Extraordinary Items</td>
+<TD class=t0 nowrap>
+-</td>
+</tr>
+<TR><TD class=t1>
+Net Profit (+) / Loss (-) for the period </td>
+<TD class=t0 nowrap>
+2177.22</td>
+</tr>
+<TR><TD class=t1>
+Other Related Items</td>
+<TR><TD class=t1>
+Consolidated Net Profit (+) / Loss (-) for the period</td>
+<TR><TD class=t1>
+Face Value (in Rs.)</td>
+<TD class=t0 nowrap>
+10.00</td>
+</tr>
+<TR><TD class=t1>
+Paid-up Equity Share Capital</td>
+<TD class=t0 nowrap>
+1126.51</td>
+</tr>
+<TR><TD class=t1>
+Reserves excluding Revaluation Reserves</td>
+<TD class=t0 nowrap>
+-</td>
+</tr>
+<TR><TD class=t1>
+Basic EPS before Extraordinary items (in Rs.)</td>
+<TD class=t0 nowrap>
+19.33</td>
+</tr>
+<TR><TD class=t1>
+Diluted EPS before Extraordinary items (in Rs.)</td>
+<TD class=t0 nowrap>
+19.33</td>
+</tr>
+<TR><TD class=t1>
+Basic EPS after Extraordinary items (in Rs.)</td>
+<TD class=t0 nowrap>
+19.33</td>
+</tr>
+<TR><TD class=t1>
+Diluted EPS after Extraordinary items (in Rs.)</td>
+<TD class=t0 nowrap>
+19.33</td>
+</tr>
+<TR><TD class=t1>
+Public Shareholding (Number of Shares)</td>
+<TD class=t0 nowrap>
+2703070.00</td>
+</tr>
+<TR><TD class=t1>
+Public Shareholding (%)</td>
+<TD class=t0 nowrap>
+24.00</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Number of Shares  Pledged / Encumbered</td>
+<TD class=t0 nowrap>
+0</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Shares  Pledged / Encumbered (as a %  of total shareholding of Promoter and Promoter Group)</td>
+<TD class=t0 nowrap>
+-</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Shares  Pledged / Encumbered (as a %  total share capital of the company)</td>
+<TD class=t0 nowrap>
+-</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Number of Shares  Non-encumbered</td>
+<TD class=t0 nowrap>
+8562000.00</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Shares  Non-encumbered (as a %  of total shareholding of Promoter and Promoter Group)</td>
+<TD class=t0 nowrap>
+100.00</td>
+</tr>
+<TR><TD class=t1>
+Promoter & Promoter group Shares  Non-encumbered (as a %  total share capital of the company)</td>
+<TD class=t0 nowrap>
+76.00</td>
+</tr>
+</table>
+</td></tr>
+</table>
+</td>
+</tr></table>
+</p>
+
+
+<BR>
+<BR>
+<!--<center class=smalllinks>Other Info: <a href=/marketinfo/companyinfo/eod/announcements.jsp?symbol=3MINDIA>Announcements</a> | <a href=/marketinfo/companyinfo/eod/boardmeeting.jsp?symbol=3MINDIA>Board Meetings</a> | <a href=/marketinfo/companyinfo/eod/action.jsp?symbol=3MINDIA>Corporate Actions</a> | <a href=/marketinfo/companyinfo/eod/shareholding.jsp?symbol=3MINDIA>Shareholding Pattern</a><br><a href=/marketinfo/companyinfo/eod/address.jsp?symbol=3MINDIA>Company Address</a> | <a  href=/marketinfo/companyinfo/eod/resHistory.jsp?symbol=3MINDIA>Results Comparison</a> --><!--| <a href=http://nseindia.irisindia.net/corporate/corporateInfo/snapshots/snapshot.jsp?symbol=3MINDIA>Company Profile</a> | <a href=http://nseindia.irisindia.net/corporate/corporateInfo/financials/financial.jsp?symbol=3MINDIA>Detailed Financials</a>-->
+        
+<!--<BR><BR><a href=/content/corporate/corpinfo.htm>Search for another company</a><br><br><a href=#top>Top</a>--></center>
+<br><br>
+</td>
+<td width=10></td>
+</TR>
+</TABLE>
+</td>
+<!--Content Area Ends Here-->
+</tr>
+</table>
+<script type="text/javascript"  src="/EN8NpojwJyCPZpoOtIEcQqpX/YNbicrzmbwpm4wOw/OH4vDE9pBQ/ZQ4wdxcZ/AiU"></script></BODY>
+</html>
+

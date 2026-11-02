@@ -90,12 +90,20 @@ def read_bars(store: DataStore, start: date, end: date) -> pl.DataFrame:
 
 
 def members(
-    session: Session, store: DataStore, since: date, until: date, universe: str = UNIVERSE_NIFTY500
+    session: Session,
+    store: DataStore,
+    since: date,
+    until: date,
+    universe: str = UNIVERSE_NIFTY500,
+    *,
+    partial: bool = False,
 ) -> list[Member]:
     """The covered instruments (`scope.py`): the NIFTY 500 point-in-time members with a
     membership in force on some day from `since` to `until` (`nifty500`), or the instruments
     passing the S2 EP universe on some session from `since` (`ep`, members first); then by first
-    day."""
+    day. A membership history that starts after `since` refuses, unless `partial` (the history
+    backfill: the members loaded so far, with a warning; a rerun once more is loaded adds the
+    rest)."""
     rows = session.execute(
         select(
             HatIndexMember.instrument_id,
@@ -107,8 +115,10 @@ def members(
     if universe == UNIVERSE_NIFTY500:
         record = session.get(HatIndexMembership, NIFTY_500)
         gap = coverage_gap(record.covered_from if record else None, since)
-        if gap:
+        if gap and not partial:
             raise ValueError(gap)
+        if gap:
+            logger.warning("%s: only the loaded members are covered", gap)
         if record is not None and record.covered_to < until:
             logger.warning(
                 "NIFTY 500 membership history ends %s: later joiners are not covered",

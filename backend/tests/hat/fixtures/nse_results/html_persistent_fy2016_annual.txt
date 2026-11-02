@@ -1,0 +1,286 @@
+
+
+
+<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 3.0//EN">
+<HTML>
+<HEAD>
+<!--<TITLE>NSE - Financial Results Details</TITLE>-->
+
+
+<script language="javascript" src="/js/commonfuncs.js"></script>
+
+<script language="javascript">
+        var isIE=(document.all)?1:0;
+        var isNS4=(document.layers)?1:0;
+        var isNS6=((document.getElementById)&&(navigator.appName=='Netscape'))?1:0;
+        var isNS=((isNS4)||(isNS6))?1:0;
+        var DHTML=(isIE||isNS4||isNS6)?1:0;
+        function handleError() {
+                return true;
+        }
+        window.onerror = handleError;
+        capEvents();
+</script>
+
+<!--<script language="javascript" src="/js/corp_leftnav.js"></script>-->
+</HEAD>
+
+<BODY bgcolor="#ffffff" leftmargin=0 topmargin=0 marginheight=0 marginwidth=0>
+
+<TABLE cellspacing=0 border=0 cellpadding=0 height=100%>
+<tr>
+
+<!--Left Nav Bar Starts Here-->
+<script language="javascript">
+    //    writeLeftNav();
+</script>
+<!--Left Nav Bar Ends Here-->
+<!--Content Area Starts Here-->
+<td  valign=top>
+<TABLE CELLPADDING=0 CELLSPACING=0 BORDER=0  height=100%>
+<!--<tr height=50>
+<td colspan=3 valign=top class=smalllinks><a name="top"><br></a>&nbsp;&nbsp;<a href="/homepage.htm">Home</a> &gt; <a href=/content/corporate/corp_introduction.htm>Corporates</a> &gt; <a href=/content/corporate/corpinfo.htm>Corporate Information</a> &gt; Financial Results<br><br></td>
+</tr>-->
+<TR>
+<TD width=20>&nbsp;</TD>
+<TD valign=top>
+<!--<font class=header>Financial Results</font>-->
+
+
+
+<link href="./css/bootstrap.min.css" rel="stylesheet"> <link href="./css/gijgo.min.css" rel="stylesheet"> <link rel="stylesheet" type="text/css" href="./css/slick.css"/> <link rel="stylesheet" href="./css/jquery.mCustomScrollbar.css"> <link rel="stylesheet" type="text/css" href="./css/bootstrap-multiselect.css" /> <link href="./css/style.css" rel="stylesheet"> 
+<center>
+<p>
+<br>
+<TABLE border=0 cellspacing=1 cellpadding=6 align=center class="table table-bordered">
+   <TR>
+   	<TD class=tablehead>Symbol</TD>
+   	<TD class=t1>PERSISTENT</TD>
+   	<TD class=tablehead>Company</TD>
+<!--Start : MN : 2Sep2010 : To give link of Market Tracker on company name-->
+	<!--<TD class=t1>Persistent Systems Limited</TD>-->
+	<TD class=t1><a title="View Market Tracker" onClick=openMktTrckr("PERSISTENT") style="color: blue; cursor: pointer">Persistent Systems Limited</a>
+	</TD>
+<!--End : MN : 2Sep2010 : To give link of Market Tracker on company name-->
+   </TR>
+   <TR>
+   	<TD class=tablehead>Industry</TD>
+   	<TD class=t1>-</TD>
+   	<TD class=tablehead>Audited / Un-Audited</TD>
+   	<TD class=t1>Audited</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Cumulative / Non-Cumulative</TD>
+   	<TD class=t1>Cumulative</TD>
+   	<TD class=tablehead>Consolidated / Non-Consolidated </TD>
+   	<TD class=t1>Non-Consolidated</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Period</TD>
+   	<TD class=t1>Yearly</TD>
+   	<TD class=tablehead>Relating to</TD>
+   	<TD class=t1>Annual</TD>
+   </TR>
+   <TR>
+   	<TD class=tablehead>Financial Year</TD>
+   	<TD class=t1>01-Apr-2015 To 31-Mar-2016</TD>
+   	<TD class=tablehead>Period Ended</TD>
+   	<TD class=t1>31-Mar-2016</TD>
+   </TR>
+
+     	 
+   </TABLE>
+</p>
+</center>
+
+<div class="header3">Non Banking</div>
+<br><table cellpadding=0 cellspacing=4 border=0>
+<tr><td valign=top>
+<table cellpadding=0 cellspacing=0 border=0>
+<tr><td>
+<table cellpadding=3 cellspacing=1 class="table table-bordered">
+<tr>
+<td  class=tablehead>Description</td><td class=tablehead> Amount(Rs. in lakhs)</td>
+</tr>
+<tr>
+<td colspan=2><b><center>Part I</center></b></td>
+</tr>
+<tr>
+<td colspan=2><b><center>Income from operations</center></b></td>
+</tr>
+<TR><TD class=t1>
+(a)  Net sales/income from operations (Net of excise duty)</td>
+<TD class=t0 nowrap>
+144713.60</td>
+</tr>
+<TR><TD class=t1>
+(b)  Other operating income</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1><b>
+Total income from operations (net) ( a + b)</b></td>
+<TD class=t0 nowrap>
+144713.60</td>
+</tr>
+<tr><TD colspan=2><b> <center>Expenses</center></b></td></tr>
+<TR><TD class=t1>
+(a) Cost of materials consumed</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1>
+(b) Purchases of stock-in-trade</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1>
+(c) Changes in inventories of finished goods, work-in-progress and stock-in-trade</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1>
+(d) Employee benefits expense</td>
+<TD class=t0 nowrap>
+85944.60</td>
+</tr>
+<TR><TD class=t1>
+(e) Depreciation and amortisation expense</td>
+<TD class=t0 nowrap>
+5858.70</td>
+</tr>
+<TR><TD class=t1>
+(f) Other expenses(Any item exceeding 10% of the total expenses relating to continuing operations to be shown separately)</td>
+<TD class=t0 nowrap>
+24381.00</td>
+</tr>
+<TR><TD class=t1><b>
+Total expenses</b></td>
+<TD class=t0 nowrap>
+116184.30</td>
+</tr>
+<TR><TD class=t1><b>
+Profit / (Loss) from operations before other income, finance costs and exceptional items</b></td>
+<TD class=t0 nowrap>
+28529.30</td>
+</tr>
+<TR><TD class=t1>
+Other income</td>
+<TD class=t0 nowrap>
+8064.80</td>
+</tr>
+<TR><TD class=t1><b>
+Profit / (Loss) from ordinary activities before finance costs and exceptional items</b></td>
+<TD class=t0 nowrap>
+36594.10</td>
+</tr>
+<TR><TD class=t1>
+Finance costs </td>
+<TD class=t0 nowrap>
+9.20</td>
+</tr>
+<TR><TD class=t1><b>
+Profit / (Loss) from ordinary activities after finance costs but before exceptional items</b></td>
+<TD class=t0 nowrap>
+36584.90</td>
+</tr>
+<TR><TD class=t1>
+Exceptional items</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1><b>
+Profit / (Loss) from ordinary activities before tax</b></td>
+<TD class=t0 nowrap>
+36584.90</td>
+</tr>
+<TR><TD class=t1>
+Tax expense</td>
+<TD class=t0 nowrap>
+10038.80</td>
+</tr>
+<TR><TD class=t1><b>
+Net Profit / (Loss) from ordinary activities after tax</b></td>
+<TD class=t0 nowrap>
+26546.10</td>
+</tr>
+<TR><TD class=t1>
+Extraordinary items</td>
+<TD class=t0 nowrap>
+0.00</td>
+</tr>
+<TR><TD class=t1><b>
+Net Profit / (Loss) for the period</b></td>
+<TD class=t0 nowrap>
+26546.10</td>
+</tr>
+<TR><TD class=t1><b>
+Net Profit / (Loss) after taxes, minority interest and share of profit / (loss) of associates</b></td>
+<TD class=t0 nowrap>
+26546.1</td>
+</tr>
+<TR><TD class=t1>
+Face Value (in Rs.)</td>
+<TD class=t0 nowrap>
+10.00</td>
+</tr>
+<TR><TD class=t1>
+Paid-up equity share capital</td>
+<TD class=t0 nowrap>
+8000.00</td>
+</tr>
+<TR><TD class=t1>
+Reserve excluding Revaluation Reserves as per balance sheet of previous accounting year</td>
+<TD class=t0 nowrap>
+12748.76</td>
+</tr>
+<tr><TD colspan=2><b> <center>Earnings per share (before extraordinary items) (not annualised):</center></b></td></tr>
+<TR><TD class=t1>
+(a) Basic</td>
+<TD class=t0 nowrap>
+33.26</td>
+</tr>
+<TR><TD class=t1>
+(b) Diluted</td>
+<TD class=t0 nowrap>
+33.18</td>
+</tr>
+<tr><TD colspan=2><b> <center>Earnings per share (after extraordinary items) (not annualised):</center></b></td></tr>
+<TR><TD class=t1>
+(a) Basic</td>
+<TD class=t0 nowrap>
+33.26</td>
+</tr>
+<TR><TD class=t1>
+(b) Diluted</td>
+<TD class=t0 nowrap>
+33.18</td>
+</tr>
+<TR><TD class=t1>
+Notes To Accounts</td>
+<td class=t0 nowrap><a href=/na_attachments/PERSISTENT_NA_04052016140807_2.zip>Click here</a></td></tr>
+</table>
+</td></tr>
+</table>
+</td>
+</tr></table>
+</p>
+
+
+<BR>
+<BR>
+<!--<center class=smalllinks>Other Info: <a href=/marketinfo/companyinfo/eod/announcements.jsp?symbol=PERSISTENT>Announcements</a> | <a href=/marketinfo/companyinfo/eod/boardmeeting.jsp?symbol=PERSISTENT>Board Meetings</a> | <a href=/marketinfo/companyinfo/eod/action.jsp?symbol=PERSISTENT>Corporate Actions</a> | <a href=/marketinfo/companyinfo/eod/shareholding.jsp?symbol=PERSISTENT>Shareholding Pattern</a><br><a href=/marketinfo/companyinfo/eod/address.jsp?symbol=PERSISTENT>Company Address</a> | <a  href=/marketinfo/companyinfo/eod/resHistory.jsp?symbol=PERSISTENT>Results Comparison</a> --><!--| <a href=http://nseindia.irisindia.net/corporate/corporateInfo/snapshots/snapshot.jsp?symbol=PERSISTENT>Company Profile</a> | <a href=http://nseindia.irisindia.net/corporate/corporateInfo/financials/financial.jsp?symbol=PERSISTENT>Detailed Financials</a>-->
+        
+<!--<BR><BR><a href=/content/corporate/corpinfo.htm>Search for another company</a><br><br><a href=#top>Top</a>--></center>
+<br><br>
+</td>
+<td width=10></td>
+</TR>
+</TABLE>
+</td>
+<!--Content Area Ends Here-->
+</tr>
+</table>
+<script type="text/javascript"  src="/ADV37h4FJ-PaGYa2pTxP/YzL7GpXrmVtDNVOV/AT9EIQ0C/VAhXMApd/XnQ"></script></BODY>
+</html>
+

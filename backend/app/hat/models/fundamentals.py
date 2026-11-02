@@ -23,9 +23,9 @@ from ._types import Ratio, Timestamptz, fk, in_values, now_utc, uuid_pk
 
 INSTRUMENT_ID = "hat_instrument.id"
 
-FUNDAMENTAL_SOURCES = ("nse", "screener")
+FUNDAMENTAL_SOURCES = ("nse", "nse_html", "screener")
 FUNDAMENTAL_BASES = ("standalone", "consolidated")
-FUNDAMENTAL_FAMILIES = ("indas", "nbfc", "bank", "insurer", "other", "screener")
+FUNDAMENTAL_FAMILIES = ("indas", "nbfc", "bank", "insurer", "other", "html", "screener")
 FUNDAMENTAL_PUBLIC_AT = ("announcement", "xbrl", "xbrl_date", "deadline", "observed")
 FUNDAMENTAL_STATEMENTS = (
     "pl",
