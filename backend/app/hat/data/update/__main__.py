@@ -1,7 +1,7 @@
 """The daily data update's command line (docs/runbook.md, Daily data update).
 
     python -m app.hat.data.update [--through YYYY-MM-DD] [--only STEP ...] [--file PATH ...]
-        [--dry-run]
+        [--as-of YYYY-MM-DD] [--dry-run]
     python -m app.hat.data.update --status
 
 Runs every step of `plan.STEPS` in order, each filling the sessions after its own last good one
@@ -13,7 +13,7 @@ and stops nothing; `--file` copies the files the owner downloaded into that inbo
 step's output goes to `HAT_DATA_ROOT/logs/update/<date>/<step>.log` and its outcome to
 `HAT_DATA_ROOT/update/status.json`.
 One run at a time (`update/update.lock`). Exit 1 when a step failed or was skipped (not when
-one is `manual`), 3 when another run holds the lock.
+one is `manual`, or `waiting` on a manual one), 3 when another run holds the lock.
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from .plan import (
     SKIPPED,
     STEP_NAMES,
     STEPS,
+    WAITING,
     Step,
     StepStatus,
     blocked_by,
@@ -74,6 +75,12 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         metavar="PATH",
         help="NSE files downloaded by hand, copied into the inbox (admin/nse/) first",
     )
+    p.add_argument(
+        "--as-of",
+        type=date.fromisoformat,
+        default=None,
+        help="the day the --file files were downloaded (a snapshot such as the NIFTY 500 list)",
+    )
     p.add_argument("--dry-run", action="store_true", help="say what each step would do")
     p.add_argument("--status", action="store_true", help="print the status file and exit")
     return p.parse_args(argv)
@@ -100,7 +107,7 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - real d
             if args.files and not args.dry_run:
                 from .hand import take
 
-                take(root, args.files)
+                take(root, args.files, args.as_of)
             return _run(args, root, settings.duckdb_memory)
     except minute_history.MinuteHistoryError:
         sys.stderr.write("update_already_running\n")
@@ -165,7 +172,9 @@ def _step(  # noqa: PLR0913
     last_ok = previous.last_ok_run if previous is not None else None
     blocker = blocked_by(step, results)
     if blocker is not None:
-        return StepStatus(SKIPPED, started, kept, last_ok, f"{blocker} did not succeed")
+        name, held = blocker
+        why = f"{name} did not succeed" if held == SKIPPED else f"waits on {name} ({results[name]})"
+        return StepStatus(held, started, kept, last_ok, why)
     if not (ctx.dry_run or forced) and not due(step.cadence, _day(last_ok), ctx.today):
         entry = previous or StepStatus(NOT_DUE, started)
         return replace(entry, result=NOT_DUE, detail=f"weekly, last ok {last_ok}")
@@ -218,6 +227,7 @@ def _run_record(now: datetime, through: date | None, results: dict[str, str]) ->
         "failed": sorted(n for n, r in results.items() if r == FAILED),
         "skipped": sorted(n for n, r in results.items() if r == SKIPPED),
         "manual": sorted(n for n, r in results.items() if r == MANUAL),
+        "waiting": sorted(n for n, r in results.items() if r == WAITING),
         "ok": sorted(n for n, r in results.items() if r in (OK, NOT_DUE)),
     }
 

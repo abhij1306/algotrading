@@ -130,7 +130,7 @@ def web() -> bool:
 
 
 def _mcp():  # noqa: ANN202 - McpClient | None, imported late
-    """The bhavcopy MCP client from the environment (`client_from_env`), None when it is unset."""
+    """The bhavcopy MCP client from the environment (`client_from_env`), None when it is `off`."""
     from ..mcp_client import client_from_env
 
     return client_from_env(process_env())
@@ -282,19 +282,17 @@ def ingest(ctx: Context) -> Done:  # noqa: C901, PLR0915 - one loop, two source 
     stores the index levels (the stored index archive file; with the web on NSE's archive, else
     the bhavcopy MCP's snapshot), the market breadth (counted from the bars), the NIFTY 500 TRI
     and `ingest.completed`, which the quality gate reads. The TRI comes from niftyindices with
-    the web on, else from its answers the owner handed over (kept under `raw_tri/`); a recent
-    bar day still without one reports `manual`."""
+    the web on, else from its answers the owner handed over (kept under `raw_tri/`); the days
+    still without one are the `tri` step's."""
     from ...clock import SystemClock
     from ...daily.nightly import INGEST_NIGHTLY, ingest_outcome_recorder
     from ...ops.jobs import run_job
     from .. import ingest as nightly_ingest
     from ..bhavcopy import http_fetcher
     from ..index_history import (
-        NIFTY_500_TRI,
         NIFTY_INDICES_INTERVAL,
         http_poster,
         kept_tri_source,
-        nightly_tri,
         tri_source,
     )
     from ..mcp_client import offline_client
@@ -309,7 +307,7 @@ def ingest(ctx: Context) -> Done:  # noqa: C901, PLR0915 - one loop, two source 
         if d in stored
     ]
     on = web()
-    if ctx.dry_run or (not todo and on):  # web off: a TRI file handed over is still read
+    if ctx.dry_run or not todo:
         return _each_session(ctx, INGEST_NIGHTLY, todo, lambda _d: lambda: None)
     from app.database import HatDataSessionLocal
 
@@ -319,7 +317,6 @@ def ingest(ctx: Context) -> Done:  # noqa: C901, PLR0915 - one loop, two source 
     if on:
         tri = tri_source(http_poster(), Pacer(min_interval=NIFTY_INDICES_INTERVAL))
     else:
-        keep_tri_files(ctx)
         tri = kept_tri_source(ctx.root / TRI_RAW)
     client = _mcp() if not on else None
     lines = []
@@ -351,13 +348,39 @@ def ingest(ctx: Context) -> Done:  # noqa: C901, PLR0915 - one loop, two source 
                 + (f" tri_missing {len(report.tri_missing)}" if report.tri_missing else "")
             )
     detail = "; ".join(lines) or f"{_days(todo)} already done"
-    if not on:  # a TRI file handed over since: the recent bar days still without one
-        left = nightly_tri(store, tri, ctx.through, apply=True).left.get(NIFTY_500_TRI, [])
-        if left:
-            raise StepManual(
-                f"{detail}; {tri_manual(left, ctx.through)}", _last_job(INGEST_NIGHTLY)
-            )
     return Done(_last_job(INGEST_NIGHTLY), detail)
+
+
+def tri(ctx: Context) -> Done:
+    """With the web off, the NIFTY 500 TRI of every bar day since the last stored one (however
+    long ago: a file handed over late still fills it), from the files the owner handed over
+    (kept under `raw_tri/`); a day still without one reports `manual`. With the web on the
+    nightly ingest fetches it."""
+    from ...daily.nightly import INGEST_NIGHTLY
+    from ..index_history import (
+        NIFTY_500_TRI,
+        kept_tri_source,
+        last_index_day,
+        nightly_tri,
+        tri_since,
+    )
+
+    if web():
+        return Done(_last_job(INGEST_NIGHTLY), "with the nightly ingest (web on)")
+    store = _store(ctx)
+    last = last_index_day(store, NIFTY_500_TRI, ctx.through)
+    since = tri_since(last, ctx.through)
+    if ctx.dry_run:
+        return Done(last, f"would read the handed TRI files for the bar days from {since}")
+    keep_tri_files(ctx)
+    source = kept_tri_source(ctx.root / TRI_RAW)
+    report = nightly_tri(store, source, ctx.through, apply=True, since=since)
+    left = report.left.get(NIFTY_500_TRI, [])
+    stored = len(report.found.get(NIFTY_500_TRI, []))
+    last = last_index_day(store, NIFTY_500_TRI, ctx.through)
+    if left:
+        raise StepManual(f"+{stored}; {tri_manual(left, ctx.through)}", last)
+    return Done(last, f"TRI through {last}, +{stored}")
 
 
 TRI_RAW = Path("raw_tri")  # under the data root: `index_history.TRI_RAW_DIR`
@@ -579,9 +602,10 @@ def membership(ctx: Context) -> Done:
     """Rebuild the NIFTY 500 history from the notices and today's list (only new notices and
     texts are downloaded), then load it as of today. `build` refuses a notice symbol it cannot
     resolve: that needs the hand-kept `overrides.json` / `symbol_alias.json` (runbook). With the
-    web off nothing is downloaded: today's list is the one the owner handed over (with any new
-    notice PDF, `*.pdf` in the inbox), else the step is `manual` and the loaded history stands
-    (covered to the day of its list)."""
+    web off nothing is downloaded: the list is the one the owner handed over with the day it was
+    downloaded (`--as-of`; with any new notice PDF, `*.pdf` in the inbox), built and loaded as of
+    that day, never before the latest stored change in effect; else the step is `manual` and
+    the loaded history stands (covered to the day of its list)."""
     from . import hand
 
     last = _covered_to()
@@ -590,20 +614,26 @@ def membership(ctx: Context) -> Done:
     work = work_dir(ctx, "NIFTY500_DIR", "nifty500")
     tool = "nifty500_membership.py"
     steps = ("fetch", "text", "parse", "reference") if web() else ("text", "parse", "reference")
-    listed, notices = None, []
+    listed, notices, as_of = None, [], ctx.today
     if not web():
         listed = hand.find(ctx.root, hand.NIFTY500_LIST.name)
         notices = hand.matching(ctx.root, "*.pdf")
-        if listed is None:
-            note = (
-                f"NIFTY 500 covered to {last}; any new NIFTY 500 notice PDF from {hand.NIFTY_PRESS}"
-            )
-            raise StepManual(hand.manual("membership", [hand.NIFTY500_LIST], note), last)
+        note = f"NIFTY 500 covered to {last}; any new NIFTY 500 notice PDF from {hand.NIFTY_PRESS}"
+        given = hand.as_of(listed) if listed is not None else None
+        if listed is None or given is None:
+            if listed is not None:
+                note = f"{hand.NIFTY500_LIST.name} was handed over without --as-of; {note}"
+            detail = hand.manual("membership", [hand.NIFTY500_LIST], note, dated=True)
+            raise StepManual(detail, last)
+        refused = hand.as_of_refused(given, ctx.today, _latest_member_change(ctx.today))
+        if refused is not None:
+            raise StepError(refused, last)
+        as_of = given
     build = [
         *(script(tool, "--work", work, step) for step in steps),
-        script(tool, "--work", work, "build", "--as-of", ctx.today),
+        script(tool, "--work", work, "build", "--as-of", as_of),
     ]
-    load = membership_load(ctx.today)
+    load = membership_load(as_of)
     if ctx.dry_run:
         return Done(last, would([*build, load]))
     if listed is not None:  # where `fetch` would have put them
@@ -616,13 +646,36 @@ def membership(ctx: Context) -> Done:
         # the admin command reads only files inside the admin folder: the build is copied there
         (ctx.root / ADMIN).mkdir(parents=True, exist_ok=True)
         shutil.copyfile(
-            work / "nifty500-membership.csv", ctx.root / ADMIN / membership_admin_name(ctx.today)
+            work / "nifty500-membership.csv", ctx.root / ADMIN / membership_admin_name(as_of)
         )
         chain(ctx, [load])
     except StepError as exc:
         raise StepError(exc.detail, _covered_to()) from None
     _retire(ctx, [p for p in (listed, *notices) if p is not None])
-    return Done(_covered_to(), f"loaded as of {ctx.today}")
+    return Done(_covered_to(), f"loaded as of {as_of}")
+
+
+def _latest_member_change(today: date) -> date | None:
+    """The latest NIFTY 500 entry or exit stored that is in effect by `today`."""
+    from sqlalchemy import func
+
+    from app.database import HatDataSessionLocal
+
+    from ...models import HatIndexMember
+
+    member = HatIndexMember
+    with HatDataSessionLocal() as session:
+        starts = session.scalar(
+            select(func.max(member.effective_from)).where(
+                member.index_name == "NIFTY 500", member.effective_from <= today
+            )
+        )
+        ends = session.scalar(
+            select(func.max(member.effective_to)).where(
+                member.index_name == "NIFTY 500", member.effective_to <= today
+            )
+        )
+    return max((d for d in (starts, ends) if d is not None), default=None)
 
 
 def membership_admin_name(today: date) -> str:
@@ -776,31 +829,68 @@ def etf(ctx: Context) -> Done:
 
 def _overlay_hand_files(ctx: Context, work: Path) -> None:
     """Copy each niftyindices answer the owner handed over (`<SERIES>_<from>_<to>.json`) into the
-    overlay's folder as `<from>_<to>.json`, never over a file there (a raw file is kept once)."""
+    overlay's folder as `<from>_<to>.json` when it parses to a series (`overlay_days`), never over
+    a valid file there (a raw file is kept once) but over a broken one."""
+    import logging
+
     from . import hand
 
     for folder in OVERLAY_SERIES:
         for path in hand.matching(ctx.root, f"{folder}_*.json"):
             if hand.series_end(path.name, folder) is None:
                 continue
+            data = path.read_bytes()
             target = work / "niftyindices" / folder / path.name.removeprefix(folder + "_")
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(path, target)
+            if not overlay_days(data, folder):
+                logging.getLogger(__name__).warning(
+                    "%s is no %s series; not used", path.name, folder
+                )
+                continue
+            if target.exists() and overlay_days(target.read_bytes(), folder):
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+
+
+# the overlay's keys per kind (`overlay_etf.py` `_index_files`): the day, then the level
+OVERLAY_KEYS = {"tri": ("Date", "TotalReturnsIndex"), "history": ("HistoricalDate", "CLOSE")}
+
+
+def overlay_days(data: bytes, folder: str) -> list[date]:
+    """The days of a niftyindices answer for the overlay series `folder` that carry a positive
+    level, as the overlay's build reads them, oldest first; none for an answer that is no JSON
+    list (a login or error page) or a list without one such row."""
+    import json
+    from datetime import datetime
+
+    date_key, value_key = OVERLAY_KEYS[OVERLAY_SERIES[folder][1]]
+    try:
+        rows = json.loads(data.decode("utf-8-sig", errors="replace"))
+    except ValueError:
+        return []
+    out = set()
+    for row in rows if isinstance(rows, list) else []:
+        try:
+            day = datetime.strptime(str(row.get(date_key, "")).strip(), "%d %b %Y").date()
+            value = float(str(row.get(value_key, "")).replace(",", ""))
+        except (AttributeError, ValueError):
+            continue
+        if value > 0:
+            out.add(day)
+    return sorted(out)
 
 
 def overlay_short(work: Path, through: date) -> list[str]:
-    """The overlay's niftyindices series whose kept files end before `through`."""
-    from . import hand
-
+    """The overlay's niftyindices series whose kept files hold no day on or after `through` (read
+    from the files, not their names)."""
     short = []
     for folder in OVERLAY_SERIES:
-        ends = [
-            day
+        last = [
+            days[-1]
             for p in (work / "niftyindices" / folder).glob("*.json")
-            if (day := hand.series_end(f"{folder}_{p.name}", folder)) is not None
+            if (days := overlay_days(p.read_bytes(), folder))
         ]
-        if not ends or max(ends) < through:
+        if not last or max(last) < through:
             short.append(folder)
     return short
 
@@ -868,6 +958,7 @@ BODIES: dict[str, Callable[[Context], Done]] = {
     "bars": bars,
     "listing": listing,
     "ingest": ingest,
+    "tri": tri,
     "quality": quality,
     "ca": ca,
     "features": features,

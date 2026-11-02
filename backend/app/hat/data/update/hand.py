@@ -97,12 +97,14 @@ def series_end(name: str, prefix: str) -> date | None:
         return None
 
 
-def manual(step: str, files: Sequence[HandFile], note: str = "") -> str:
-    """A step's `manual` detail: each file's address and name, then the import command."""
+def manual(step: str, files: Sequence[HandFile], note: str = "", *, dated: bool = False) -> str:
+    """A step's `manual` detail: each file's address and name, then the import command (with
+    `--as-of`, the download day, for a file that is a snapshot of that day: `dated`)."""
     wanted = "; ".join(f.how() for f in files)
     given = " ".join(f.name for f in files)
     lead = f"{note}: " if note else ""
-    return f"{lead}download {wanted}; then {UPDATE} --only {step} --file {given}"
+    as_of = " --as-of <the day you downloaded it, YYYY-MM-DD>" if dated else ""
+    return f"{lead}download {wanted}; then {UPDATE} --only {step} --file {given}{as_of}"
 
 
 # --- the inbox --------------------------------------------------------------------------------
@@ -120,9 +122,13 @@ def matching(root: Path, pattern: str) -> list[Path]:
     return sorted(p for p in folder.glob(pattern) if p.is_file()) if folder.is_dir() else []
 
 
-def take(root: Path, files: Iterable[Path]) -> list[Path]:
-    """Copy the files the owner gave (`--file`) into the inbox under their own names; the
-    copies. A name the inbox holds is replaced (the owner's newer download)."""
+AS_OF_SUFFIX = ".as-of"  # beside a handed file: the day the owner downloaded it (`--as-of`)
+
+
+def take(root: Path, files: Iterable[Path], as_of: date | None = None) -> list[Path]:
+    """Copy the files the owner gave (`--file`) into the inbox under their own names, each with
+    its download day beside it when given (`--as-of`); the copies. A name the inbox holds is
+    replaced (the owner's newer download), its old day with it."""
     folder = root / INBOX
     folder.mkdir(parents=True, exist_ok=True)
     out = []
@@ -130,8 +136,33 @@ def take(root: Path, files: Iterable[Path]) -> list[Path]:
         target = folder / path.name
         if path.resolve() != target.resolve():
             shutil.copyfile(path, target)
+        stamp = target.with_name(target.name + AS_OF_SUFFIX)
+        if as_of is not None:
+            stamp.write_text(as_of.isoformat() + "\n")
+        else:
+            stamp.unlink(missing_ok=True)
         out.append(target)
     return out
+
+
+def as_of(path: Path) -> date | None:
+    """The download day the owner gave with a handed file (`--as-of`); None without one."""
+    stamp = path.with_name(path.name + AS_OF_SUFFIX)
+    try:
+        return date.fromisoformat(stamp.read_text().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def as_of_refused(given: date, today: date, latest_change: date | None) -> str | None:
+    """Why a snapshot downloaded on `given` cannot be loaded as of that day, else None: a day
+    after today, or before the latest stored change in effect by today (`latest_change`): the
+    list would undo a change it predates."""
+    if given > today:
+        return f"as_of_in_future: {given}"
+    if latest_change is not None and given < latest_change:
+        return f"as_of_before_change: {given} is before the stored change of {latest_change}"
+    return None
 
 
 def retire(root: Path, paths: Iterable[Path], today: date) -> None:
@@ -140,3 +171,6 @@ def retire(root: Path, paths: Iterable[Path], today: date) -> None:
     for path in paths:
         folder.mkdir(parents=True, exist_ok=True)
         shutil.move(str(path), folder / path.name)
+        stamp = path.with_name(path.name + AS_OF_SUFFIX)
+        if stamp.exists():
+            shutil.move(str(stamp), folder / stamp.name)

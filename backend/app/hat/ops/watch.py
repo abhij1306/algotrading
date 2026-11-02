@@ -128,7 +128,8 @@ def update_findings(status: Mapping[str, Any] | None, now: datetime) -> list[Fin
     """The data update's findings from its status file (None: this machine has none, so it does
     not run the update): its latest run's failed and skipped steps, one alert per run (keyed by
     its start; a step that fails later in the run is not a second alert); its `manual` steps
-    (waiting on a file the owner downloads from NSE by hand), one alert per run; and no run
+    (waiting on a file the owner downloads from NSE by hand) with the steps `waiting` on them,
+    one alert per run; and no run
     started on or after the latest due run date (`update_due`), one alert per due date."""
     if status is None:
         return []
@@ -145,11 +146,10 @@ def update_findings(status: Mapping[str, Any] | None, now: datetime) -> list[Fin
                 {**_numbered("failed", failed), **_numbered("skipped", skipped)},
             )
         )
-    manual = _names(run.get("manual"))
+    manual, waiting = _names(run.get("manual")), _names(run.get("waiting"))
     if manual:
-        out.append(
-            Finding(UPDATE_MANUAL, f"{UPDATE_MANUAL}:{started}", _numbered("manual", manual))
-        )
+        detail = {**_numbered("manual", manual), **_numbered("waiting", waiting)}
+        out.append(Finding(UPDATE_MANUAL, f"{UPDATE_MANUAL}:{started}", detail))
     try:
         last = datetime.fromisoformat(started).astimezone(IST).date() if started else None
     except ValueError:

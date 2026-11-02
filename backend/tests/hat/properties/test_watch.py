@@ -60,9 +60,10 @@ def test_update_manual_steps_are_one_finding_per_run_and_not_a_failure() -> None
     Harm: a step the owner must feed would sit unnoticed, or read as a broken update."""
     status = _status("2026-10-29T19:30:00+05:30")
     status["run"]["manual"] = ["listing", "ca"]
+    status["run"]["waiting"] = ["features"]
     found = update_findings(status, NIGHT)
     assert [f.code for f in found] == ["update.manual"]
-    assert found[0].detail == {"manual.1": "ca", "manual.2": "listing"}
+    assert found[0].detail == {"manual.1": "ca", "manual.2": "listing", "waiting.1": "features"}
     assert found[0].key == "update.manual:2026-10-29T19:30:00+05:30"
 
 

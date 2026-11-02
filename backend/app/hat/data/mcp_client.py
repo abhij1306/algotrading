@@ -35,6 +35,9 @@ ENDPOINT_ENV = {
     SERVER_BHAVCOPY: "HAT_MCP_BHAVCOPY_URL",
     SERVER_CMMARKET: "HAT_MCP_CMMARKET_URL",
 }
+# NSE's public bhavcopy MCP (no key): used when its variable is unset or blank; `off` turns it off.
+DEFAULT_ENDPOINTS = {SERVER_BHAVCOPY: "https://mcp.nseindia.in/bhavcopy/cm/mcp"}
+ENDPOINT_OFF = "off"
 
 MAX_RETRIES = 3
 MAX_ATTEMPTS = MAX_RETRIES + 1
@@ -99,11 +102,12 @@ class McpTransport(Protocol):
 
 
 def endpoints_from_env(env: Mapping[str, str]) -> dict[str, str]:
-    """Configured endpoint per allowed server; a blank or missing value means unconfigured."""
+    """Configured endpoint per allowed server: the variable's value, else (unset or blank) the
+    server's public default (`DEFAULT_ENDPOINTS`), else unconfigured; `off` is unconfigured."""
     found = {}
     for server, var in ENDPOINT_ENV.items():
-        value = (env.get(var) or "").strip()
-        if value:
+        value = (env.get(var) or "").strip() or DEFAULT_ENDPOINTS.get(server, "")
+        if value and value.lower() != ENDPOINT_OFF:
             found[server] = value
     return found
 

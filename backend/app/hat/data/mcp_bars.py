@@ -184,6 +184,30 @@ def rows_by_day(answers: Mapping[str, Sequence[Mapping[str, object]]]) -> dict[d
     return out
 
 
+def unexplained(
+    previous: Mapping[str, str],
+    today: set[str],
+    seen: Mapping[str, set[date]],
+    before: date,
+    listed: set[str],
+) -> list[tuple[str, str]]:
+    """The (ISIN, symbol) pairs that traded in the previous session `before` (`previous`, ISIN
+    -> symbol) and have no bar today, with nothing to explain it. A pair is explained when the
+    MCP's history of its symbol (`seen`, the days it answered) holds `before`: the MCP has the
+    symbol, so a day without its row is the bhavcopy's (no trade); or when the MCP does not
+    know the symbol and Fyers' master no longer lists the ISIN (`listed`): it left the market.
+    Anything else (a symbol the MCP lost, a row it has not loaded yet) leaves the day unwritten."""
+    out = []
+    for isin, symbol in sorted(previous.items()):
+        if isin in today:
+            continue
+        days = seen.get(symbol, set())
+        if before in days or (not days and isin not in listed):
+            continue
+        out.append((isin, symbol))
+    return out
+
+
 def whole(rows: int, before: int | None) -> bool:
     """Whether a session of `rows` rows can be the whole bhavcopy: some rows, and at least
     `MIN_SHARE` of the previous stored session's when there is one."""
@@ -275,6 +299,8 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the MC
     fresh = [d for d in todo if not store.raw_exists(raw_name(d))]
     by_day: dict[date, list[dict]] = {}
     isins: dict[str, str] = {}
+    seen: dict[str, set[date]] = {}  # symbol -> the days the MCP answered for it
+    listed_isins: set[str] = set()
     if fresh:
         client = client_from_env(process_env())
         if client is None:
@@ -283,18 +309,24 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the MC
         before = max((d for d in stored_days if d < fresh[0]), default=None)
         stored = _symbol_isins(store, before)
         listed = fyers_listings(download_nse_cm())
+        listed_isins = set(listed.values())
         symbols = universe(listed, stored)
+        first = before or fresh[0]  # the previous session too: its rows explain today's gaps
         try:
-            months_for(fresh[0], fresh[-1])
+            months_for(first, fresh[-1])
         except ValueError:
             sys.stderr.write("mcp_span_too_long: fill more than three months with history_cli\n")
             return 2
         _say(f"mcp_bars: {len(symbols)} symbols for {fresh[0]}..{fresh[-1]}", True)
-        fetched = fetch_history(client, symbols, fresh[0], fresh[-1])
+        fetched = fetch_history(client, symbols, first, fresh[-1])
         if fetched.failed:
             _say(f"mcp_bars: {len(fetched.failed)} symbols failed: {fetched.failed[:20]}")
             return 1
         by_day = rows_by_day(fetched.answers)
+        seen = {
+            symbol: {d for r in rows if (d := parse_data_date(r.get("date"))) is not None}
+            for symbol, rows in fetched.answers.items()
+        }
         isin_of = isin_lookup(listed, stored)
         isins = {
             f"{r['symbol']}|{r['series']}": isin
@@ -305,8 +337,10 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the MC
     catalog = DbCatalog(HatDataSessionLocal, market_id)
     run_id = str(uuid7())
     code = 0
+    last_day: tuple[date, dict[str, str]] | None = None  # the session before, as parsed here
     for day in todo:
-        if store.raw_exists(raw_name(day)):
+        fetched_now = not store.raw_exists(raw_name(day))
+        if not fetched_now:
             kept = json.loads(store.read_raw(raw_name(day)))
             rows, used = kept["rows"], kept["isins"]
         else:
@@ -328,6 +362,18 @@ def main(argv: Sequence[str] | None = None) -> int:  # pragma: no cover - the MC
             _say(f"{line}: not whole (previous session {prior} bars), not written")
             code = 1
             break  # a later session waits for this one, as the archive build's order does
+        if last_day is None and before is not None:
+            last_day = (before, _isin_symbols(store, before))
+        if fetched_now and last_day is not None:
+            lost = unexplained(
+                last_day[1], {r.isin for r in parsed.rows}, seen, last_day[0], listed_isins
+            )
+            if lost:
+                _say(f"{line}: {len(lost)} of the previous session's stocks missing: {lost[:20]}")
+                _say(f"{day}: not written; the next run asks again")
+                code = 1
+                break
+        last_day = (day, {r.isin: r.symbol for r in parsed.rows})
         if args.dry_run:
             _say(f"{line} (dry run)")
             continue
@@ -354,6 +400,12 @@ def _say(line: str, flush: bool = False) -> None:  # noqa: FBT001, FBT002 - a pr
     sys.stdout.write(line + "\n")
     if flush:
         sys.stdout.flush()
+
+
+def _isin_symbols(store, day: date) -> dict[str, str]:  # noqa: ANN001 - DataStore
+    """ISIN -> symbol of the stored session `day`."""
+    bars = store.read_bars(day)
+    return dict(zip(bars["isin"].to_list(), bars["symbol"].to_list(), strict=True))
 
 
 def _symbol_isins(store, day: date | None) -> dict[str, str]:  # noqa: ANN001 - DataStore

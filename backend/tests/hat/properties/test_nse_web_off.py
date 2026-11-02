@@ -115,6 +115,40 @@ def test_mcp_rows_are_read_as_the_bhavcopy_parser_reads_a_file() -> None:
     assert day.unmapped == [("DDD", "EQ")]
 
 
+def test_a_stock_that_traded_the_session_before_is_missing_only_with_a_reason() -> None:
+    """Checked by name, not count. Explained: the MCP's history of the symbol holds the session
+    before (so today it did not trade), or the MCP does not know the symbol and Fyers no longer
+    lists the ISIN (it left the market). Harm: a stock the MCP lost dropped from a session that
+    is stored for good and never asked again."""
+    before = date(2026, 10, 29)
+    previous = {
+        "INE000A01011": "AAA",  # traded today
+        "INE000B01011": "BBB",  # no trade today: its history has the day before
+        "INE000C01011": "CCC",  # delisted: the MCP does not know it, Fyers no longer lists it
+        "INE000D01011": "DDD",  # lost: the MCP does not know it, Fyers still lists it
+        "INE000E01011": "EEE",  # lost: its history lacks the day before
+    }
+    seen = {"AAA": {before, DAY}, "BBB": {before}, "EEE": {date(2026, 10, 28)}}
+    listed = {"INE000A01011", "INE000B01011", "INE000D01011", "INE000E01011"}
+    lost = mcp_bars.unexplained(previous, {"INE000A01011"}, seen, before, listed)
+    assert lost == [("INE000D01011", "DDD"), ("INE000E01011", "EEE")]
+    assert mcp_bars.unexplained(previous, set(previous), seen, before, listed) == []
+
+
+def test_the_bhavcopy_mcp_has_a_public_default_and_can_be_turned_off() -> None:
+    """Harm: an update that cannot fetch bars until the owner edits .env, or no way to stop it."""
+    from app.hat.data.mcp_client import DEFAULT_ENDPOINTS, SERVER_BHAVCOPY, endpoints_from_env
+
+    default = DEFAULT_ENDPOINTS[SERVER_BHAVCOPY]
+    assert endpoints_from_env({}) == {SERVER_BHAVCOPY: default}
+    assert endpoints_from_env({"HAT_MCP_BHAVCOPY_URL": " "}) == {SERVER_BHAVCOPY: default}
+    assert endpoints_from_env({"HAT_MCP_BHAVCOPY_URL": "http://x.invalid"}) == {
+        SERVER_BHAVCOPY: "http://x.invalid"
+    }
+    assert endpoints_from_env({"HAT_MCP_BHAVCOPY_URL": "off"}) == {}
+    assert not nse_web.refused(default, {})
+
+
 def test_a_session_is_whole_only_near_the_last_sessions_size() -> None:
     """Harm: a partition written while the MCP has loaded part of the day's bhavcopy (raw bars
     are immutable)."""

@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from app.hat.data.update import plan
-from app.hat.data.update.plan import FAILED, MANUAL, OK, SKIPPED, Step, StepStatus
+from app.hat.data.update.plan import FAILED, MANUAL, OK, SKIPPED, WAITING, Step, StepStatus
 
 MON, TUE, WED, THU, FRI = (date(2026, 10, d) for d in (26, 27, 28, 29, 30))
 WEEK = [MON, TUE, WED, THU, FRI]
@@ -34,8 +34,8 @@ def test_only_keeps_table_order_and_refuses_an_unknown_step() -> None:
 def test_a_step_is_blocked_by_a_failed_or_skipped_step_it_reads() -> None:
     features = Step("features", ("quality", "ca"))
     assert plan.blocked_by(features, {"quality": OK, "ca": OK}) is None
-    assert plan.blocked_by(features, {"quality": FAILED, "ca": OK}) == "quality"
-    assert plan.blocked_by(features, {"quality": OK, "ca": SKIPPED}) == "ca"
+    assert plan.blocked_by(features, {"quality": FAILED, "ca": OK}) == ("quality", SKIPPED)
+    assert plan.blocked_by(features, {"quality": OK, "ca": SKIPPED}) == ("ca", SKIPPED)
     assert plan.blocked_by(features, {}) is None  # not run in this run (--only): stored data
 
 
@@ -108,14 +108,28 @@ def test_the_membership_load_names_the_history_inside_the_admin_folder() -> None
     assert argv[-1] == "--apply"
 
 
-def test_a_manual_step_stops_nothing_and_fails_no_run() -> None:
-    """A step waiting on a file the owner downloads from NSE by hand neither skips the steps
-    reading its data (they read what is stored) nor makes the run exit 1. Harm: one missing
-    hand file (the PR archive) would hold back the features and fail the timer every night."""
+def test_a_step_reading_a_manual_one_waits_and_no_run_fails() -> None:
+    """A step whose data waits on a file the owner downloads from NSE by hand holds back the
+    steps that read it (`waiting`, and those after them), but the run does not exit 1. Harm:
+    `features` run on bars without the night's split (a 1:5 split read as -80% by the scanners),
+    or one missing hand file failing the timer every night."""
     features = Step("features", ("quality", "ca"))
-    assert plan.blocked_by(features, {"quality": OK, "ca": MANUAL}) is None
-    assert plan.exit_code({"listing": MANUAL, "bars": OK}) == 0
+    assert plan.blocked_by(features, {"quality": OK, "ca": MANUAL}) == ("ca", WAITING)
+    later = Step("later", ("features",))
+    assert plan.blocked_by(later, {"features": WAITING}) == ("features", WAITING)
+    assert plan.blocked_by(features, {"quality": FAILED, "ca": MANUAL}) == ("quality", SKIPPED)
+    assert plan.exit_code({"listing": MANUAL, "bars": OK, "features": WAITING}) == 0
     assert plan.exit_code({"listing": MANUAL, "bars": FAILED}) == 1
+
+
+def test_only_a_stale_ok_step_reads_a_manual_ones_stored_data() -> None:
+    """The 5-minute top-up reads the members as last loaded: Kotak reaches back 30 days, so it
+    must not wait on a NIFTY 500 list handed over late. Harm: a month of 5-minute bars lost."""
+    steps = {s.name: s for s in plan.STEPS}
+    assert plan.blocked_by(steps["bars5m"], {"bars": OK, "membership": MANUAL}) is None
+    assert plan.blocked_by(steps["bars5m"], {"bars": OK, "membership": FAILED}) is not None
+    assert plan.blocked_by(steps["features"], {"quality": OK, "ca": MANUAL}) == ("ca", WAITING)
+    assert plan.blocked_by(steps["quality"], {"ingest": OK, "tri": MANUAL}) is None
 
 
 def test_ca_runs_only_the_sessions_up_to_the_first_without_its_pr_archive() -> None:
@@ -161,15 +175,95 @@ def test_a_series_file_name_gives_its_last_day() -> None:
     assert hand.series_end("NIFTY_50_TRI_20260101_20261332.json", "NIFTY_50_TRI") is None
 
 
+def _series(folder: str, *days: date) -> str:
+    """A niftyindices answer of the overlay series `folder` holding `days`."""
+    import json
+
+    from app.hat.data.update.steps import OVERLAY_KEYS, OVERLAY_SERIES
+
+    date_key, value_key = OVERLAY_KEYS[OVERLAY_SERIES[folder][1]]
+    return json.dumps([{date_key: f"{d:%d %b %Y}", value_key: "1,234.5"} for d in days])
+
+
 def test_the_overlay_is_short_until_every_series_reaches_the_session(tmp_path: Path) -> None:
-    """Harm: an overlay built from series ending before the session stores TRIs that stop
-    short (its coverage gaps then read as data)."""
+    """Coverage is read from the files' rows, not their names. Harm: an overlay built from
+    series ending before the session (or from an error page saved under a full-year name) stores
+    TRIs that stop short (its coverage gaps then read as data)."""
     from app.hat.data.update.steps import OVERLAY_SERIES, overlay_short
 
     for folder in OVERLAY_SERIES:
         (tmp_path / "niftyindices" / folder).mkdir(parents=True)
-        (tmp_path / "niftyindices" / folder / "20260101_20261030.json").write_text("[]")
+        (tmp_path / "niftyindices" / folder / "20260101_20261030.json").write_text(
+            _series(folder, THU, FRI)
+        )
     assert overlay_short(tmp_path, FRI) == []
-    (tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261030.json").unlink()
-    (tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261029.json").write_text("[]")
-    assert overlay_short(tmp_path, FRI) == ["NIFTY_50_TRI"]
+    rate = tmp_path / "niftyindices" / "NIFTY_1D_RATE_INDEX" / "20260101_20261030.json"
+    rate.write_text(_series("NIFTY_1D_RATE_INDEX", WED, THU))  # named to FRI, rows to THU
+    tri = tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261030.json"
+    tri.write_text("<html>Access Denied</html>")
+    assert overlay_short(tmp_path, FRI) == ["NIFTY_50_TRI", "NIFTY_1D_RATE_INDEX"]
+
+
+def test_a_handed_overlay_file_is_used_only_when_valid_and_replaces_only_a_broken_one(
+    tmp_path: Path,
+) -> None:
+    """Harm: an error page copied in for good (a raw file is kept once), or a valid kept series
+    overwritten by a later hand file."""
+    from app.hat.data.update import hand
+    from app.hat.data.update.steps import Context, _overlay_hand_files
+
+    inbox, work = tmp_path / hand.INBOX, tmp_path / "work"
+    inbox.mkdir(parents=True)
+    kept = work / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261030.json"
+    kept.parent.mkdir(parents=True)
+    kept.write_text("<html>Access Denied</html>")
+    (inbox / "NIFTY_50_TRI_20260101_20261030.json").write_text(_series("NIFTY_50_TRI", FRI))
+    (inbox / "NIFTY_500_TRI_20260101_20261030.json").write_text("not json")
+    ctx = Context(tmp_path, WEEK, FRI, FRI, tmp_path / "log", False, None)
+    _overlay_hand_files(ctx, work)
+    assert kept.read_text() == _series("NIFTY_50_TRI", FRI)  # the broken file replaced
+    assert not (work / "niftyindices" / "NIFTY_500_TRI").exists()  # the bad hand file unused
+    (inbox / "NIFTY_50_TRI_20260101_20261030.json").write_text(_series("NIFTY_50_TRI", THU))
+    _overlay_hand_files(ctx, work)
+    assert kept.read_text() == _series("NIFTY_50_TRI", FRI)  # a valid kept file stays
+
+
+def test_a_handed_snapshot_keeps_its_download_day_and_is_never_loaded_before_a_change(
+    tmp_path: Path,
+) -> None:
+    """The NIFTY 500 list is a snapshot of the day it was downloaded. Harm: a list loaded as of a
+    later day than it shows (members wrong for the days between), or an older list undoing a
+    stored entry or exit."""
+    from app.hat.data.update import hand
+
+    given = tmp_path / "ind_nifty500list.csv"
+    given.write_text("x")
+    (copy,) = hand.take(tmp_path, [given], WED)
+    assert hand.as_of(copy) == WED
+    hand.take(tmp_path, [given])  # handed again without a day: the old day goes with the file
+    assert hand.as_of(copy) is None
+    hand.take(tmp_path, [given], THU)
+    hand.retire(tmp_path, [copy], FRI)
+    assert hand.as_of(tmp_path / hand.USED / FRI.isoformat() / copy.name) == THU
+    assert not copy.with_name(copy.name + hand.AS_OF_SUFFIX).exists()
+    assert hand.as_of_refused(THU, FRI, WED) is None
+    assert hand.as_of_refused(THU, FRI, THU) is None
+    assert hand.as_of_refused(TUE, FRI, WED) == (
+        "as_of_before_change: 2026-10-27 is before the stored change of 2026-10-28"
+    )
+    assert hand.as_of_refused(date(2026, 10, 31), FRI, None) == "as_of_in_future: 2026-10-31"
+    text = hand.manual("membership", [hand.NIFTY500_LIST], dated=True)
+    assert "--file ind_nifty500list.csv --as-of <the day you downloaded it" in text
+
+
+def test_the_tri_step_asks_for_every_day_since_the_last_stored_one() -> None:
+    """Harm: a TRI day missing for longer than the nightly look-back (a file handed over late)
+    no longer flagged, so never filled."""
+    from datetime import timedelta
+
+    from app.hat.data.index_history import TRI_LOOKBACK, tri_since
+
+    assert tri_since(date(2026, 8, 3), FRI) == date(2026, 8, 4)
+    assert tri_since(THU, FRI) == FRI - TRI_LOOKBACK  # never less than the look-back
+    assert tri_since(None, FRI) == FRI - TRI_LOOKBACK
+    assert tri_since(FRI - TRI_LOOKBACK - timedelta(days=1), FRI) == FRI - TRI_LOOKBACK
