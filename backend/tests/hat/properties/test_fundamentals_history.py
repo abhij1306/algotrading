@@ -267,3 +267,13 @@ def test_check_cache_marks_what_is_not_the_document(tmp_path: Path) -> None:
     )
     assert failed("https://www.nseindia.com/api/corporate-announcements?x=1", 200, b"<html>")
     assert failed("https://nsearchives.nseindia.com/corporate/A.pdf", 200, b"<html>")
+
+
+def test_html_filings_pass_the_filing_checks() -> None:
+    """The HTML extractor's source and families are values the filing table's checks allow."""
+    from app.hat.data.fundamentals.extract import NSE_HTML
+    from app.hat.data.fundamentals.nse_html import FAMILY_BANK, FAMILY_OTHER
+    from app.hat.models.fundamentals import FUNDAMENTAL_FAMILIES, FUNDAMENTAL_SOURCES
+
+    assert NSE_HTML in FUNDAMENTAL_SOURCES
+    assert {FAMILY_BANK, FAMILY_OTHER} <= set(FUNDAMENTAL_FAMILIES)
