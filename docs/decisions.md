@@ -397,6 +397,27 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
     and reform nights are in `config.json` (`data_snapshot.membership`) and run.json
     (`data.universe`, `data.universe_rule`).
 
+- **Rotation fundamentals screen (owner 2026-11-02: test quality and value inside the c1 core).**
+  `rotation.fundamentals` (unset: off, so stored configs keep their hashes and replay unchanged)
+  screens the names passing the universe stage and the liquidity floor on each decision close
+  (`backtest/fundamentals.py`): `quality: {min_roce, max_gearing, positive_cfo}` (each optional,
+  one at least; ROCE and debt/equity as fractions) drops a name failing a check; `value:
+  {multiple: earnings_yield | ebit_ev, drop_pct: 20}` then drops the most expensive `drop_pct`%
+  of the remaining names with the multiple, priced on the decision close (a loss is the most
+  expensive). The figures are the research panel's: first-published before restated, a
+  secondary-source figure from its own public date (its deadline lag), a later version only from
+  its own, each usable `lag_sessions` (default 1) sessions after its public date, and missing
+  once its period ended more than `max_age_days` (default 550) before the decision close. One
+  basis per company and day. Financials (a bank, NBFC or insurer by the latest first-published
+  filing's taxonomy known then, else by the industry on the trade date) skip ROCE and
+  debt/equity (they pass) and, under `ebit_ev`, are ranked apart on earnings yield; a name whose
+  filings and industry tell neither counts those checks as missing, never as an ordinary
+  company. A name without a needed figure is kept or dropped by `missing` (`keep` default);
+  skips.csv has a row per name and night for each drop, each missing figure and each financial
+  (`fundamentals_*`, a financial's ending `_financial`), so coverage shows. A run asking for it without stored fundamentals is refused
+  `backtest_fundamentals_missing`. **Backtest only:** a live night under it records nothing
+  (`rotation_fundamentals_not_live`).
+
 - **Orders at 09:20, never at the open (owner 2026-10-30: "keep 9.20 at least").** No
   backtest order fills at the 09:15 open. A rotation's orders (buys, sells, trims, a waiting
   sale) trade at 09:20, as live's `rotation.rebalance` does, and a daily-estimate entry that

@@ -220,7 +220,13 @@ from ..engine.portfolio.universe import members_on
 from ..engine.regime_gate import regime_allows_longs
 from ..engine.scan import SESSIONS_AHEAD, ScanInputs, WindowKey, universe_passers, window_key
 from ..engine.stops import SKIP_BAD_INPUT, StopPlan, history_inputs
-from ..engine.strategy.config import Playbook, Rotation, StopLowOfDay, StrategyConfig
+from ..engine.strategy.config import (
+    Fundamentals,
+    Playbook,
+    Rotation,
+    StopLowOfDay,
+    StrategyConfig,
+)
 from ..models import (
     HatPosition,
     HatSignal,
@@ -233,7 +239,7 @@ from ..risk.exposure import LadderState, apply_outcome, is_win
 from ..risk.kill import KillState
 from ..risk.sessions import SessionCalendar, SessionDay
 from ..time import IST, as_utc
-from . import ep_log
+from . import ep_log, fundamentals
 from .auction_days import auction_risk_days
 from .data import (
     HINDSIGHT_DELISTED_EXIT,
@@ -307,6 +313,7 @@ from .report import (
     flag_auction_risk,
 )
 from .rotation import (
+    PLAYBOOK,
     Market,
     Plan,
     Quote,
@@ -1227,6 +1234,9 @@ class _Run:
             )
             passers = [p for p in passers if p in hold]
             hold_only = frozenset(passers) - entry
+        if rules.fundamentals is not None:  # the point-in-time fundamentals screen
+            passers = self._fundamental_screen(leg, passers, prev, day, rules.fundamentals)
+            hold_only &= frozenset(passers)
         self._prefetch_first([*passers, *book.holdings], day)  # their prices at 09:20
         self.view.as_of(prev)  # the total-return closes through `prev`, known at its close
         closes = self.tr_closes.window(passers, self.index[prev], rotation.window_rows(rules))
@@ -1245,6 +1255,44 @@ class _Run:
             hold_only=hold_only,
             rules=rules,
         )  # fmt: skip
+
+    def _fundamental_screen(
+        self, leg: _Leg, names: list[str], prev: date, day: date, rule: Fundamentals
+    ) -> list[str]:
+        """The names of `prev`'s decision for `day` the fundamentals screen keeps
+        (`fundamentals.screen`): each name's figures public by the lag's cutoff, priced on its
+        last close through `prev`, its industry on `day`. Each name it drops, and each it keeps
+        without a figure or as a financial, is a skips.csv row of `day`; a kept one is a `kept`
+        decision, not a skip."""
+        histories = self.data.fundamentals
+        at = fundamentals.cutoff(self.view.days, self.view.index[prev], rule.lag_sessions)
+
+        def figures(name: str) -> fundamentals.Figures | None:
+            found = histories.get(name)
+            figs = None if found is None else found.at(at)
+            return fundamentals.aged(figs, prev, rule.max_age_days)
+
+        def close(name: str) -> float | None:
+            found = self.view.last_close(name, prev)
+            return None if found is None else float(found[1])
+
+        result = fundamentals.screen(
+            names, figures, close, lambda i: industry_on(self.data, i, day), rule
+        )
+        for mark in result.marks:
+            self.skips[mark.reason] = self.skips.get(mark.reason, 0) + 1
+            self.skip_rows.append(
+                {
+                    "date": day,
+                    "strategy": leg.config.bot,
+                    "playbook": leg.prefix + PLAYBOOK,
+                    "instrument_id": mark.name,
+                    "symbol": symbol_on(self.data, mark.name, day),
+                    "reason": mark.reason,
+                }
+            )
+            self.decisions.append((day, "kept" if mark.kept else "skip", mark.reason))
+        return list(result.kept)
 
     def _quote(
         self, instrument_id: str, day: date, side: str, *, near_limit: bool = False

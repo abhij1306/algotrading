@@ -86,6 +86,10 @@ from ..models import (
 from ..money import exact
 from ..time import IST, as_utc
 from . import traded_universe
+from .fundamentals import History
+from .fundamentals import digest_text as fundamentals_digest_text
+from .fundamentals import load as load_fundamentals
+from .fundamentals import snapshot as fundamentals_snapshot
 from .intraday import screened_buckets
 from .spec import BacktestError, membership_key
 
@@ -268,6 +272,10 @@ class MarketData:
     # (`band_on`), as live reads the band in force on its trade date. Not in the content digest:
     # no other rule reads it, so runs without that key keep their digests.
     bands: Mapping[str, Sequence[tuple[date, Decimal | None]]] = field(default_factory=dict)
+    # Each member's point-in-time fundamentals (`fundamentals.History`): what a rotation's
+    # `fundamentals` screen reads; empty unless the run loads them
+    # (`load_market(fundamentals=True)`).
+    fundamentals: Mapping[str, History] = field(default_factory=dict)
 
 
 def symbol_on(data: MarketData, instrument_id: str, day: date) -> str:
@@ -1417,6 +1425,8 @@ def _content_digest(market: MarketData) -> str:
         )
     if market.results:
         digest.update(results_digest_text(market.results).encode())
+    if market.fundamentals:
+        digest.update(fundamentals_digest_text(market.fundamentals).encode())
     return digest.hexdigest()
 
 
@@ -1474,6 +1484,7 @@ def load_market(
     end: date,
     regime_inputs: bool = False,
     results: bool = False,
+    fundamentals: bool = False,
 ) -> tuple[MarketData, dict[str, Any]]:
     """The market of a run of `start..end` on the universe, and its data snapshot (what was
     read, for `run.json` `data.data_snapshot_id` and `--rerun`). Raises `BacktestError` when the
@@ -1486,7 +1497,8 @@ def load_market(
     and the window's breadth, and raises `backtest_no_regime_inputs` when the store has none
     of one of them (PR 68). The window's breadth is always read: a breadth regime gate reads it
     (a session without one turns that night's gate off, as live) and the run's result files
-    record it (`folder`)."""
+    record it (`folder`). With `fundamentals` it reads the members' point-in-time fundamentals
+    through `end` (`fundamentals.load`)."""
     read = store.fingerprints(DATASET_BARS)  # the bars about to be read, for the features gate
     every_day = sorted(read)
     days = [d for d in every_day if d <= end]
@@ -1602,6 +1614,11 @@ def load_market(
         gaps_5m=_gaps(sessions_5m),
         results=filings,
         bands=_bands(session, instruments),
+        fundamentals=(
+            load_fundamentals(session, bars, adjustment.lineage, wanted, end)
+            if fundamentals
+            else {}
+        ),
     )
     snapshot = {
         "store_first": window[0].isoformat(),
@@ -1648,5 +1665,6 @@ def load_market(
         "point_in_time": {"versions_digest": versions_sha, "versions": versions},
         "content_digest": _content_digest(market),
         **_results_snapshot(filings, results),
+        **(fundamentals_snapshot(market.fundamentals) if fundamentals else {}),
     }
     return market, snapshot

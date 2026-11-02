@@ -4,7 +4,8 @@ Every figure the cached results sources give, long format, and the ratios derive
 in time (`backend/app/hat/data/fundamentals/`; why: `decisions.md`, Fundamentals store; commands:
 `runbook.md`, Fundamentals). It reads the raw results cache only (`raw/nse-results/`,
 `raw/secondary-results/`) and never the network. The tables are projections of that cache: each
-`extract` and `derive` run replaces them. Nothing in the strategy or backtest path reads them.
+`extract` and `derive` run replaces them. No strategy reads them; a rotation backtest's
+fundamentals screen reads the research panel's figures (below).
 
 ## Tables (hat_live)
 
@@ -151,4 +152,6 @@ capital / face value with later splits undone; never from EPS. Prices and action
 company across ISIN changes. The run also writes `research-<date>.md`: member coverage per
 fiscal year 2013-2021 and per item, the source mix, and the restatement test (first-published
 FY2016 and FY2017 figures against the secondary source's, same basis: the share moved by more
-than 1, 5 and 20%, and sign flips). Nothing in the strategy or backtest path reads the panel.
+than 1, 5 and 20%, and sign flips). A rotation backtest's `fundamentals` screen
+(`backtest/fundamentals.py`; decisions.md, Rotation fundamentals screen) computes the same figures
+from the store at each day a filing became public, not from the Parquet file.
