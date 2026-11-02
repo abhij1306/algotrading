@@ -1,8 +1,9 @@
 """The research panel: per (instrument, month end) the fundamentals a value or quality study reads,
 first-published where the store has them and the secondary source's lagged figures otherwise, with
 the source of each figure. Read only; written as a Parquet file and a Markdown report under
-`$HAT_DATA_ROOT/fundamentals/` (docs/fundamentals.md, Research panel). Nothing in the strategy or
-backtest path reads it.
+`$HAT_DATA_ROOT/fundamentals/` (docs/fundamentals.md, Research panel). A rotation backtest's
+fundamentals screen reads the same figures (`panel_row`) through `companies`
+(`backtest/fundamentals.py`); no strategy reads the panel file.
 
 Known when (`research_known`): a first-published filing (NSE XBRL, NSE HTML page, BSE XBRL) from
 its `public_at`. A secondary-source page figure from its `public_at` (NSE's first filing of the
@@ -33,7 +34,7 @@ from __future__ import annotations
 import logging
 from bisect import bisect_right
 from collections import defaultdict
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -607,7 +608,6 @@ def run(
 
     from app.database import db_session_scope
 
-    from ..results.universe import successors
     from .derive import load_prices
 
     days = month_ends(since, until)
@@ -615,33 +615,21 @@ def run(
     records: list[dict[str, Any]] = []
     present: dict[tuple[str, date], dict[str, Any]] = {}
     with db_session_scope() as session:
-        filings, symbols = _stored(session)
-        actions = _actions(session)
         members = _memberships(session)
-        head = successors(session)
-        chains: dict[str, list[str]] = {i: [i] for i in filings}
-        for old, latest in head.items():
-            if latest in chains:
-                chains[latest].append(old)
+        stored = _stored(session)
+        chains = _chains(session, stored[0])
         wanted = {i for ids in chains.values() for i in ids}
         prices = load_prices(store, wanted, since - timedelta(days=40))
-        for n, (instrument, stored) in enumerate(filings.items(), 1):
-            facts = _facts(session, [s[0] for s in stored])
-            known = [k for s in stored for k in known_filings(*s[1:], facts.get(s[0], []))]
-            ids = chains[instrument]
-            company_actions = sorted(
-                {a for i in ids for a in actions.get(i, [])}, key=lambda a: a.ex_date
-            )
-            closes = chain_closes(prices, ids)
-            face = _face_now(stored, facts)
-            for day, row in instrument_panel(known, days, closes, company_actions, face):
-                records.append(record(instrument, symbols[instrument], day, row))
+        for n, c in enumerate(_companies(session, stored, chains, None), 1):
+            closes = chain_closes(prices, c.ids)
+            for day, row in instrument_panel(c.known, days, closes, c.actions, c.face_value_now):
+                records.append(record(c.instrument, c.symbol, day, row))
                 if fiscal_year(day) in COVERAGE_YEARS:
-                    present[(instrument, day)] = {
+                    present[(c.instrument, day)] = {
                         k: 1 for k in PANEL_ITEMS if row.get(k) is not None
                     }
             if n % 100 == 0:
-                logger.info("panel %d/%d instruments, %d rows", n, len(filings), len(records))
+                logger.info("panel %d/%d instruments, %d rows", n, len(chains), len(records))
         pairs = _pairs(session)
     frame = pl.DataFrame(records, infer_schema_length=None)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -653,10 +641,78 @@ def run(
     return str(path)
 
 
-def _stored(
+@dataclass(frozen=True)
+class Company:
+    """One company's stored filings as the panel reads them (`known_filings`), keyed by its
+    latest instrument (`instrument`; `ids` its instruments, the latest first), with its splits
+    and bonuses across them, the face value its secondary-source page showed when fetched, and
+    whether a first-published filing has the bank taxonomy (`bank`)."""
+
+    instrument: str
+    symbol: str
+    ids: tuple[str, ...]
+    known: tuple[Known, ...]
+    actions: tuple[Action, ...]
+    face_value_now: tuple[date, Decimal] | None
+    bank: bool
+
+
+def companies(
+    session: Session, wanted: Collection[str] | None = None
+) -> Iterator[Company]:  # pragma: no cover - the database
+    """Every company with stored filings (`wanted`: only those with one of these instruments),
+    one at a time: each one's facts are read as it is reached."""
+    stored = _stored(session)
+    yield from _companies(session, stored, _chains(session, stored[0]), wanted)
+
+
+Stored = tuple[dict[str, list[tuple[Any, ...]]], dict[str, str], set[str]]  # `_stored`
+
+
+def _chains(
+    session: Session, filings: dict[str, list[tuple[Any, ...]]]
+) -> dict[str, list[str]]:  # pragma: no cover - the database
+    """Each filing instrument's instruments across its ISIN changes, the latest first."""
+    from ..results.universe import successors
+
+    chains: dict[str, list[str]] = {i: [i] for i in filings}
+    for old, latest in successors(session).items():
+        if latest in chains:
+            chains[latest].append(old)
+    return chains
+
+
+def _companies(
     session: Session,
-) -> tuple[dict[str, list[tuple[Any, ...]]], dict[str, str]]:  # pragma: no cover
-    """Every stored filing's keys, by instrument, and each instrument's symbol."""
+    stored: Stored,
+    chains: dict[str, list[str]],
+    wanted: Collection[str] | None,
+) -> Iterator[Company]:  # pragma: no cover - the database
+    filings, symbols, banks = stored
+    actions = _actions(session)
+    for instrument, rows in filings.items():
+        ids = chains[instrument]
+        if wanted is not None and not any(i in wanted for i in ids):
+            continue
+        facts = _facts(session, [s[0] for s in rows])
+        known = [k for s in rows for k in known_filings(*s[1:], facts.get(s[0], []))]
+        company_actions = sorted(
+            {a for i in ids for a in actions.get(i, [])}, key=lambda a: a.ex_date
+        )
+        yield Company(
+            instrument,
+            symbols[instrument],
+            tuple(ids),
+            tuple(known),
+            tuple(company_actions),
+            _face_now(rows, facts),
+            instrument in banks,
+        )
+
+
+def _stored(session: Session) -> Stored:  # pragma: no cover
+    """Every stored filing's keys, by instrument, each instrument's symbol, and the instruments
+    with a first-published filing in the bank taxonomy."""
     from sqlalchemy import select
 
     from ...models import HatFundamentalFiling
@@ -664,6 +720,7 @@ def _stored(
     filing = HatFundamentalFiling
     by: dict[str, list[tuple[Any, ...]]] = defaultdict(list)
     symbols: dict[str, str] = {}
+    banks: set[str] = set()
     for row in session.execute(
         select(
             filing.id,
@@ -675,10 +732,13 @@ def _stored(
             filing.basis,
             filing.period_end,
             filing.version,
+            filing.family,
         )
     ):
         key = str(row.instrument_id)
         symbols[key] = row.symbol
+        if row.point_in_time and row.family == "bank":
+            banks.add(key)
         by[key].append(
             (
                 str(row.id),
@@ -690,7 +750,7 @@ def _stored(
                 row.version,
             )
         )
-    return by, symbols
+    return by, symbols, banks
 
 
 def _facts(

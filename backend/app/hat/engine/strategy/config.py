@@ -599,6 +599,54 @@ class Tranches(Model):
     offset_sessions: int = Field(ge=1, le=20)
 
 
+class FundamentalQuality(Model):
+    """A fundamentals screen's quality floor (`backtest.fundamentals`): a name is dropped when
+    its ROCE is below `min_roce` (a fraction: 0.12 is 12%), its debt/equity above `max_gearing`
+    (negative equity counts as above any cap), or, with `positive_cfo`, its latest year's cash
+    flow from operations is not above 0. Each check is off when unset; at least one is set."""
+
+    min_roce: float | None = Field(default=None, ge=-1, le=10)
+    max_gearing: float | None = Field(default=None, ge=0, le=100)
+    positive_cfo: bool = False
+
+    @model_validator(mode="after")
+    def _check(self) -> FundamentalQuality:
+        if self.min_roce is None and self.max_gearing is None and not self.positive_cfo:
+            raise ValueError("quality_without_check")
+        return self
+
+
+class FundamentalValue(Model):
+    """A fundamentals screen's value cut (`backtest.fundamentals`): the `drop_pct` percent most
+    expensive of the eligible names (rounded down) by `multiple`, each priced on the decision
+    close, are dropped: `earnings_yield` (TTM profit / market cap) or `ebit_ev` (TTM EBIT /
+    enterprise value, the inverse of EV/EBIT). Negative earnings count as the most expensive."""
+
+    multiple: Literal["earnings_yield", "ebit_ev"]
+    drop_pct: float = Field(default=20, gt=0, lt=100)
+
+
+class Fundamentals(Model):
+    """A rotation's point-in-time fundamentals screen (`backtest.fundamentals`), applied to the
+    names passing the universe stage and the liquidity floor on each decision close: `quality`
+    and then `value`, at least one. A figure is read from its public date (the research panel's
+    rule: first-published before restated, a restated figure never before its own public date)
+    plus `lag_sessions` sessions. A name without a figure a check needs is kept or dropped by
+    `missing`; the run counts both in skips.csv. Backtest only: live refuses such a config
+    (`rotation_live.FUNDAMENTALS_NOT_LIVE`)."""
+
+    quality: FundamentalQuality | None = Field(default=None, exclude_if=lambda v: v is None)
+    value: FundamentalValue | None = Field(default=None, exclude_if=lambda v: v is None)
+    lag_sessions: int = Field(default=1, ge=0, le=126)
+    missing: Literal["keep", "drop"] = "keep"
+
+    @model_validator(mode="after")
+    def _check(self) -> Fundamentals:
+        if self.quality is None and self.value is None:
+            raise ValueError("fundamentals_without_screen")
+        return self
+
+
 class Rotation(Model):
     """A cross-sectional momentum rotation (`engine.rotation`). On the close of each `rebalance`
     session (the last of its month, of its half month or of its week) every member that passes
@@ -625,8 +673,9 @@ class Rotation(Model):
     tick of its lower one (`engine.rotation.near_limit`); `industry_relative` ranks each name on
     its score less the median score of its industry that night (`engine.rotation.
     industry_relative`); `wide_book` (unset: off) holds more names while a breadth rule is off
-    (`WideBook`). All of these are left out of the canonical form at their defaults, so stored
-    configs keep their hash."""
+    (`WideBook`); `fundamentals` (unset: off) screens the passers on point-in-time quality and
+    value (`Fundamentals`). All of these are left out of the canonical form at their defaults,
+    so stored configs keep their hash."""
 
     rebalance: Literal["month_end", "fortnight", "weekly"] = "month_end"
     score: Literal["riskadj", "r12_1", "r6", "hi52"] = "riskadj"
@@ -652,6 +701,7 @@ class Rotation(Model):
     refuse_near_limit: bool = Field(default=False, exclude_if=lambda v: not v)
     industry_relative: bool = Field(default=False, exclude_if=lambda v: not v)
     wide_book: WideBook | None = Field(default=None, exclude_if=lambda v: v is None)
+    fundamentals: Fundamentals | None = Field(default=None, exclude_if=lambda v: v is None)
 
     @model_validator(mode="after")
     def _check(self) -> Rotation:

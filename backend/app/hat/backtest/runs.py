@@ -456,6 +456,11 @@ def _load(
     indices = {spec.config.regime.index for spec in specs}
     if len(indices) != 1:
         raise BacktestError("backtest_sweep_mixed_index")
+    screened = any(
+        c.rotation is not None and c.rotation.fundamentals is not None
+        for s in specs
+        for c in _configs(s)
+    )
     data, snapshot = load_market(
         store,
         session,
@@ -466,9 +471,13 @@ def _load(
         regime_inputs=any(s.conventions.regime_mult == REGIME_MULT_POLICY for s in specs),
         # the EP log and `earnings_catalyst` read the stored results filings
         results=any(p.preopen for s in specs for c in _configs(s) for p in c.playbooks),
+        # a rotation's fundamentals screen reads the fundamentals store
+        fundamentals=screened,
     )
     if not data.results and any(uses_results(c) for s in specs for c in _configs(s)):
         raise BacktestError("backtest_results_missing")
+    if screened and not data.fundamentals:
+        raise BacktestError("backtest_fundamentals_missing")
     etf = None
     if any(s.overlay is not None for s in specs):
         try:
