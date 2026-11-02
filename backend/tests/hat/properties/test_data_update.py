@@ -4,13 +4,14 @@ hand-built inputs; no step runs."""
 
 from __future__ import annotations
 
+import shlex
 from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 from app.hat.data.update import plan
-from app.hat.data.update.plan import FAILED, OK, SKIPPED, Step, StepStatus
+from app.hat.data.update.plan import FAILED, MANUAL, OK, SKIPPED, Step, StepStatus
 
 MON, TUE, WED, THU, FRI = (date(2026, 10, d) for d in (26, 27, 28, 29, 30))
 WEEK = [MON, TUE, WED, THU, FRI]
@@ -105,3 +106,70 @@ def test_the_membership_load_names_the_history_inside_the_admin_folder() -> None
     assert "/" not in argv[at + 1]
     assert argv[argv.index("--as-of") + 1] == "2026-10-30"
     assert argv[-1] == "--apply"
+
+
+def test_a_manual_step_stops_nothing_and_fails_no_run() -> None:
+    """A step waiting on a file the owner downloads from NSE by hand neither skips the steps
+    reading its data (they read what is stored) nor makes the run exit 1. Harm: one missing
+    hand file (the PR archive) would hold back the features and fail the timer every night."""
+    features = Step("features", ("quality", "ca"))
+    assert plan.blocked_by(features, {"quality": OK, "ca": MANUAL}) is None
+    assert plan.exit_code({"listing": MANUAL, "bars": OK}) == 0
+    assert plan.exit_code({"listing": MANUAL, "bars": FAILED}) == 1
+
+
+def test_ca_runs_only_the_sessions_up_to_the_first_without_its_pr_archive() -> None:
+    """A later session's `ca.adjust` waits for an earlier one's file. Harm: a session run before
+    the one before it would store its dividends while the earlier night's are missing."""
+    from app.hat.data.update.steps import ready_prefix
+
+    assert ready_prefix([MON, TUE, WED], {MON, WED}) == [MON]
+    assert ready_prefix([MON, TUE], {MON, TUE}) == [MON, TUE]
+    assert ready_prefix([MON, TUE], {TUE}) == []
+
+
+def test_the_manual_detail_names_each_address_file_and_the_import_command() -> None:
+    """The owner reads what to download, the name to save it under and the command that takes
+    it; a niftyindices series is a POST, so its curl line carries the request body."""
+    from app.hat.data.update import hand
+
+    pr = hand.pr_archive(date(2026, 10, 30))
+    assert pr.name == "PR301026.zip"
+    assert pr.url == "https://nsearchives.nseindia.com/archives/equities/bhavcopy/pr/PR301026.zip"
+    text = hand.manual("ca", [pr], "note")
+    assert text.startswith("note: download https://nsearchives")
+    assert text.endswith("scripts/hat_data_update.sh --only ca --file PR301026.zip")
+    tri = hand.nifty500_tri(date(2026, 1, 1), date(2026, 10, 30))
+    assert tri.name == "NIFTY_500_TRI_20260101_20261030.json"
+    words = shlex.split(tri.how())  # the shell gives curl the body whole
+    assert words[:4] == ["curl", "-s", "-X", "POST"]
+    assert words[words.index("--data") + 1] == tri.body
+    assert "'name':'NIFTY 500'" in tri.body
+    assert "01-Jan-2026" in tri.body
+    assert words[-2:] == ["-o", "NIFTY_500_TRI_20260101_20261030.json"]
+    both = hand.manual("ca", [pr, hand.SYMBOL_CHANGES])
+    assert both.endswith("--only ca --file PR301026.zip symbolchange.csv")
+
+
+def test_a_series_file_name_gives_its_last_day() -> None:
+    from app.hat.data.update import hand
+
+    end = hand.series_end("NIFTY_50_TRI_20260101_20261030.json", "NIFTY_50_TRI")
+    assert end == date(2026, 10, 30)
+    assert hand.series_end("NIFTY_500_TRI_20260101_20261030.json", "NIFTY_50_TRI") is None
+    assert hand.series_end("NIFTY_50_TRI_20260101_2026.json", "NIFTY_50_TRI") is None
+    assert hand.series_end("NIFTY_50_TRI_20260101_20261332.json", "NIFTY_50_TRI") is None
+
+
+def test_the_overlay_is_short_until_every_series_reaches_the_session(tmp_path: Path) -> None:
+    """Harm: an overlay built from series ending before the session stores TRIs that stop
+    short (its coverage gaps then read as data)."""
+    from app.hat.data.update.steps import OVERLAY_SERIES, overlay_short
+
+    for folder in OVERLAY_SERIES:
+        (tmp_path / "niftyindices" / folder).mkdir(parents=True)
+        (tmp_path / "niftyindices" / folder / "20260101_20261030.json").write_text("[]")
+    assert overlay_short(tmp_path, FRI) == []
+    (tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261030.json").unlink()
+    (tmp_path / "niftyindices" / "NIFTY_50_TRI" / "20260101_20261029.json").write_text("[]")
+    assert overlay_short(tmp_path, FRI) == ["NIFTY_50_TRI"]

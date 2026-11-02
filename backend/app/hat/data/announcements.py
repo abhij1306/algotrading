@@ -364,6 +364,9 @@ class HttpFeedFetcher:
         if get is None:
             import requests  # deferred: only a real poll needs the HTTP stack
 
+            from .nse_web import guard
+
+            guard(url)  # an NSE feed while `HAT_NSE_WEB` is off: refused, unsent
             get = requests.get
         try:
             response = get(

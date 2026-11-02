@@ -1,10 +1,16 @@
 """The daily data update's step bodies. Each reuses the code path that already does its job: the
 operator command lines run as child processes, and the nightly job bodies (`ingest.nightly`,
 `quality.gate`, `ca.adjust`, `calendar.refresh`) run through `run_job` as the live scheduler runs
-them, without the NSE MCP servers (the bhavcopy, NSE's index archive and niftyindices instead).
+them.
 
-A body returns `Done` or raises `StepError`; either names the session its data is complete
-through. With `ctx.dry_run` a body works out what it would do and runs nothing."""
+NSE's website and archives are reached only with `HAT_NSE_WEB` on (`nse_web`). Off (the
+default), the bars come from the bhavcopy MCP (`mcp_bars`), the index levels from the stored
+archive file or the MCP's snapshot, and every file NSE publishes (the holiday and equity lists,
+the PR archive, the symbol and name changes, the NIFTY 500 list, niftyindices' series) from the
+owner's hand (`hand.py`): without it a step raises `StepManual`.
+
+A body returns `Done` or raises `StepError` or `StepManual`; each names the session its data is
+complete through. With `ctx.dry_run` a body works out what it would do and runs nothing."""
 
 from __future__ import annotations
 
@@ -32,6 +38,15 @@ ADMIN = Path("admin")  # under the data root: the only folder the admin commands
 
 
 class StepError(Exception):
+    def __init__(self, detail: str, last_good: date | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.last_good = last_good
+
+
+class StepManual(Exception):  # noqa: N818 - an outcome, not an error: the owner's turn
+    """The step needs a file NSE publishes that the owner has not handed over (`hand.manual`)."""
+
     def __init__(self, detail: str, last_good: date | None = None) -> None:
         super().__init__(detail)
         self.detail = detail
@@ -107,6 +122,46 @@ def work_dir(ctx: Context, env: str, name: str) -> Path:
     return Path(process_env().get(env) or ctx.root / WORK / name)
 
 
+def web() -> bool:
+    """`HAT_NSE_WEB` is on: the steps may ask NSE's website and archives."""
+    from ..nse_web import enabled
+
+    return enabled(process_env())
+
+
+def _mcp():  # noqa: ANN202 - McpClient | None, imported late
+    """The bhavcopy MCP client from the environment (`client_from_env`), None when it is unset."""
+    from ..mcp_client import client_from_env
+
+    return client_from_env(process_env())
+
+
+def _nse_text(ctx: Context, file, step: str, last_good: date | None):  # noqa: ANN001, ANN202
+    """A TextSource of `file` (`hand.HandFile`): NSE's address with the web on, else the inbox's
+    copy (and the paths to retire once read); `StepManual` when the owner has not given it."""
+    from ..bhavcopy import http_fetcher
+    from ..nse_files import url_source
+    from . import hand
+
+    if web():
+        return url_source(file.url, http_fetcher()), []
+    path = hand.find(ctx.root, file.name)
+    if path is None:
+        raise StepManual(hand.manual(step, [file]), last_good)
+    return _file_text(path), [path]
+
+
+def _file_text(path: Path) -> Callable[[], str]:
+    return lambda: path.read_bytes().decode("utf-8-sig")
+
+
+def _retire(ctx: Context, paths: Sequence[Path]) -> None:
+    from . import hand
+
+    if paths and not ctx.dry_run:
+        hand.retire(ctx.root, paths, ctx.today)
+
+
 def _store(ctx: Context):  # noqa: ANN202 - DataStore, imported late with the database
     from ..store import DataStore
 
@@ -161,20 +216,21 @@ def _days(days: Sequence[date]) -> str:
 
 
 def calendar(ctx: Context) -> Done:
+    """`calendar.refresh` from NSE's holiday list (weekly: the list changes a few times a
+    year)."""
     from app.database import HatDataSessionLocal
 
     from ...daily.nightly import CALENDAR_REFRESH
-    from ..bhavcopy import http_fetcher
-    from ..nse_files import HOLIDAYS_URL, url_source
     from ..reference_jobs import calendar_refresh
+    from . import hand
+
+    source, used = _nse_text(ctx, hand.HOLIDAYS, "calendar", _last(ctx.sessions))
 
     def body(_day: date) -> Callable[[], object]:
-        return calendar_refresh(
-            holiday_list=url_source(HOLIDAYS_URL, http_fetcher()),
-            session_factory=HatDataSessionLocal,
-        )
+        return calendar_refresh(holiday_list=source, session_factory=HatDataSessionLocal)
 
     done = _each_session(ctx, CALENDAR_REFRESH, [ctx.today], body)
+    _retire(ctx, used)
     return Done(_last(ctx.sessions), done.detail)
 
 
@@ -183,18 +239,18 @@ def listing(ctx: Context) -> Done:
     bars step registered the day's new ISINs (inactive until a listing names them)."""
     from app.database import HatDataSessionLocal
 
-    from ..bhavcopy import http_fetcher
-    from ..nse_files import EQUITY_LIST_URL, url_source
     from ..reference_jobs import LISTING_REFRESH, listing_refresh
+    from . import hand
+
+    last = None if ctx.dry_run else _last_job(LISTING_REFRESH)
+    source, used = _nse_text(ctx, hand.EQUITY_LIST, "listing", last)
 
     def body(day: date) -> Callable[[], object]:
-        return listing_refresh(
-            equity_list=url_source(EQUITY_LIST_URL, http_fetcher()),
-            session_factory=HatDataSessionLocal,
-            today=day,
-        )
+        return listing_refresh(equity_list=source, session_factory=HatDataSessionLocal, today=day)
 
-    return _each_session(ctx, LISTING_REFRESH, [ctx.today], body)
+    done = _each_session(ctx, LISTING_REFRESH, [ctx.today], body)
+    _retire(ctx, used)
+    return done
 
 
 def bars(ctx: Context) -> Done:
@@ -204,26 +260,43 @@ def bars(ctx: Context) -> Done:
     todo = sessions_to_fill(ctx.sessions, last, ctx.through)
     if not todo:
         return Done(last, "up to date")
-    argv = module("app.hat.data.history_cli", "--from", todo[0], "--to", ctx.through, "--resume")
+    if web():
+        tool = "history_cli"
+        argv = module(
+            "app.hat.data.history_cli", "--from", todo[0], "--to", ctx.through, "--resume"
+        )
+    else:
+        tool = "mcp_bars"  # the bhavcopy MCP's rows, as the archive file would give them
+        argv = module("app.hat.data.mcp_bars", "--from", todo[0], "--to", ctx.through)
     if ctx.dry_run:
         return Done(last, f"{would([argv])} for {_days(todo)}")
     code = child(ctx, argv)
     now = _last(_store(ctx).days(DATASET_BARS))
     if code or now is None or now < ctx.through:
-        raise StepError(f"history_cli exited {code}, bars through {now}", now)
-    return Done(now, f"bhavcopy for {_days(todo)}")
+        raise StepError(f"{tool} exited {code}, bars through {now}", now)
+    return Done(now, f"{tool} for {_days(todo)}")
 
 
-def ingest(ctx: Context) -> Done:
+def ingest(ctx: Context) -> Done:  # noqa: C901, PLR0915 - one loop, two source sets
     """The nightly ingest over days whose bars are stored: it reuses the bars partition and
-    stores the index levels (NSE's index archive), the market breadth (counted from the bars),
-    the NIFTY 500 TRI (niftyindices) and `ingest.completed`, which the quality gate reads."""
+    stores the index levels (the stored index archive file; with the web on NSE's archive, else
+    the bhavcopy MCP's snapshot), the market breadth (counted from the bars), the NIFTY 500 TRI
+    and `ingest.completed`, which the quality gate reads. The TRI comes from niftyindices with
+    the web on, else from its answers the owner handed over (kept under `raw_tri/`); a recent
+    bar day still without one reports `manual`."""
     from ...clock import SystemClock
     from ...daily.nightly import INGEST_NIGHTLY, ingest_outcome_recorder
     from ...ops.jobs import run_job
     from .. import ingest as nightly_ingest
     from ..bhavcopy import http_fetcher
-    from ..index_history import NIFTY_INDICES_INTERVAL, http_poster, tri_source
+    from ..index_history import (
+        NIFTY_500_TRI,
+        NIFTY_INDICES_INTERVAL,
+        http_poster,
+        kept_tri_source,
+        nightly_tri,
+        tri_source,
+    )
     from ..mcp_client import offline_client
     from ..pacing import Pacer
     from ..store import DATASET_BARS
@@ -235,23 +308,29 @@ def ingest(ctx: Context) -> Done:
         for d in sessions_to_fill(ctx.sessions, _last_job(INGEST_NIGHTLY), ctx.through)
         if d in stored
     ]
-    if ctx.dry_run or not todo:
+    on = web()
+    if ctx.dry_run or (not todo and on):  # web off: a TRI file handed over is still read
         return _each_session(ctx, INGEST_NIGHTLY, todo, lambda _d: lambda: None)
     from app.database import HatDataSessionLocal
 
     from ...ops.jobs import RunStatus
 
-    fetch, clock = http_fetcher(), SystemClock()
-    tri = tri_source(http_poster(), Pacer(min_interval=NIFTY_INDICES_INTERVAL))
+    fetch, clock = (http_fetcher() if on else None), SystemClock()
+    if on:
+        tri = tri_source(http_poster(), Pacer(min_interval=NIFTY_INDICES_INTERVAL))
+    else:
+        keep_tri_files(ctx)
+        tri = kept_tri_source(ctx.root / TRI_RAW)
+    client = _mcp() if not on else None
     lines = []
     for day in todo:
         holder: dict[str, nightly_ingest.IngestReport] = {}
         deps = nightly_ingest.IngestDeps(
-            client=offline_client(),
+            client=client or offline_client(),
             store=store,
             session_factory=HatDataSessionLocal,
             clock=clock,
-            fallback=lambda d: nightly_ingest.bhavcopy_day(store, fetch, d),
+            fallback=(lambda d: nightly_ingest.bhavcopy_day(store, fetch, d)) if fetch else None,
             index_csv=index_csv(store, fetch),
             tri=tri,
         )
@@ -271,18 +350,64 @@ def ingest(ctx: Context) -> Done:
                 f" {report.breadth_source} tri +{report.tri_stored}"
                 + (f" tri_missing {len(report.tri_missing)}" if report.tri_missing else "")
             )
-    return Done(_last_job(INGEST_NIGHTLY), "; ".join(lines) or f"{_days(todo)} already done")
+    detail = "; ".join(lines) or f"{_days(todo)} already done"
+    if not on:  # a TRI file handed over since: the recent bar days still without one
+        left = nightly_tri(store, tri, ctx.through, apply=True).left.get(NIFTY_500_TRI, [])
+        if left:
+            raise StepManual(
+                f"{detail}; {tri_manual(left, ctx.through)}", _last_job(INGEST_NIGHTLY)
+            )
+    return Done(_last_job(INGEST_NIGHTLY), detail)
+
+
+TRI_RAW = Path("raw_tri")  # under the data root: `index_history.TRI_RAW_DIR`
+
+
+def keep_tri_files(ctx: Context) -> None:
+    """Keep the NIFTY 500 TRI answers the owner handed over under `raw_tri/`, create-only (a
+    kept file is never rewritten; a different one under a kept name is logged and left)."""
+    import logging
+
+    from ..index_history import NIFTY_500_TRI, parse_tri_json
+    from ..store import StoreError, keep_once
+    from . import hand
+
+    for path in hand.matching(ctx.root, NIFTY_500_TRI.replace(" ", "_") + "_*.json"):
+        data = path.read_bytes()
+        if parse_tri_json(data, NIFTY_500_TRI) is None:
+            logging.getLogger(__name__).warning("%s is no TRI answer; not kept", path.name)
+            continue
+        try:
+            keep_once(ctx.root / TRI_RAW / path.name, data)
+        except StoreError:
+            logging.getLogger(__name__).warning("%s differs from the kept file", path.name)
+
+
+def tri_manual(left: Sequence[date], through: date) -> str:
+    """The `manual` detail for the TRI days still missing: one file per calendar year."""
+    from ..index_history import NIFTY_500_TRI, tri_raw_range
+    from . import hand
+
+    files = []
+    for year in sorted({d.year for d in left}):
+        span = tri_raw_range(NIFTY_500_TRI, year, through)
+        if span is not None:
+            files.append(hand.nifty500_tri(*span))
+    return hand.manual("ingest", files, f"NIFTY 500 TRI missing for {_days(sorted(left))}")
 
 
 def index_csv(store, fetch) -> Callable[[date], str | None]:  # noqa: ANN001
-    """A day's index archive CSV: the copy the history build kept, else NSE's archive, else its
-    niftyindices mirror (whose page for a missing file parses to no rows)."""
+    """A day's index archive CSV: the copy the history build kept, else (with a fetcher: the
+    web on) NSE's archive, else its niftyindices mirror (whose page for a missing file parses to
+    no rows); None sends the ingest to the bhavcopy MCP's snapshot."""
     from ..index_history import INDEX_ARCHIVE_URL, INDEX_MIRROR_URL, index_archive_name
 
     def read(day: date) -> str | None:
         name = index_archive_name(day)
         if store.raw_exists(name):
             return store.read_raw(name).decode("utf-8-sig", errors="replace")
+        if fetch is None:
+            return None
         for base in (INDEX_ARCHIVE_URL, INDEX_MIRROR_URL):
             result = fetch(base + name)
             if result.status == "ok" and result.data:
@@ -318,36 +443,108 @@ def _gate(gate_body, factory, store, verdict, clock, day: date):  # noqa: ANN001
 
 
 def ca(ctx: Context) -> Done:
-    """`ca.adjust` for each ingested session. Without the MCP servers its lookups of the next
-    session's actions are alerted `corporate_action.unchecked` (to the log here) and the rest
-    runs: the day's `bc` file, its dividends and demergers, the lineage refresh."""
+    """`ca.adjust` for each ingested session: the day's `bc` file (NSE's PR archive), its
+    dividends and demergers, the lineage refresh (NSE's symbol and name changes) and, with the
+    bhavcopy MCP configured, the lookups of the next session's actions (else alerted
+    `corporate_action.unchecked`, to the log here). With the web off a session runs only once
+    the owner handed over its PR archive (`manual` names the rest, the later sessions waiting
+    for the first); the change lists are read when handed over, else the stored lineage
+    stands."""
     from ...daily.nightly import CA_ADJUST, INGEST_NIGHTLY
     from ...daily.nightly_ca import CaAdjust
+    from . import hand
 
-    deps = _nightly_deps(ctx)
     ingested = _last_job(INGEST_NIGHTLY)
     days = [
         d
         for d in sessions_to_fill(ctx.sessions, _last_job(CA_ADJUST), ctx.through)
         if ingested is not None and d <= ingested
     ]
-    return _each_session(ctx, CA_ADJUST, days, lambda day: lambda: CaAdjust(deps).run(day))
+    if web():
+        deps = _nightly_deps(ctx, _web_sources())
+        return _each_session(ctx, CA_ADJUST, days, lambda day: lambda: CaAdjust(deps).run(day))
+    archives = {d: hand.find(ctx.root, hand.pr_archive(d).name) for d in days}
+    ready = ready_prefix(days, {d for d, path in archives.items() if path is not None})
+    changes = [hand.find(ctx.root, f.name) for f in (hand.SYMBOL_CHANGES, hand.NAME_CHANGES)]
+    sources = _hand_sources(archives, *changes)
+    deps = _nightly_deps(ctx, sources)
+    done = _each_session(ctx, CA_ADJUST, ready, lambda day: lambda: CaAdjust(deps).run(day))
+    _retire(ctx, [p for p in (*changes, *(archives[d] for d in ready)) if p is not None])
+    waiting = days[len(ready) :]
+    if waiting:
+        files = [hand.pr_archive(d) for d in waiting]
+        note = f"{done.detail}; the PR archive of {_days(waiting)} (with {hand.SYMBOL_CHANGES.name}"
+        note += f" and {hand.NAME_CHANGES.name} for the ISIN lineage: {hand.SYMBOL_CHANGES.url},"
+        note += f" {hand.NAME_CHANGES.url})"
+        raise StepManual(hand.manual("ca", files, note), done.last_good)
+    return done
 
 
-def _nightly_deps(ctx: Context):  # noqa: ANN202 - NightlyDeps for the data jobs only
-    """The `NightlyDeps` `ca.adjust` reads (store, data sessions, clock, the NSE text files);
-    the trading fields it never reads are inert."""
-    from app.database import HatDataSessionLocal
+def ready_prefix(days: Sequence[date], have: set[date]) -> list[date]:
+    """The sessions, oldest first, up to the first one without its file: a later session waits
+    for an earlier one, as the live chain does."""
+    out = []
+    for day in days:
+        if day not in have:
+            break
+        out.append(day)
+    return out
 
-    from ...clock import SystemClock
-    from ...daily.nightly_deps import NightlyDeps, TextSources
+
+def _web_sources():  # noqa: ANN202 - TextSources, imported late
+    """The NSE files `ca.adjust` reads, downloaded (the web on)."""
+    from ...daily.nightly_deps import TextSources
     from ..bhavcopy import http_fetcher
     from ..nse_changes import NAME_CHANGES_URL, SYMBOL_CHANGES_URL
     from ..nse_files import EQUITY_LIST_URL, HOLIDAYS_URL, corporate_action_file, url_source
 
     fetch = http_fetcher()
+    return TextSources(
+        equity_list=url_source(EQUITY_LIST_URL, fetch),
+        holidays=url_source(HOLIDAYS_URL, fetch),
+        price_bands=_unused,
+        symbol_changes=url_source(SYMBOL_CHANGES_URL, fetch),
+        name_changes=url_source(NAME_CHANGES_URL, fetch),
+        corporate_actions=lambda day: corporate_action_file(day, fetch),
+    )
 
-    def unused(*_args: object) -> object:
+
+def _hand_sources(archives, symbol_changes, name_changes):  # noqa: ANN001, ANN202
+    """The NSE files `ca.adjust` reads, from the owner's hand (the web off): a session's `bc`
+    CSV out of its PR archive, and the change lists only when both were given."""
+    from ...daily.nightly_deps import TextSources
+    from ..nse_files import pr_member
+
+    def bc(day: date) -> Callable[[], str]:
+        path = archives.get(day)
+        if path is None:
+            return lambda: _unused()  # never asked: only a ready session runs
+        return lambda: pr_member(path.read_bytes(), f"bc{day:%d%m%Y}.csv")
+
+    both = symbol_changes is not None and name_changes is not None
+    return TextSources(
+        equity_list=_unused,
+        holidays=_unused,
+        price_bands=_unused,
+        symbol_changes=_file_text(symbol_changes) if both else None,
+        name_changes=_file_text(name_changes) if both else None,
+        corporate_actions=bc,
+    )
+
+
+def _unused(*_args: object) -> str:
+    raise RuntimeError("not a data job's input")
+
+
+def _nightly_deps(ctx: Context, sources):  # noqa: ANN001, ANN202 - NightlyDeps for data jobs
+    """The `NightlyDeps` `ca.adjust` reads (store, data sessions, clock, the bhavcopy MCP, the
+    NSE text files); the trading fields it never reads are inert."""
+    from app.database import HatDataSessionLocal
+
+    from ...clock import SystemClock
+    from ...daily.nightly_deps import NightlyDeps
+
+    def no_fetch() -> object:
         raise RuntimeError("not a data job's input")
 
     return NightlyDeps(
@@ -356,16 +553,9 @@ def _nightly_deps(ctx: Context):  # noqa: ANN202 - NightlyDeps for the data jobs
         data_session_factory=HatDataSessionLocal,
         clock=SystemClock(),
         user_id=uuid.UUID(int=0),
-        mcp=lambda: None,
-        bhavcopy=lambda: fetch,
-        sources=TextSources(
-            equity_list=url_source(EQUITY_LIST_URL, fetch),
-            holidays=url_source(HOLIDAYS_URL, fetch),
-            price_bands=unused,
-            symbol_changes=url_source(SYMBOL_CHANGES_URL, fetch),
-            name_changes=url_source(NAME_CHANGES_URL, fetch),
-            corporate_actions=lambda day: corporate_action_file(day, fetch),
-        ),
+        mcp=_mcp,
+        bhavcopy=no_fetch,  # type: ignore[arg-type]
+        sources=sources,
         total_equity=lambda _day: Decimal(0),
         fills_read_at=lambda _account: None,
         sleep=lambda _seconds: None,
@@ -388,19 +578,39 @@ def features(ctx: Context) -> Done:
 def membership(ctx: Context) -> Done:
     """Rebuild the NIFTY 500 history from the notices and today's list (only new notices and
     texts are downloaded), then load it as of today. `build` refuses a notice symbol it cannot
-    resolve: that needs the hand-kept `overrides.json` / `symbol_alias.json` (runbook)."""
+    resolve: that needs the hand-kept `overrides.json` / `symbol_alias.json` (runbook). With the
+    web off nothing is downloaded: today's list is the one the owner handed over (with any new
+    notice PDF, `*.pdf` in the inbox), else the step is `manual` and the loaded history stands
+    (covered to the day of its list)."""
+    from . import hand
+
     last = _covered_to()
     if last is not None and last >= ctx.through:
         return Done(last, "up to date")
     work = work_dir(ctx, "NIFTY500_DIR", "nifty500")
     tool = "nifty500_membership.py"
+    steps = ("fetch", "text", "parse", "reference") if web() else ("text", "parse", "reference")
+    listed, notices = None, []
+    if not web():
+        listed = hand.find(ctx.root, hand.NIFTY500_LIST.name)
+        notices = hand.matching(ctx.root, "*.pdf")
+        if listed is None:
+            note = (
+                f"NIFTY 500 covered to {last}; any new NIFTY 500 notice PDF from {hand.NIFTY_PRESS}"
+            )
+            raise StepManual(hand.manual("membership", [hand.NIFTY500_LIST], note), last)
     build = [
-        *(script(tool, "--work", work, step) for step in ("fetch", "text", "parse", "reference")),
+        *(script(tool, "--work", work, step) for step in steps),
         script(tool, "--work", work, "build", "--as-of", ctx.today),
     ]
     load = membership_load(ctx.today)
     if ctx.dry_run:
         return Done(last, would([*build, load]))
+    if listed is not None:  # where `fetch` would have put them
+        (work / "raw" / "press").mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(listed, work / "raw" / hand.NIFTY500_LIST.name)
+        for pdf in notices:
+            shutil.copyfile(pdf, work / "raw" / "press" / pdf.name)
     try:
         chain(ctx, build)
         # the admin command reads only files inside the admin folder: the build is copied there
@@ -411,6 +621,7 @@ def membership(ctx: Context) -> Done:
         chain(ctx, [load])
     except StepError as exc:
         raise StepError(exc.detail, _covered_to()) from None
+    _retire(ctx, [p for p in (listed, *notices) if p is not None])
     return Done(_covered_to(), f"loaded as of {ctx.today}")
 
 
@@ -531,25 +742,101 @@ def _gaps_5m(
     return gaps(expected, {d: store.instruments(d) for d in window}, explained)
 
 
+# The overlay's niftyindices series (`overlay_etf.py`'s `TRI_INDICES` and `RATE_INDEX`): the
+# folder under `<work>/niftyindices/`, and the index a request names (`hand.niftyindices_series`).
+OVERLAY_SERIES = {
+    "NIFTY_50_TRI": ("NIFTY 50", "tri"),
+    "NIFTY_500_TRI": ("NIFTY 500", "tri"),
+    "NIFTY_1D_RATE_INDEX": ("NIFTY 1D RATE INDEX", "history"),
+}
+
+
 def etf(ctx: Context) -> Done:
     """The overlay's raw files ask only for what is missing (the current windows), then `build`
-    and `store` rewrite `HAT_DATA_ROOT/etf/`. `local` copies HAT's own files once."""
+    and `store` rewrite `HAT_DATA_ROOT/etf/`. `local` copies HAT's own files once. With the web
+    off `indices` asks nothing: the niftyindices answers the owner handed over go into its
+    folders, and `build` and `store` run only once each series reaches the session (else
+    `manual`, the stored overlay standing)."""
     work = work_dir(ctx, "OVERLAY_DATA_DIR", "overlay")
-    steps = ("local", "kotak", "indices", "dividends", "build", "store")
-    commands = [script("overlay_etf.py", "--work", work, s, kotak=s == "kotak") for s in steps]
+    on = web()
+    steps = ("local", "kotak", "indices", "dividends") if on else ("local", "kotak", "dividends")
+    fetches = [script("overlay_etf.py", "--work", work, s, kotak=s == "kotak") for s in steps]
+    builds = [script("overlay_etf.py", "--work", work, s) for s in ("build", "store")]
+    if not on and not ctx.dry_run:
+        _overlay_hand_files(ctx, work)
+    short = [] if on else overlay_short(work, ctx.through)
     if ctx.dry_run:
-        return Done(None, would(commands))
-    chain(ctx, commands)
+        return Done(None, would([*fetches, *([] if short else builds)]))
+    chain(ctx, fetches)
+    if short:
+        raise StepManual(overlay_manual(short, ctx.through), None)
+    chain(ctx, builds)
     return Done(ctx.through, "built and stored")
 
 
+def _overlay_hand_files(ctx: Context, work: Path) -> None:
+    """Copy each niftyindices answer the owner handed over (`<SERIES>_<from>_<to>.json`) into the
+    overlay's folder as `<from>_<to>.json`, never over a file there (a raw file is kept once)."""
+    from . import hand
+
+    for folder in OVERLAY_SERIES:
+        for path in hand.matching(ctx.root, f"{folder}_*.json"):
+            if hand.series_end(path.name, folder) is None:
+                continue
+            target = work / "niftyindices" / folder / path.name.removeprefix(folder + "_")
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, target)
+
+
+def overlay_short(work: Path, through: date) -> list[str]:
+    """The overlay's niftyindices series whose kept files end before `through`."""
+    from . import hand
+
+    short = []
+    for folder in OVERLAY_SERIES:
+        ends = [
+            day
+            for p in (work / "niftyindices" / folder).glob("*.json")
+            if (day := hand.series_end(f"{folder}_{p.name}", folder)) is not None
+        ]
+        if not ends or max(ends) < through:
+            short.append(folder)
+    return short
+
+
+def overlay_manual(short: Sequence[str], through: date) -> str:
+    """The `manual` detail for the overlay series that do not reach `through`: this year's
+    answer of each, from 1 January to `through`."""
+    from ..index_history import HISTORY_URL, TRI_URL
+    from . import hand
+
+    start = date(through.year, 1, 1)
+    files = []
+    for folder in short:
+        base, kind = OVERLAY_SERIES[folder]
+        url = TRI_URL if kind == "tri" else HISTORY_URL
+        files.append(hand.niftyindices_series(folder.replace("_", " "), base, url, start, through))
+    return hand.manual("etf", files, f"overlay series short of {through}: {', '.join(short)}")
+
+
 def results(ctx: Context) -> Done:
-    steps = ("fetch", "fetch-secondary", "parse", "derive")
+    """NSE's filings (listings, announcements, XBRL), the secondary source's pages, parse and
+    derive. With the web off NSE's are not fetched and no hand import exists for them (one
+    listing per company and one XBRL per filing): the quarters NSE's cache lacks come from the
+    secondary source, which counts from its fetch (late, never early), and the detail says so."""
+    on = web()
+    steps = ("fetch", "fetch-secondary", "parse", "derive") if on else RESULTS_WEB_OFF
     commands = [module("app.hat.data.results", s) for s in steps]
     if ctx.dry_run:
         return Done(None, would(commands))
     chain(ctx, commands)
-    return Done(ctx.through, "fetched, parsed, derived")
+    if on:
+        return Done(ctx.through, "fetched, parsed, derived")
+    return Done(ctx.through, "nse web off: secondary source fetched, parsed, derived")
+
+
+RESULTS_WEB_OFF = ("fetch-secondary", "parse", "derive")
 
 
 def fundamentals(ctx: Context) -> Done:

@@ -22,7 +22,10 @@ OK = "ok"
 FAILED = "failed"
 SKIPPED = "skipped"  # a step it waits on failed or was skipped in this run
 NOT_DUE = "not_due"  # a weekly step run within the week
-RESULTS = (OK, FAILED, SKIPPED, NOT_DUE)
+# NSE's web is off (`nse_web`) and the step needs a file the owner downloads by hand: its detail
+# names the address and the import command. It stops no step: the others read what is stored.
+MANUAL = "manual"
+RESULTS = (OK, FAILED, SKIPPED, NOT_DUE, MANUAL)
 
 
 @dataclass(frozen=True)
@@ -35,8 +38,12 @@ class Step:
 
 # Every daily data step, in the order they run (each after the steps it waits on).
 STEPS: tuple[Step, ...] = (
-    Step("calendar", about="NSE holiday list into hat_trading_calendar (calendar.refresh)"),
-    Step("bars", about="bhavcopy days into bars_daily_raw, index_daily (history_cli --resume)"),
+    Step(
+        "calendar",
+        cadence=WEEKLY,
+        about="NSE holiday list into hat_trading_calendar (calendar.refresh)",
+    ),
+    Step("bars", about="bhavcopy days into bars_daily_raw (the bhavcopy MCP, or history_cli)"),
     Step("listing", ("bars",), about="NSE equity list into the stock instrument master"),
     Step(
         "ingest",
@@ -163,5 +170,5 @@ def write_status(path: Path, steps: Mapping[str, StepStatus], run: Mapping[str, 
 
 
 def exit_code(results: Mapping[str, str]) -> int:
-    """1 when any step failed or was skipped, else 0."""
+    """1 when any step failed or was skipped, else 0 (a `manual` step waits on the owner)."""
     return 1 if any(r in (FAILED, SKIPPED) for r in results.values()) else 0

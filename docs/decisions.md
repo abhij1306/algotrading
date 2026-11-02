@@ -741,6 +741,11 @@ rules they produce are in `invariants.md`; the numbers live in the code and the 
 - **No API auth.** Loopback bind behind the VPN, read-only routes; the broker login writes (Fyers
   and Zerodha) and the backtest job start (research runs only) need the `X-HAT-Request` header
   and a frontend `Origin` (`api/guard.py`).
+- **No NSE website from this machine.** NSE's sites (`nseindia.com`, its archives,
+  `niftyindices.com`) block the host, and they are never used from it nor worked around (no
+  other IP, proxy or browser session). `HAT_NSE_WEB` stays off: the daily bars come from the
+  bhavcopy MCP (they equal the archive bhavcopy field for field), and a file only those sites
+  publish is downloaded by the owner elsewhere and handed to the update (`manual` step).
 - **Engine.** In-process scheduler with jobs in Postgres, one async session owner per broker
   account, one engine for backtest and live, so the backtest tests the code that trades.
 - **A runtime that lost its lock writes nothing.** When another runtime holds the runtime lock,

@@ -130,6 +130,10 @@ class Client:
     def _fetch(self, url: str, referer: str) -> tuple[int, bytes]:  # pragma: no cover - network
         import requests
 
+        from app.hat.data.nse_web import guard
+
+        guard(referer)  # `HAT_NSE_WEB` off: NSE is refused before any request
+        guard(url)
         if self._session is None:
             self._session = requests.Session()
             self._session.headers.update(API_HEADERS)

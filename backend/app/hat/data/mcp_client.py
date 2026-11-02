@@ -47,6 +47,10 @@ HTTP_TIMEOUT_SECONDS = 30.0
 MCP_PROTOCOL_VERSION = "2025-03-26"
 HTTP_SESSION_LOST = 404  # streamable HTTP: the server no longer knows the session id
 HANDSHAKE_TRIES = 2
+NOTIFY_TRIES = 4  # `notifications/initialized` sends per handshake (another replica: 404)
+MAX_SESSIONS = 4  # pooled sessions per server, one per replica in practice
+MAX_MISSES = 8  # 404s running before a pooled session is dropped
+NEW_SESSION_TRIES = 2  # sessions a call opens once every pooled one answered 404
 
 # Stable error codes: the only text an alert, API response or Telegram message may carry.
 CODE_TRANSPORT = "mcp_transport"
@@ -58,6 +62,9 @@ CODE_CONFIG = "mcp_config"
 # that index's chain, not a failure (HAT-DATA-095). Only the stable code leaves the client.
 CODE_NO_DATA = "mcp_no_data"
 NO_DATA_PREFIX = "No data for index"
+# `get_stock_history` for a symbol with no row in the window (or none at all): no trade there,
+# also `mcp_no_data` (recorded 2026-11-02: `{"error": "Symbol not found: X", "hint": ...}`).
+NOT_FOUND_PREFIX = "Symbol not found"
 TRANSPORT_CODES = frozenset({CODE_TRANSPORT, CODE_TIMEOUT, CODE_TOOL_ERROR, CODE_BAD_RESPONSE})
 
 
@@ -102,10 +109,14 @@ def endpoints_from_env(env: Mapping[str, str]) -> dict[str, str]:
 
 
 class HttpTransport:
-    """MCP over streamable HTTP: one session per server, opened with `initialize` and
-    `notifications/initialized`, its `Mcp-Session-Id` sent on every `tools/call`. A 404 means the
-    server lost the session (the NSE servers run several replicas): the call opens a new session
-    and is sent once more. Never constructed by tests with a real network."""
+    """MCP over streamable HTTP: sessions opened with `initialize` and
+    `notifications/initialized`, an `Mcp-Session-Id` sent on every `tools/call`. The NSE servers
+    run several replicas behind one address with no affinity, and a session lives only on the
+    replica that opened it: a request another replica takes answers 404 (measured 2026-11-02:
+    about half of them). So each server keeps a pool of up to `MAX_SESSIONS` sessions (they end
+    up on different replicas), a call tries them in turn and opens a new one only when every
+    pooled session answered 404; a session that answers 404 `MAX_MISSES` times running is
+    dropped (its replica is gone). Never constructed by tests with a real network."""
 
     def __init__(
         self,
@@ -121,7 +132,8 @@ class HttpTransport:
         self._timeout = timeout
         self._ids = iter(range(1, 1 << 62))
         self._id_lock = threading.Lock()
-        self._sessions: dict[str, _McpSession] = {}
+        self._pools: dict[str, list[_McpSession]] = {server: [] for server in self._endpoints}
+        self._misses: dict[str, int] = {}  # session id -> 404s running (under the server's lock)
         # one lock per server: a slow handshake with one server never holds up calls to the other
         self._session_locks = {server: threading.Lock() for server in self._endpoints}
 
@@ -130,39 +142,54 @@ class HttpTransport:
         if url is None:
             raise McpConfigError
         params = {"name": tool, "arguments": dict(arguments)}
-        session = self._session(server, url, stale=None)
-        status, text = self._send(url, "tools/call", params, session)
-        if status == HTTP_SESSION_LOST:
-            session = self._session(server, url, stale=session)
+        with self._session_locks[server]:
+            pooled = list(self._pools[server])
+        for session in pooled:
             status, text = self._send(url, "tools/call", params, session)
-            if status == HTTP_SESSION_LOST:
-                self._forget(server, session)
-        if status >= 400:
-            raise McpTransportError(CODE_TRANSPORT)
-        return unwrap_result(_decode_body(text))
+            if status != HTTP_SESSION_LOST:
+                self._hit(server, session)
+                return _finish(status, text)
+            self._missed(server, session)
+        for _try in range(NEW_SESSION_TRIES):
+            session = self._open(server, url)
+            status, text = self._send(url, "tools/call", params, session)
+            if status != HTTP_SESSION_LOST:
+                self._hit(server, session)
+                return _finish(status, text)
+            self._missed(server, session)
+        raise McpTransportError(CODE_TRANSPORT)
 
-    def _session(self, server: str, url: str, *, stale: _McpSession | None) -> _McpSession:
-        """The server's open session; a new one when there is none or it is `stale` (the one a
-        call just saw lost). Concurrent calls to the server share one handshake."""
+    def _open(self, server: str, url: str) -> _McpSession:
+        """A new session in the server's pool (the oldest dropped when it is full)."""
+        opened = self._handshake(url)
         with self._session_locks[server]:
-            current = self._sessions.get(server)
-            if current is not None and current is not stale:
-                return current
-            self._sessions.pop(server, None)
-            opened = self._handshake(url)
-            self._sessions[server] = opened
-            return opened
+            pool = self._pools[server]
+            pool.append(opened)
+            while len(pool) > MAX_SESSIONS:
+                self._misses.pop(pool.pop(0).session_id, None)
+        return opened
 
-    def _forget(self, server: str, session: _McpSession) -> None:
-        """Drop `session` when it is still the server's open one: the next call opens another."""
+    def _hit(self, server: str, session: _McpSession) -> None:
         with self._session_locks[server]:
-            if self._sessions.get(server) is session:
-                del self._sessions[server]
+            self._misses.pop(session.session_id, None)
+
+    def _missed(self, server: str, session: _McpSession) -> None:
+        """Count a 404; past `MAX_MISSES` running the session leaves the pool."""
+        with self._session_locks[server]:
+            misses = self._misses.get(session.session_id, 0) + 1
+            self._misses[session.session_id] = misses
+            if misses >= MAX_MISSES and session in self._pools[server]:
+                self._pools[server].remove(session)
+                del self._misses[session.session_id]
+
+    def pool_size(self, server: str) -> int:
+        with self._session_locks[server]:
+            return len(self._pools[server])
 
     def _handshake(self, url: str) -> _McpSession:
-        """Open and initialize a session. A 404 on either step means another replica answered,
-        so the handshake starts once more; any other failure, or a JSON-RPC error answering
-        `initialize`, is a transport error."""
+        """Open and initialize a session. A 404 answering `initialize` means another replica
+        answered, so the handshake starts once more; any other failure, or a JSON-RPC error
+        answering `initialize`, is a transport error."""
         for _try in range(HANDSHAKE_TRIES):
             session = self._try_handshake(url)
             if session is not None:
@@ -195,9 +222,14 @@ class HttpTransport:
         agreed = envelope["result"].get("protocolVersion")
         version = agreed if isinstance(agreed, str) and agreed else MCP_PROTOCOL_VERSION
         session = _McpSession(session_id, version)
-        status, _text, _headers = self._post_raw(
-            url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, session.headers()
-        )
+        # the notification may reach another replica (404): it is sent again until the one
+        # holding the session takes it
+        for _send in range(NOTIFY_TRIES):
+            status, _text, _headers = self._post_raw(
+                url, {"jsonrpc": "2.0", "method": "notifications/initialized"}, session.headers()
+            )
+            if status != HTTP_SESSION_LOST:
+                break
         if status == HTTP_SESSION_LOST:
             return None
         if status >= 400:
@@ -239,6 +271,12 @@ class HttpTransport:
             timed_out = type(exc).__name__.endswith("Timeout")
             raise McpTransportError(CODE_TIMEOUT if timed_out else CODE_TRANSPORT) from exc
         return status, text, reply_headers
+
+
+def _finish(status: int, text: str) -> object:
+    if status >= 400:
+        raise McpTransportError(CODE_TRANSPORT)
+    return unwrap_result(_decode_body(text))
 
 
 @dataclass(frozen=True)
@@ -542,14 +580,17 @@ class McpClient:
         return BreadthSnapshot(parse_data_date(data.get("date")), data)
 
     def stock_history(self, symbol: str, end_date: date, months: int = 1) -> list[dict[str, Any]]:
-        """`get_stock_history` rows (raw, unadjusted) for the window ending at `end_date`; used
-        by the build's validation sample (HAT-DATA-096)."""
+        """`get_stock_history` rows (raw, unadjusted) for the window ending at `end_date`: the
+        build's validation sample (HAT-DATA-096) and the daily bars (`mcp_bars`). A symbol with
+        no row in the window raises `mcp_no_data`."""
         data = self.call(
             SERVER_BHAVCOPY,
             "get_stock_history",
             {"symbol": symbol, "months": months, "endDate": end_date.isoformat()},
             symbol_count=1,
         )
+        if isinstance(data, dict) and str(data.get("error", "")).startswith(NOT_FOUND_PREFIX):
+            raise McpError(CODE_NO_DATA, attempts=1)
         rows = data.get("data") if isinstance(data, dict) else None
         if not isinstance(rows, list):
             raise McpError(CODE_BAD_RESPONSE, attempts=1)
